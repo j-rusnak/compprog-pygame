@@ -5,8 +5,7 @@ import time
 
 import pygame
 
-from compprog_pygame.board import Board
-from compprog_pygame.menu import MenuScreen
+from compprog_pygame.games.physics_tetris.board import Board
 from compprog_pygame.settings import DEFAULT_SETTINGS, GameSettings
 
 
@@ -28,8 +27,10 @@ class Game:
         self.board.resize(self.screen.get_width(), self.screen.get_height())
         self.score = 0
         self.running = True
+        self.game_over = False
         self.spawn_timer = 0.0
         self.row_check_timer = 0.0
+        self._loss_check_timer = 0.0
 
         # Mouse drawing state
         self._drawing = False
@@ -77,6 +78,9 @@ class Game:
                 self._last_mouse = pos
 
     def _update(self, dt: float) -> None:
+        if self.game_over:
+            return
+
         # Step physics
         self.board.step(dt)
 
@@ -97,11 +101,36 @@ class Game:
             if cleared:
                 self.score += cleared * 100
 
+        # Check lose condition (every ~0.3s)
+        self._loss_check_timer += dt
+        if self._loss_check_timer >= 0.3:
+            self._loss_check_timer = 0.0
+            if self.board.check_loss():
+                self.game_over = True
+
     def _draw(self) -> None:
         self.screen.fill(BACKGROUND)
         self.board.draw(self.screen)
         self._draw_hud()
+        if self.game_over:
+            self._draw_game_over()
         pygame.display.flip()
+
+    def _draw_game_over(self) -> None:
+        sw, sh = self.screen.get_width(), self.screen.get_height()
+        overlay = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 150))
+        self.screen.blit(overlay, (0, 0))
+
+        go_font = pygame.font.Font(None, 80)
+        go_text = go_font.render("GAME OVER", True, (220, 50, 50))
+        self.screen.blit(go_text, ((sw - go_text.get_width()) // 2, sh // 2 - 60))
+
+        score_text = self.big_font.render(f"Score: {self.score}", True, TEXT_COLOR)
+        self.screen.blit(score_text, ((sw - score_text.get_width()) // 2, sh // 2 + 10))
+
+        hint = self.font.render("Press ESC to return to menu", True, MUTED_TEXT)
+        self.screen.blit(hint, ((sw - hint.get_width()) // 2, sh // 2 + 60))
 
     def _draw_hud(self) -> None:
         sw = self.screen.get_width()
@@ -195,25 +224,3 @@ class Game:
 
             pygame.draw.polygon(self.screen, tdef.color, corners)
             pygame.draw.polygon(self.screen, (255, 255, 255), corners, 1)
-
-
-def main() -> None:
-    pygame.init()
-    try:
-        screen = pygame.display.set_mode(
-            (DEFAULT_SETTINGS.width, DEFAULT_SETTINGS.height), pygame.RESIZABLE
-        )
-        pygame.display.set_caption(DEFAULT_SETTINGS.title)
-        clock = pygame.time.Clock()
-
-        menu = MenuScreen(screen.get_width(), screen.get_height())
-        settings = menu.run(screen, clock)
-        if settings is None:
-            return
-
-        game = Game(settings)
-        game.clock = clock
-        game.screen = pygame.display.get_surface()
-        game.run()
-    finally:
-        pygame.quit()

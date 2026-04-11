@@ -15,7 +15,7 @@ import pymunk
 import pygame
 
 from compprog_pygame.settings import GameSettings
-from compprog_pygame.tetrominoes import SHAPES, TetrominoDef
+from compprog_pygame.games.physics_tetris.tetrominoes import SHAPES, TetrominoDef
 
 # Collision types
 COLLISION_WALL = 1
@@ -405,31 +405,88 @@ class Board:
     # ------------------------------------------------------------------
 
     def clear_full_rows(self) -> int:
-        """Detect and remove full rows.  Returns number of rows cleared."""
+        """Detect and remove full rows.  Returns number of rows cleared.
+
+        A row only clears when *every* column contains a block cell that:
+        - has its centre inside that grid cell,
+        - belongs to a body whose angle is near axis-aligned (0/90/180/270°),
+        - belongs to a body that is nearly at rest.
+        """
         cs = self.settings.cell_size
         ox = self.origin_x
         oy = self.origin_y
         cleared = 0
 
+        # Pre-compute world positions + alignment for every cell once.
+        # A body is "aligned" if its angle is within ~6° of a 90° multiple
+        # and it is nearly still.
+        align_tol = math.radians(6)
+        speed_tol = 30.0  # px/s
+        ang_vel_tol = 0.8  # rad/s
+
+        cell_world: list[tuple[float, float, bool]] = []  # (wx, wy, aligned)
+        for piece in self.pieces:
+            body = piece.body
+            angle_mod = body.angle % (math.pi / 2)
+            aligned = (
+                (angle_mod < align_tol or angle_mod > math.pi / 2 - align_tol)
+                and body.velocity.length < speed_tol
+                and abs(body.angular_velocity) < ang_vel_tol
+            )
+            for cell in piece.cells:
+                wx, wy = body.local_to_world(cell.local_offset)
+                cell_world.append((wx, wy, aligned))
+
         for row_idx in range(self.settings.rows):
             row_top = oy + row_idx * cs
             row_bot = row_top + cs
-            row_mid = row_top + cs / 2
 
-            # Sample occupancy across the row
-            filled = 0
-            samples = self.settings.columns * 2  # over-sample
-            for s in range(samples):
-                sx = ox + (s + 0.5) * (self.play_w / samples)
-                info = self.space.point_query_nearest((sx, row_mid), cs * 0.35, pymunk.ShapeFilter())
-                if info and info.shape and info.shape.collision_type == COLLISION_BLOCK:
-                    filled += 1
+            # Each column must have at least one aligned cell inside it.
+            all_filled = True
+            for col_idx in range(self.settings.columns):
+                col_left = ox + col_idx * cs
+                col_right = col_left + cs
 
-            if filled / samples >= self.settings.row_fill_threshold:
+                found = False
+                for wx, wy, aligned in cell_world:
+                    if (
+                        aligned
+                        and col_left <= wx < col_right
+                        and row_top <= wy < row_bot
+                    ):
+                        found = True
+                        break
+
+                if not found:
+                    all_filled = False
+                    break
+
+            if all_filled:
                 self._remove_row(row_top, row_bot)
                 cleared += 1
 
         return cleared
+
+    def check_loss(self) -> bool:
+        """Return True if blocks are stacked above the play area.
+
+        Only counts pieces that have been settled (nearly motionless) for
+        at least 1.5 seconds AND are within the horizontal play-area
+        bounds.  This avoids false positives from freshly-spawned pieces
+        falling through the top or blocks flung out of bounds.
+        """
+        top = self.origin_y
+        left = self.origin_x
+        right = self.origin_x + self.play_w
+        settle_required = 1.5  # seconds of near-stillness
+        for piece in self.pieces:
+            if piece.settled_time < settle_required:
+                continue
+            for cell in piece.cells:
+                wx, wy = piece.body.local_to_world(cell.local_offset)
+                if wy < top and left <= wx <= right:
+                    return True
+        return False
 
     def _remove_row(self, y_top: float, y_bot: float) -> None:
         """Remove cells in the row band, then split any piece whose remaining
