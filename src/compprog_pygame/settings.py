@@ -4,12 +4,23 @@ from pathlib import Path
 
 @dataclass(frozen=True, slots=True)
 class GameSettings:
-    title: str = "CompProg Pygame"
-    width: int = 1280
-    height: int = 720
+    title: str = "Physics Tetris"
+    width: int = 600
+    height: int = 700
     fps: int = 60
-    player_speed: float = 360.0
-    pickup_radius: int = 16
+
+    # Play-area grid (10 columns x 20 rows like classic Tetris)
+    columns: int = 10
+    rows: int = 20
+    cell_size: int = 36  # pixels per cell
+
+    # Physics
+    gravity: float = 765.0  # pixels/s² downward
+    spawn_interval: float = 2.0  # seconds between new pieces
+    physics_steps: int = 10  # sub-steps per frame for stability
+
+    # Row clear
+    row_fill_threshold: float = 0.90  # fraction of row width that counts as "full"
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
