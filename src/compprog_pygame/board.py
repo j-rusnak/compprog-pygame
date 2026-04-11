@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import random
+import time
 from dataclasses import dataclass, field
 
 import pymunk
@@ -19,11 +20,16 @@ from compprog_pygame.tetrominoes import SHAPES, TetrominoDef
 # Collision types
 COLLISION_WALL = 1
 COLLISION_BLOCK = 2
+COLLISION_LINE = 3
 
-# Pymunk works better with some friction / elasticity defaults
-BLOCK_FRICTION = 0.25
-BLOCK_ELASTICITY = 0.05
+# Physics material defaults
+BLOCK_FRICTION = 0.6
+BLOCK_ELASTICITY = 0.01
 BLOCK_MASS_PER_CELL = 1.0
+LINE_FRICTION = 0.3  # lower than blocks so pieces slide along drawn lines
+LINE_PUSH_SCALE = 0.5  # scale raw mouse velocity for gentler push
+LINE_PUSH_CAP = 300.0  # max effective push speed (px/s) for kinematic line bodies
+LINE_MAX_SEGMENT_LEN = 18.0  # split long mouse moves to avoid tunneling
 
 
 @dataclass(slots=True)
@@ -43,6 +49,55 @@ class Piece:
     settled_time: float = 0.0  # seconds the piece has been nearly still
 
 
+@dataclass(slots=True)
+class LineSegRecord:
+    """One segment of a user-drawn line, with a birth timestamp."""
+    shape: pymunk.Segment
+    point_a: tuple[float, float]
+    point_b: tuple[float, float]
+    birth: float  # time.monotonic() when created
+    in_physics: bool = True  # False when segment spawned overlapping a block
+    body: pymunk.Body | None = None  # kinematic body for push segments
+
+
+# ------------------------------------------------------------------
+# Shared physics setup — used by Board and MenuScreen
+# ------------------------------------------------------------------
+
+# Maximum penetration depth (px) tolerated for line↔block contacts.
+# Deeper overlaps are ignored so newly-spawned segments that happen to
+# land inside a block don't cause explosive correction impulses.
+_LINE_MAX_PENETRATION = -16.0
+
+
+def _line_block_pre_solve(arbiter: pymunk.Arbiter, _space: pymunk.Space, _data: object) -> bool:
+    """Reject line↔block contacts that are too deeply overlapping."""
+    for pt in arbiter.contact_point_set.points:
+        if pt.distance < _LINE_MAX_PENETRATION:
+            return False
+    return True
+
+
+def setup_physics_space(gravity: float = 765.0) -> pymunk.Space:
+    """Create a pymunk Space with consistent physics settings.
+
+    A *pre_solve* handler on LINE↔BLOCK contacts prevents explosive
+    impulses when a drawn segment happens to overlap a block deeply.
+    Shallow contacts are processed normally so kinematic line bodies
+    can push blocks proportionally to the mouse velocity.
+    """
+    space = pymunk.Space()
+    space.gravity = (0, gravity)
+    space.collision_slop = 0.3
+    space.damping = 0.97  # gentle global velocity damping
+    space.on_collision(
+        collision_type_a=COLLISION_LINE,
+        collision_type_b=COLLISION_BLOCK,
+        pre_solve=_line_block_pre_solve,
+    )
+    return space
+
+
 class Board:
     """The full play-area: static walls, dynamic pieces, row clearing."""
 
@@ -56,15 +111,127 @@ class Board:
         self.origin_x = (settings.width - self.play_w) // 2
         self.origin_y = settings.height - self.play_h - 20  # 20 px bottom margin
 
-        # Pymunk space  (y-down to match pygame)
-        self.space = pymunk.Space()
-        self.space.gravity = (0, settings.gravity)
+        # Pymunk space — shared helper keeps menu & game in sync
+        self.space = setup_physics_space(gravity=settings.gravity)
 
         self.pieces: list[Piece] = []
         self.settled_pieces: list[Piece] = []
         self._wall_shapes: list[pymunk.Segment] = []
+        self._line_segments: list[LineSegRecord] = []
+
+        # Next-piece preview
+        self.next_shape: TetrominoDef = random.choice(SHAPES)
+        self.next_rotation: float = random.choice(
+            [0, math.pi / 2, math.pi, 3 * math.pi / 2]
+        )
 
         self._build_walls()
+
+    # ------------------------------------------------------------------
+    # User-drawn lines
+    # ------------------------------------------------------------------
+
+    def add_line_point(
+        self,
+        prev: tuple[float, float],
+        curr: tuple[float, float],
+        velocity: tuple[float, float] = (0.0, 0.0),
+    ) -> None:
+        """Add a collideable segment between two screen-space points.
+
+        *velocity* is the mouse velocity in px/s.  When non-zero, the segment
+        is placed on a kinematic body so pymunk's native solver pushes any
+        touching blocks proportionally.  The body is settled (velocity zeroed)
+        after one physics frame.
+
+        If the segment would spawn overlapping any block it is recorded as
+        visual-only (not added to the physics world).
+        """
+        total_dist = math.hypot(curr[0] - prev[0], curr[1] - prev[1])
+        if total_dist < 2.0:
+            return  # skip near-duplicate points
+
+        # Break long cursor jumps into short segments so fast movement still
+        # creates reliable contacts along the stroke path.
+        steps = max(1, math.ceil(total_dist / LINE_MAX_SEGMENT_LEN))
+
+        # Scale and cap the push velocity
+        vx = velocity[0] * LINE_PUSH_SCALE
+        vy = velocity[1] * LINE_PUSH_SCALE
+        speed = math.hypot(vx, vy)
+        if speed > LINE_PUSH_CAP:
+            ratio = LINE_PUSH_CAP / speed
+            vx, vy = vx * ratio, vy * ratio
+            speed = LINE_PUSH_CAP
+
+        for i in range(steps):
+            t0 = i / steps
+            t1 = (i + 1) / steps
+            a = (
+                prev[0] + (curr[0] - prev[0]) * t0,
+                prev[1] + (curr[1] - prev[1]) * t0,
+            )
+            b = (
+                prev[0] + (curr[0] - prev[0]) * t1,
+                prev[1] + (curr[1] - prev[1]) * t1,
+            )
+
+            # Use a kinematic body whenever the mouse is moving.  Kinematic
+            # bodies let pymunk's solver push touching blocks proportionally.
+            kin_body: pymunk.Body | None = None
+            if speed > 5.0:
+                kin_body = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
+                kin_body.velocity = (vx, vy)
+
+            parent = kin_body if kin_body else self.space.static_body
+            seg = pymunk.Segment(
+                parent, a, b,
+                self.settings.line_thickness,
+            )
+            seg.friction = LINE_FRICTION
+            seg.elasticity = 0.0
+            seg.collision_type = COLLISION_LINE
+
+            if kin_body:
+                # Kinematic segments are always added — the pre_solve handler
+                # prevents explosive impulses from deep overlaps.
+                self.space.add(kin_body, seg)
+                in_physics = True
+            else:
+                # Static segments must not spawn inside blocks (no velocity
+                # to guide the overlap resolution, so it would explode).
+                hits = self.space.segment_query(
+                    a, b, self.settings.line_thickness, pymunk.ShapeFilter(),
+                )
+                overlaps_block = any(
+                    h.shape.collision_type == COLLISION_BLOCK for h in hits
+                )
+                in_physics = not overlaps_block
+                if in_physics:
+                    self.space.add(seg)
+
+            rec = LineSegRecord(
+                shape=seg, point_a=a, point_b=b,
+                birth=time.monotonic(), in_physics=in_physics,
+                body=kin_body,
+            )
+            self._line_segments.append(rec)
+
+    def expire_lines(self) -> None:
+        """Remove line segments older than ``line_lifetime``."""
+        now = time.monotonic()
+        cutoff = now - self.settings.line_lifetime
+        still_alive: list[LineSegRecord] = []
+        for rec in self._line_segments:
+            if rec.birth < cutoff:
+                if rec.in_physics:
+                    if rec.body:
+                        self.space.remove(rec.shape, rec.body)
+                    else:
+                        self.space.remove(rec.shape)
+            else:
+                still_alive.append(rec)
+        self._line_segments = still_alive
 
     # ------------------------------------------------------------------
     # Walls
@@ -131,10 +298,13 @@ class Board:
     # ------------------------------------------------------------------
 
     def spawn_piece(self) -> Piece:
-        """Create a random tetromino at a random column / rotation and add it
-        to the physics space."""
-        tdef = random.choice(SHAPES)
-        rotation = random.choice([0, math.pi / 2, math.pi, 3 * math.pi / 2])
+        """Spawn the queued next piece and pick a new next piece."""
+        tdef = self.next_shape
+        rotation = self.next_rotation
+        self.next_shape = random.choice(SHAPES)
+        self.next_rotation = random.choice(
+            [0, math.pi / 2, math.pi, 3 * math.pi / 2]
+        )
         return self._add_piece(tdef, rotation)
 
     def _add_piece(self, tdef: TetrominoDef, rotation: float) -> Piece:
@@ -170,8 +340,14 @@ class Board:
         body = pymunk.Body(total_mass, moment)
         body.angle = rotation
 
-        # Spawn position: random column, above the visible area
-        spawn_x = self.origin_x + random.randint(cs * 2, self.play_w - cs * 2)
+        # Spawn position: above the visible area
+        if self.settings.random_spawn_x:
+            spawn_x = self.origin_x + random.randint(cs * 2, self.play_w - cs * 2)
+        else:
+            # Cluster near centre
+            mid = self.origin_x + self.play_w // 2
+            spread = self.play_w // 6
+            spawn_x = mid + random.randint(-spread, spread)
         spawn_y = self.origin_y - cs * 2
         body.position = (spawn_x, spawn_y)
 
@@ -201,11 +377,25 @@ class Board:
         for _ in range(sub):
             self.space.step(sub_dt)
 
-        # Track settled pieces (low velocity)
+        # Settle kinematic line bodies — zero velocity and undo drift so
+        # segments stay exactly where they were drawn.
+        for rec in self._line_segments:
+            if rec.body is not None and rec.body.velocity.length > 0:
+                rec.body.velocity = (0, 0)
+                rec.body.position = (0, 0)
+
+        # Post-step per-body cleanup
         still_threshold = 5.0  # px/s
         for piece in self.pieces:
-            speed = piece.body.velocity.length
-            if speed < still_threshold and abs(piece.body.angular_velocity) < 0.5:
+            body = piece.body
+            speed = body.velocity.length
+
+            # Damp angular velocity for slow pieces so they stop wobbling
+            if speed < 120.0:
+                body.angular_velocity *= 0.96
+
+            # Track settled pieces
+            if speed < still_threshold and abs(body.angular_velocity) < 0.5:
                 piece.settled_time += dt
             else:
                 piece.settled_time = 0.0
@@ -231,7 +421,7 @@ class Board:
             samples = self.settings.columns * 2  # over-sample
             for s in range(samples):
                 sx = ox + (s + 0.5) * (self.play_w / samples)
-                info = self.space.point_query_nearest((sx, row_mid), 0, pymunk.ShapeFilter())
+                info = self.space.point_query_nearest((sx, row_mid), cs * 0.35, pymunk.ShapeFilter())
                 if info and info.shape and info.shape.collision_type == COLLISION_BLOCK:
                     filled += 1
 
@@ -242,35 +432,151 @@ class Board:
         return cleared
 
     def _remove_row(self, y_top: float, y_bot: float) -> None:
-        """Remove all block cells whose centres sit inside the given row band."""
+        """Remove cells in the row band, then split any piece whose remaining
+        cells are no longer contiguous into separate physics bodies."""
+        cs = self.settings.cell_size
+        new_pieces: list[Piece] = []
         to_remove: list[Piece] = []
+
         for piece in list(self.pieces):
             body = piece.body
-            remaining_shapes: list[pymunk.Poly] = []
-            remaining_cells: list[BlockCell] = []
+            surviving: list[tuple[pymunk.Poly, BlockCell]] = []
             removed_any = False
 
             for shape, cell in zip(piece.shapes, piece.cells):
-                # World position of this cell centre
                 wx, wy = body.local_to_world(cell.local_offset)
                 if y_top <= wy <= y_bot:
                     self.space.remove(shape)
                     removed_any = True
                 else:
-                    remaining_shapes.append(shape)
-                    remaining_cells.append(cell)
+                    surviving.append((shape, cell))
 
-            if removed_any:
-                if not remaining_shapes:
-                    # Entire piece removed
-                    self.space.remove(body)
-                    to_remove.append(piece)
-                else:
-                    piece.shapes = remaining_shapes
-                    piece.cells = remaining_cells
+            if not removed_any:
+                continue
+
+            if not surviving:
+                self.space.remove(body)
+                to_remove.append(piece)
+                continue
+
+            # --- split surviving cells into connected groups ---
+            groups = self._find_connected_groups(body, [c for _, c in surviving], cs)
+
+            if len(groups) == 1:
+                # Still one contiguous piece – just update in place
+                piece.shapes = [s for s, _ in surviving]
+                piece.cells = [c for _, c in surviving]
+            else:
+                # Remove the old body + remaining shapes entirely
+                for shape, _cell in surviving:
+                    self.space.remove(shape)
+                self.space.remove(body)
+                to_remove.append(piece)
+
+                # Create a fresh body for each connected group
+                for group_cells in groups:
+                    new_p = self._create_fragment(
+                        body, group_cells, piece.color, cs,
+                    )
+                    new_pieces.append(new_p)
 
         for p in to_remove:
             self.pieces.remove(p)
+        self.pieces.extend(new_pieces)
+
+    # ------------------------------------------------------------------
+    # Piece splitting helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _find_connected_groups(
+        body: pymunk.Body,
+        cells: list[BlockCell],
+        cs: float,
+    ) -> list[list[BlockCell]]:
+        """Partition *cells* into groups of adjacently-connected cells.
+
+        Two cells are neighbours if their world-space centres are within
+        ~1.1 × cell_size of each other (diagonal tolerance).
+        """
+        threshold = cs * 1.2
+        world_positions = [body.local_to_world(c.local_offset) for c in cells]
+        visited = [False] * len(cells)
+        groups: list[list[BlockCell]] = []
+
+        for i in range(len(cells)):
+            if visited[i]:
+                continue
+            group: list[BlockCell] = []
+            stack = [i]
+            while stack:
+                idx = stack.pop()
+                if visited[idx]:
+                    continue
+                visited[idx] = True
+                group.append(cells[idx])
+                wx, wy = world_positions[idx]
+                for j in range(len(cells)):
+                    if not visited[j]:
+                        ox, oy = world_positions[j]
+                        if abs(ox - wx) <= threshold and abs(oy - wy) <= threshold:
+                            stack.append(j)
+            groups.append(group)
+        return groups
+
+    def _create_fragment(
+        self,
+        old_body: pymunk.Body,
+        cells: list[BlockCell],
+        color: tuple[int, int, int],
+        cs: float,
+    ) -> Piece:
+        """Build a new physics body from a subset of cells, preserving their
+        current world positions and the old body's velocity / rotation."""
+        half = cs / 2
+
+        # Compute world centres
+        world_centres = [old_body.local_to_world(c.local_offset) for c in cells]
+        avg_x = sum(p[0] for p in world_centres) / len(world_centres)
+        avg_y = sum(p[1] for p in world_centres) / len(world_centres)
+
+        total_mass = BLOCK_MASS_PER_CELL * len(cells)
+        moment = 0.0
+        new_local_offsets: list[tuple[float, float]] = []
+        poly_verts_list: list[list[tuple[float, float]]] = []
+
+        for wx, wy in world_centres:
+            lx = wx - avg_x
+            ly = wy - avg_y
+            new_local_offsets.append((lx, ly))
+            verts = [
+                (lx - half, ly - half),
+                (lx + half, ly - half),
+                (lx + half, ly + half),
+                (lx - half, ly + half),
+            ]
+            poly_verts_list.append(verts)
+            moment += pymunk.moment_for_poly(BLOCK_MASS_PER_CELL, verts)
+
+        body = pymunk.Body(total_mass, moment)
+        body.position = (avg_x, avg_y)
+        body.angle = 0.0  # local offsets already in world orientation
+        body.velocity = old_body.velocity
+        body.angular_velocity = old_body.angular_velocity
+
+        new_shapes: list[pymunk.Poly] = []
+        new_cells: list[BlockCell] = []
+        for verts, (lx, ly), orig_cell in zip(poly_verts_list, new_local_offsets, cells):
+            poly = pymunk.Poly(body, verts)
+            poly.friction = BLOCK_FRICTION
+            poly.elasticity = BLOCK_ELASTICITY
+            poly.collision_type = COLLISION_BLOCK
+            poly.mass = BLOCK_MASS_PER_CELL
+            new_shapes.append(poly)
+            new_cells.append(BlockCell(local_offset=(lx, ly), color=orig_cell.color))
+
+        self.space.add(body, *new_shapes)
+        return Piece(body=body, shapes=new_shapes, cells=new_cells, color=color)
 
     # ------------------------------------------------------------------
     # Drawing helpers
@@ -279,6 +585,7 @@ class Board:
     def draw(self, surface: pygame.Surface) -> None:
         self._draw_grid(surface)
         self._draw_pieces(surface)
+        self._draw_lines(surface)
 
     def _draw_grid(self, surface: pygame.Surface) -> None:
         cs = self.settings.cell_size
@@ -322,3 +629,14 @@ class Board:
 
                 pygame.draw.polygon(surface, cell.color, corners)
                 pygame.draw.polygon(surface, (255, 255, 255), corners, 1)
+
+    def _draw_lines(self, surface: pygame.Surface) -> None:
+        now = time.monotonic()
+        lifetime = self.settings.line_lifetime
+        for rec in self._line_segments:
+            age = now - rec.birth
+            alpha_frac = max(0.0, 1.0 - age / lifetime)
+            brightness = int(255 * alpha_frac)
+            color = (brightness, brightness, brightness)
+            width = max(1, int(self.settings.line_thickness * 2 * alpha_frac))
+            pygame.draw.line(surface, color, rec.point_a, rec.point_b, width)
