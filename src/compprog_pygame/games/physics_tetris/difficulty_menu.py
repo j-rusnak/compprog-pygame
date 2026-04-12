@@ -66,7 +66,7 @@ class _LineSeg:
     b: tuple[float, float]
     birth: float
     in_physics: bool = True
-    body: pymunk.Body | None = None
+    velocity: tuple[float, float] = (0.0, 0.0)
 
 
 class DifficultyMenu:
@@ -92,6 +92,7 @@ class DifficultyMenu:
         self._drawing = False
         self._last_mouse: tuple[float, float] | None = None
         self._last_mouse_time: float = 0.0
+        self._smooth_vel: tuple[float, float] = (0.0, 0.0)
 
         self.title_font = pygame.font.Font(None, 80)
         self.btn_font = pygame.font.Font(None, 40)
@@ -210,7 +211,6 @@ class DifficultyMenu:
         if speed > LINE_PUSH_CAP:
             ratio = LINE_PUSH_CAP / speed
             vx, vy = vx * ratio, vy * ratio
-            speed = LINE_PUSH_CAP
 
         for i in range(steps):
             t0 = i / steps
@@ -218,29 +218,17 @@ class DifficultyMenu:
             a = (prev[0] + (curr[0] - prev[0]) * t0, prev[1] + (curr[1] - prev[1]) * t0)
             b = (prev[0] + (curr[0] - prev[0]) * t1, prev[1] + (curr[1] - prev[1]) * t1)
 
-            kin_body: pymunk.Body | None = None
-            if speed > 5.0:
-                kin_body = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
-                kin_body.velocity = (vx, vy)
-
-            parent = kin_body if kin_body else self.space.static_body
-            seg = pymunk.Segment(parent, a, b, 3.0)
+            seg = pymunk.Segment(self.space.static_body, a, b, 3.0)
             seg.friction = LINE_FRICTION
             seg.elasticity = 0.0
             seg.collision_type = COLLISION_LINE
+            seg.surface_velocity = (vx, vy)
+            seg._push_velocity = (vx, vy)
 
-            if kin_body:
-                self.space.add(kin_body, seg)
-                in_physics = True
-            else:
-                hits = self.space.segment_query(a, b, 3.0, pymunk.ShapeFilter())
-                overlaps = any(h.shape.collision_type == COLLISION_BLOCK for h in hits)
-                in_physics = not overlaps
-                if in_physics:
-                    self.space.add(seg)
+            self.space.add(seg)
 
             rec = _LineSeg(shape=seg, a=a, b=b, birth=time.monotonic(),
-                           in_physics=in_physics, body=kin_body)
+                           in_physics=True, velocity=(vx, vy))
             self._line_segments.append(rec)
 
     def _expire_lines(self) -> None:
@@ -249,11 +237,7 @@ class DifficultyMenu:
         alive: list[_LineSeg] = []
         for rec in self._line_segments:
             if rec.birth < cutoff:
-                if rec.in_physics:
-                    if rec.body:
-                        self.space.remove(rec.shape, rec.body)
-                    else:
-                        self.space.remove(rec.shape)
+                self.space.remove(rec.shape)
             else:
                 alive.append(rec)
         self._line_segments = alive
@@ -284,14 +268,20 @@ class DifficultyMenu:
                 elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                     self._drawing = False
                     self._last_mouse = None
+                    self._smooth_vel = (0.0, 0.0)
                 elif event.type == pygame.MOUSEMOTION:
                     if self._drawing and self._last_mouse is not None:
                         pos = event.pos
                         now = time.monotonic()
                         dt_mouse = max(now - self._last_mouse_time, 0.001)
-                        vx = (pos[0] - self._last_mouse[0]) / dt_mouse
-                        vy = (pos[1] - self._last_mouse[1]) / dt_mouse
-                        self.add_line_point(self._last_mouse, pos, (vx, vy))
+                        raw_vx = (pos[0] - self._last_mouse[0]) / dt_mouse
+                        raw_vy = (pos[1] - self._last_mouse[1]) / dt_mouse
+                        alpha = 0.35
+                        self._smooth_vel = (
+                            self._smooth_vel[0] * (1 - alpha) + raw_vx * alpha,
+                            self._smooth_vel[1] * (1 - alpha) + raw_vy * alpha,
+                        )
+                        self.add_line_point(self._last_mouse, pos, self._smooth_vel)
                         self._last_mouse_time = now
                         self._last_mouse = pos
 
@@ -307,10 +297,15 @@ class DifficultyMenu:
         for _ in range(sub_steps):
             self.space.step(sub_dt)
 
+        # Decay surface_velocity on line segments
+        now = time.monotonic()
         for rec in self._line_segments:
-            if rec.body is not None and rec.body.velocity.length > 0:
-                rec.body.velocity = (0, 0)
-                rec.body.position = (0, 0)
+            age = now - rec.birth
+            decay = max(0.0, 1.0 - age / MENU_LINE_LIFETIME)
+            vx, vy = rec.velocity
+            decayed = (vx * decay, vy * decay)
+            rec.shape.surface_velocity = decayed
+            rec.shape._push_velocity = decayed
 
         self.spawn_timer += dt
         if self.spawn_timer >= self.spawn_interval:

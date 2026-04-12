@@ -36,6 +36,7 @@ class Game:
         self._drawing = False
         self._last_mouse: tuple[float, float] | None = None
         self._last_mouse_time: float = 0.0
+        self._smooth_vel: tuple[float, float] = (0.0, 0.0)
 
         # Spawn the first piece immediately
         self.board.spawn_piece()
@@ -64,15 +65,22 @@ class Game:
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 self._drawing = False
                 self._last_mouse = None
+                self._smooth_vel = (0.0, 0.0)
             elif event.type == pygame.MOUSEMOTION and self._drawing:
                 pos = event.pos
                 if self._last_mouse is not None:
                     now = time.monotonic()
                     dt_mouse = max(now - self._last_mouse_time, 0.001)
-                    vx = (pos[0] - self._last_mouse[0]) / dt_mouse
-                    vy = (pos[1] - self._last_mouse[1]) / dt_mouse
+                    raw_vx = (pos[0] - self._last_mouse[0]) / dt_mouse
+                    raw_vy = (pos[1] - self._last_mouse[1]) / dt_mouse
+                    # Exponential moving average to smooth out noisy spikes
+                    alpha = 0.35
+                    self._smooth_vel = (
+                        self._smooth_vel[0] * (1 - alpha) + raw_vx * alpha,
+                        self._smooth_vel[1] * (1 - alpha) + raw_vy * alpha,
+                    )
                     self.board.add_line_point(
-                        self._last_mouse, pos, (vx, vy),
+                        self._last_mouse, pos, self._smooth_vel,
                     )
                     self._last_mouse_time = now
                 self._last_mouse = pos

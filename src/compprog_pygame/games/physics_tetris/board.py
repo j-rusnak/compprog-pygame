@@ -26,10 +26,11 @@ COLLISION_LINE = 3
 BLOCK_FRICTION = 0.6
 BLOCK_ELASTICITY = 0.01
 BLOCK_MASS_PER_CELL = 1.0
-LINE_FRICTION = 0.3  # lower than blocks so pieces slide along drawn lines
-LINE_PUSH_SCALE = 0.5  # scale raw mouse velocity for gentler push
-LINE_PUSH_CAP = 300.0  # max effective push speed (px/s) for kinematic line bodies
-LINE_MAX_SEGMENT_LEN = 18.0  # split long mouse moves to avoid tunneling
+LINE_FRICTION = 0.8  # high friction transfers surface_velocity push effectively
+LINE_PUSH_SCALE = 0.5  # scale raw mouse velocity for surface_velocity
+LINE_PUSH_CAP = 400.0  # max effective push speed (px/s)
+LINE_MAX_SEGMENT_LEN = 24.0  # split long mouse moves for reliable contact
+LINE_NORMAL_PUSH = 0.15  # impulse scale for perpendicular push component
 
 
 @dataclass(slots=True)
@@ -57,7 +58,7 @@ class LineSegRecord:
     point_b: tuple[float, float]
     birth: float  # time.monotonic() when created
     in_physics: bool = True  # False when segment spawned overlapping a block
-    body: pymunk.Body | None = None  # kinematic body for push segments
+    velocity: tuple[float, float] = (0.0, 0.0)  # stored push velocity
 
 
 # ------------------------------------------------------------------
@@ -67,14 +68,45 @@ class LineSegRecord:
 # Maximum penetration depth (px) tolerated for line↔block contacts.
 # Deeper overlaps are ignored so newly-spawned segments that happen to
 # land inside a block don't cause explosive correction impulses.
-_LINE_MAX_PENETRATION = -16.0
+_LINE_MAX_PENETRATION = -10.0
 
 
 def _line_block_pre_solve(arbiter: pymunk.Arbiter, _space: pymunk.Space, _data: object) -> bool:
-    """Reject line↔block contacts that are too deeply overlapping."""
+    """Handle line↔block contacts: reject deep overlaps, apply push.
+
+    Lines are static segments with ``surface_velocity`` for tangential push
+    (friction drags blocks along the surface like a conveyor belt).  This
+    handler adds a perpendicular impulse component so strokes drawn across
+    a block also push it away from the line surface.
+    """
     for pt in arbiter.contact_point_set.points:
         if pt.distance < _LINE_MAX_PENETRATION:
             return False
+
+    # Identify which shape is the line and which is the block.
+    sa, sb = arbiter.shapes
+    if sa.collision_type == COLLISION_LINE:
+        line_shape = sa
+        block_body = sb.body
+        normal = arbiter.contact_point_set.normal  # from sa → sb
+    else:
+        line_shape = sb
+        block_body = sa.body
+        n = arbiter.contact_point_set.normal
+        normal = pymunk.Vec2d(-n.x, -n.y)  # flip so it points LINE → BLOCK
+
+    # Apply perpendicular push impulse from stored velocity.
+    vel = getattr(line_shape, '_push_velocity', None)
+    if vel:
+        # Project push velocity onto the contact normal
+        dot = vel[0] * normal.x + vel[1] * normal.y
+        # Push block in the direction the mouse is moving relative to surface
+        if abs(dot) > 5.0:
+            imp = dot * LINE_NORMAL_PUSH * block_body.mass
+            block_body.apply_impulse_at_world_point(
+                (normal.x * imp, normal.y * imp),
+                block_body.position,
+            )
     return True
 
 
@@ -88,7 +120,7 @@ def setup_physics_space(gravity: float = 765.0) -> pymunk.Space:
     """
     space = pymunk.Space()
     space.gravity = (0, gravity)
-    space.collision_slop = 0.3
+    space.collision_slop = 1.0
     space.damping = 0.97  # gentle global velocity damping
     space.on_collision(
         collision_type_a=COLLISION_LINE,
@@ -139,13 +171,12 @@ class Board:
     ) -> None:
         """Add a collideable segment between two screen-space points.
 
-        *velocity* is the mouse velocity in px/s.  When non-zero, the segment
-        is placed on a kinematic body so pymunk's native solver pushes any
-        touching blocks proportionally.  The body is settled (velocity zeroed)
-        after one physics frame.
-
-        If the segment would spawn overlapping any block it is recorded as
-        visual-only (not added to the physics world).
+        *velocity* is the mouse velocity in px/s.  The segment is a static
+        shape with ``surface_velocity`` set so pymunk's friction solver
+        pushes touching blocks tangentially (like a conveyor belt).  A
+        perpendicular impulse is applied in the ``pre_solve`` callback for
+        cross-stroke pushes.  The pre_solve handler rejects deeply overlapping
+        contacts to prevent explosive forces.
         """
         total_dist = math.hypot(curr[0] - prev[0], curr[1] - prev[1])
         if total_dist < 2.0:
@@ -162,7 +193,6 @@ class Board:
         if speed > LINE_PUSH_CAP:
             ratio = LINE_PUSH_CAP / speed
             vx, vy = vx * ratio, vy * ratio
-            speed = LINE_PUSH_CAP
 
         for i in range(steps):
             t0 = i / steps
@@ -176,44 +206,25 @@ class Board:
                 prev[1] + (curr[1] - prev[1]) * t1,
             )
 
-            # Use a kinematic body whenever the mouse is moving.  Kinematic
-            # bodies let pymunk's solver push touching blocks proportionally.
-            kin_body: pymunk.Body | None = None
-            if speed > 5.0:
-                kin_body = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
-                kin_body.velocity = (vx, vy)
-
-            parent = kin_body if kin_body else self.space.static_body
             seg = pymunk.Segment(
-                parent, a, b,
+                self.space.static_body, a, b,
                 self.settings.line_thickness,
             )
             seg.friction = LINE_FRICTION
             seg.elasticity = 0.0
             seg.collision_type = COLLISION_LINE
+            seg.surface_velocity = (vx, vy)
+            seg._push_velocity = (vx, vy)  # read by pre_solve for normal impulse
 
-            if kin_body:
-                # Kinematic segments are always added — the pre_solve handler
-                # prevents explosive impulses from deep overlaps.
-                self.space.add(kin_body, seg)
-                in_physics = True
-            else:
-                # Static segments must not spawn inside blocks (no velocity
-                # to guide the overlap resolution, so it would explode).
-                hits = self.space.segment_query(
-                    a, b, self.settings.line_thickness, pymunk.ShapeFilter(),
-                )
-                overlaps_block = any(
-                    h.shape.collision_type == COLLISION_BLOCK for h in hits
-                )
-                in_physics = not overlaps_block
-                if in_physics:
-                    self.space.add(seg)
+            # Always add to physics — the pre_solve handler rejects
+            # contacts that are too deeply overlapping, so explosive
+            # impulses from segments spawned inside a block are prevented.
+            self.space.add(seg)
 
             rec = LineSegRecord(
                 shape=seg, point_a=a, point_b=b,
-                birth=time.monotonic(), in_physics=in_physics,
-                body=kin_body,
+                birth=time.monotonic(), in_physics=True,
+                velocity=(vx, vy),
             )
             self._line_segments.append(rec)
 
@@ -224,11 +235,7 @@ class Board:
         still_alive: list[LineSegRecord] = []
         for rec in self._line_segments:
             if rec.birth < cutoff:
-                if rec.in_physics:
-                    if rec.body:
-                        self.space.remove(rec.shape, rec.body)
-                    else:
-                        self.space.remove(rec.shape)
+                self.space.remove(rec.shape)
             else:
                 still_alive.append(rec)
         self._line_segments = still_alive
@@ -377,12 +384,16 @@ class Board:
         for _ in range(sub):
             self.space.step(sub_dt)
 
-        # Settle kinematic line bodies — zero velocity and undo drift so
-        # segments stay exactly where they were drawn.
+        # Decay surface_velocity on line segments so push fades over lifetime
+        now = time.monotonic()
+        lifetime = self.settings.line_lifetime
         for rec in self._line_segments:
-            if rec.body is not None and rec.body.velocity.length > 0:
-                rec.body.velocity = (0, 0)
-                rec.body.position = (0, 0)
+            age = now - rec.birth
+            decay = max(0.0, 1.0 - age / lifetime)
+            vx, vy = rec.velocity
+            decayed = (vx * decay, vy * decay)
+            rec.shape.surface_velocity = decayed
+            rec.shape._push_velocity = decayed
 
         # Post-step per-body cleanup
         still_threshold = 5.0  # px/s
