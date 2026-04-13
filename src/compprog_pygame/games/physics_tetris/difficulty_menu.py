@@ -28,7 +28,7 @@ from compprog_pygame.games.physics_tetris.board import (
     LINE_PUSH_SCALE,
     setup_physics_space,
 )
-from compprog_pygame.games.physics_tetris.tetrominoes import SHAPES
+from compprog_pygame.games.physics_tetris.tetrominoes import SHAPES, SHAPE_WEIGHTS
 from compprog_pygame.settings import DEFAULT_SETTINGS, GameSettings, easy_settings, hard_settings
 
 # Colours
@@ -138,7 +138,7 @@ class DifficultyMenu:
     # ------------------------------------------------------------------
 
     def _spawn_bg_piece(self) -> None:
-        tdef = random.choice(SHAPES)
+        tdef = random.choices(SHAPES, weights=SHAPE_WEIGHTS)[0]
         rotation = random.choice([0, math.pi / 2, math.pi, 3 * math.pi / 2])
         cs = 30
         half = cs / 2

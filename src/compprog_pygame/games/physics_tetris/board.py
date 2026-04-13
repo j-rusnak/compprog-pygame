@@ -15,7 +15,7 @@ import pymunk
 import pygame
 
 from compprog_pygame.settings import GameSettings
-from compprog_pygame.games.physics_tetris.tetrominoes import SHAPES, TetrominoDef
+from compprog_pygame.games.physics_tetris.tetrominoes import SHAPES, SHAPE_WEIGHTS, TetrominoDef
 
 # Collision types
 COLLISION_WALL = 1
@@ -152,7 +152,7 @@ class Board:
         self._line_segments: list[LineSegRecord] = []
 
         # Next-piece preview
-        self.next_shape: TetrominoDef = random.choice(SHAPES)
+        self.next_shape: TetrominoDef = random.choices(SHAPES, weights=SHAPE_WEIGHTS)[0]
         self.next_rotation: float = random.choice(
             [0, math.pi / 2, math.pi, 3 * math.pi / 2]
         )
@@ -308,7 +308,7 @@ class Board:
         """Spawn the queued next piece and pick a new next piece."""
         tdef = self.next_shape
         rotation = self.next_rotation
-        self.next_shape = random.choice(SHAPES)
+        self.next_shape = random.choices(SHAPES, weights=SHAPE_WEIGHTS)[0]
         self.next_rotation = random.choice(
             [0, math.pi / 2, math.pi, 3 * math.pi / 2]
         )

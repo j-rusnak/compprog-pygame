@@ -29,3 +29,8 @@ SHAPES: tuple[TetrominoDef, ...] = (
     TetrominoDef("J", ((0, 0), (1, 0), (2, 0), (0, 1)), (0, 0, 240)),
     TetrominoDef("L", ((0, 0), (1, 0), (2, 0), (2, 1)), (240, 160, 0)),
 )
+
+# Spawn weights – S and Z appear half as often as the other pieces.
+SHAPE_WEIGHTS: tuple[int, ...] = tuple(
+    1 if s.name in ("S", "Z") else 2 for s in SHAPES
+)
