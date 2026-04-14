@@ -33,6 +33,7 @@ class Game:
         self.renderer = Renderer()
         self.running = True
         self.build_mode: BuildingType | None = None
+        self._hint_font = pygame.font.Font(None, 26)
 
     # ── Public entry point ───────────────────────────────────────
 
@@ -48,7 +49,7 @@ class Game:
                 self._handle_event(event)
 
             self.world.update(dt)
-            self.renderer.draw(screen, self.world, self.camera)
+            self.renderer.draw(screen, self.world, self.camera, dt=dt)
 
             # Build-mode indicator
             if self.build_mode is not None:
@@ -149,7 +150,6 @@ class Game:
             self.build_mode = BUILDABLE[next_idx]
 
     def _draw_build_mode_hint(self, surface: pygame.Surface) -> None:
-        font = pygame.font.Font(None, 26)
         text = f"Build: {self.build_mode.name}  [B] cycle  [ESC] cancel"
-        surf = font.render(text, True, (255, 255, 100))
+        surf = self._hint_font.render(text, True, (255, 255, 100))
         surface.blit(surf, (surface.get_width() // 2 - surf.get_width() // 2, 10))

@@ -70,6 +70,8 @@ class HexGrid:
 
     def __init__(self) -> None:
         self._tiles: dict[HexCoord, HexTile] = {}
+        self._tile_list_dirty: bool = True
+        self._tile_list: list[HexTile] = []
 
     def __contains__(self, coord: HexCoord) -> bool:
         return coord in self._tiles
@@ -82,9 +84,13 @@ class HexGrid:
 
     def set_tile(self, tile: HexTile) -> None:
         self._tiles[tile.coord] = tile
+        self._tile_list_dirty = True
 
-    def tiles(self) -> Iterator[HexTile]:
-        yield from self._tiles.values()
+    def tiles(self) -> list[HexTile]:
+        if self._tile_list_dirty:
+            self._tile_list = list(self._tiles.values())
+            self._tile_list_dirty = False
+        return self._tile_list
 
     def coords(self) -> Iterator[HexCoord]:
         yield from self._tiles.keys()
@@ -95,16 +101,20 @@ class HexGrid:
 
 # ── Pixel conversion (pointy-top hexagons) ───────────────────────
 
+_SQRT3 = math.sqrt(3)
+_SQRT3_OVER_3 = _SQRT3 / 3
+
+
 def hex_to_pixel(coord: HexCoord, size: int) -> tuple[float, float]:
     """Convert axial hex coord to pixel centre (pointy-top)."""
-    x = size * math.sqrt(3) * (coord.q + coord.r / 2)
-    y = size * (3 / 2 * coord.r)
+    x = size * _SQRT3 * (coord.q + coord.r / 2)
+    y = size * 1.5 * coord.r
     return x, y
 
 
 def pixel_to_hex(x: float, y: float, size: int) -> HexCoord:
     """Convert pixel position to the nearest axial hex coord (pointy-top)."""
-    q = (math.sqrt(3) / 3 * x - 1 / 3 * y) / size
+    q = (_SQRT3_OVER_3 * x - 1 / 3 * y) / size
     r = (2 / 3 * y) / size
     return _axial_round(q, r)
 
@@ -120,10 +130,16 @@ def _axial_round(q: float, r: float) -> HexCoord:
     return HexCoord(int(rq), int(rr))
 
 
+# Pre-computed unit corner offsets for pointy-top hex (cos/sin of 30,90,150,210,270,330 deg)
+_HEX_CORNER_OFFSETS: list[tuple[float, float]] = [
+    (math.cos(math.radians(60 * i + 30)), math.sin(math.radians(60 * i + 30)))
+    for i in range(6)
+]
+
+
 def hex_corners(cx: float, cy: float, size: int) -> list[tuple[float, float]]:
     """Return the 6 corner pixel positions for a pointy-top hex centred at (cx, cy)."""
-    corners = []
-    for i in range(6):
-        angle = math.radians(60 * i + 30)
-        corners.append((cx + size * math.cos(angle), cy + size * math.sin(angle)))
-    return corners
+    return [
+        (cx + size * dx, cy + size * dy)
+        for dx, dy in _HEX_CORNER_OFFSETS
+    ]

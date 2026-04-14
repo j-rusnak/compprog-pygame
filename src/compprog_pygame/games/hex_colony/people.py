@@ -70,9 +70,7 @@ class PopulationManager:
 
     def update(self, dt: float, world: World, hex_size: int) -> None:
         """Advance all people by *dt* seconds."""
-        from compprog_pygame.games.hex_colony.settings import HexColonySettings
-
-        speed = HexColonySettings().person_speed  # px/s
+        speed = world.settings.person_speed  # px/s
         for person in self.people:
             if person.path:
                 # Move toward next hex in path
