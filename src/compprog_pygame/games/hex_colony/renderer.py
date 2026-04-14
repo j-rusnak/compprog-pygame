@@ -4,8 +4,8 @@ Performance notes
 -----------------
 * ``hex_to_pixel`` results are cached in ``_pixel_cache``.
 * Cross-tile overlay art is built once per world via ``overlay.build_overlays``.
-* Zoom is quantised to an LOD band; overlays are completely skipped at very
-  low zoom and thinned at medium zoom.
+* Overlay rendering uses zoom thresholds; overlays are completely skipped at
+  very low zoom and thinned at medium zoom.
 * The selection-highlight overlay uses a small, clipped SRCALPHA surface
   instead of a full-screen allocation.
 """
@@ -146,7 +146,7 @@ class Renderer:
         self._ripples: list[OverlayRipple] = []
         self._static_overlays: list[OverlayItem] = []
         self._edge_colors: dict[HexCoord, list[tuple[int, int, int]]] = {}
-        self._cross_cat: dict[HexCoord, list[int]] = {}  # 0=same, 1=yield, 2=dominate
+        self._cross_cat: dict[HexCoord, list[int]] = {}  # 0=same category, 2=cross-category: use own colour
 
     # ── Cache helpers ────────────────────────────────────────────
 
@@ -382,7 +382,7 @@ class Renderer:
         cw = int(sw * _TILE_LAYER_PAD)
         ch = int(sh * _TILE_LAYER_PAD)
         if self._tile_layer is None or self._tile_layer.get_size() != (cw, ch):
-            self._tile_layer = pygame.Surface((cw, ch))
+            self._tile_layer = pygame.Surface((cw, ch)).convert()
         self._tile_layer.fill(BACKGROUND)
 
         self._tl_zoom = zoom
@@ -935,8 +935,9 @@ def _draw_storage(surface: pygame.Surface, sx: float, sy: float, r: int, z: floa
 
 # ── Mountain top-down helpers ────────────────────────────────────
 
-# Direction d (0=E … 5=SE) shares hex-edge between corners (5-d)%6, (6-d)%6.
-_DIR_EDGE = [((5 - d) % 6, (6 - d) % 6) for d in range(6)]
+# Direction d (0=E, 1=NE, 2=NW, 3=W, 4=SW, 5=SE) maps to the shared
+# hex edge between adjacent corners in the order produced by hex_corners().
+_DIR_EDGE = [(5, 0), (0, 1), (1, 2), (2, 3), (3, 4), (4, 5)]
 
 
 @lru_cache(maxsize=512)

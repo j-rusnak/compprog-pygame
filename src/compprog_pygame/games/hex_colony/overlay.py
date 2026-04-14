@@ -13,9 +13,8 @@ from __future__ import annotations
 
 import random as _random
 from dataclasses import dataclass
-from typing import Any
 
-from compprog_pygame.games.hex_colony.hex_grid import HexCoord, Terrain, hex_to_pixel
+from compprog_pygame.games.hex_colony.hex_grid import HexCoord, HexGrid, Terrain, hex_to_pixel
 
 # ── Overlay item data classes ────────────────────────────────────
 
@@ -68,9 +67,9 @@ def _terrain_group(terrain: Terrain) -> str:
 
 
 def _find_terrain_clusters(
-    grid: Any,
+    grid: HexGrid,
 ) -> list[tuple[str, set[HexCoord], dict[HexCoord, int]]]:
-    """BFS flood-fill to find connected components + depth maps."""
+    """DFS flood-fill to find connected components, with BFS-calculated depth maps."""
     visited: set[HexCoord] = set()
     clusters: list[tuple[str, set[HexCoord], dict[HexCoord, int]]] = []
 
@@ -138,7 +137,7 @@ def _tile_seed(coord: HexCoord) -> int:
 # ── Public API ───────────────────────────────────────────────────
 
 def build_overlays(
-    grid: Any, hex_size: int,
+    grid: HexGrid, hex_size: int,
 ) -> tuple[list[OverlayItem], dict[HexCoord, tuple[int, int]]]:
     """Analyse terrain clusters; return overlay items and mountain depth map."""
     clusters = _find_terrain_clusters(grid)
