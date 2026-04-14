@@ -134,9 +134,9 @@ def _tile_detail_seed(coord: HexCoord) -> int:
     q = coord.q & 0xFFFFFFFF
     r = coord.r & 0xFFFFFFFF
     seed = 42
-    seed ^= q + 0x9E3779B9 + ((seed << 6) & 0xFFFFFFFF) + (seed >> 2)
+    seed ^= q + 0x9E3779B9 + ((seed << 6) & 0xFFFFFFFF) + ((seed >> 2) & 0x3FFFFFFF)
     seed &= 0xFFFFFFFF
-    seed ^= r + 0x9E3779B9 + ((seed << 6) & 0xFFFFFFFF) + (seed >> 2)
+    seed ^= r + 0x9E3779B9 + ((seed << 6) & 0xFFFFFFFF) + ((seed >> 2) & 0x3FFFFFFF)
     return seed & 0xFFFFFFFF
 
 
