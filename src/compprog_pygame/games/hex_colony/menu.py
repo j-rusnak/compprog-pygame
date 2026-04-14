@@ -246,12 +246,3 @@ class HexColonyMenu:
         # Hint
         hint = self.hint_font.render("Enter seed  •  ENTER or click Play  •  ESC to go back", True, MUTED_TEXT)
         surface.blit(hint, ((self.width - hint.get_width()) // 2, self.height - 40))
-        pygame.draw.rect(surface, bg, pr, border_radius=10)
-        pygame.draw.rect(surface, ACCENT, pr, width=2, border_radius=10)
-        btn_text = self.button_font.render("Play", True, BUTTON_TEXT)
-        surface.blit(btn_text, (pr.x + (pr.w - btn_text.get_width()) // 2,
-                                pr.y + (pr.h - btn_text.get_height()) // 2))
-
-        # Hint at bottom
-        hint = self.hint_font.render("Enter seed  •  ENTER or click Play  •  ESC to go back", True, MUTED_TEXT)
-        surface.blit(hint, ((self.width - hint.get_width()) // 2, self.height - 40))

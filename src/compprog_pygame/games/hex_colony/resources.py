@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from enum import Enum, auto
 
+from compprog_pygame.games.hex_colony.hex_grid import Terrain
+
 
 class Resource(Enum):
     """The four starting resource types."""
@@ -14,7 +16,6 @@ class Resource(Enum):
 
 
 # Mapping from terrain to the resource it yields
-from compprog_pygame.games.hex_colony.hex_grid import Terrain
 
 TERRAIN_RESOURCE: dict[Terrain, Resource] = {
     Terrain.FOREST: Resource.WOOD,

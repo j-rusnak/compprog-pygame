@@ -692,12 +692,12 @@ def _carve_path_to_border(
         tile.terrain = Terrain.GRASS
         tile.resource_amount = 0.0
 
-    for _ in range(radius * 3):
-        # Check if we're already connected
-        reachable = _flood_passable(grid, start, safe_tiles - {start})
-        if reachable & border_tiles:
-            return
+    # Compute reachability once; only re-check after actually carving a tile.
+    _excluded = safe_tiles - {start}
+    if _flood_passable(grid, start, _excluded) & border_tiles:
+        return
 
+    for _ in range(radius * 3):
         # Pick best neighbour: furthest from origin, prefer already passable
         candidates = []
         for nb in cur.neighbors():
@@ -725,5 +725,8 @@ def _carve_path_to_border(
         if t is not None and not _is_passable(t.terrain):
             t.terrain = Terrain.GRASS
             t.resource_amount = 0.0
+            # Only recheck reachability when the grid actually changed
+            if _flood_passable(grid, start, _excluded) & border_tiles:
+                return
 
         cur = nxt

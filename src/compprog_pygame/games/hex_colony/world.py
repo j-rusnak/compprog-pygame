@@ -65,4 +65,4 @@ class World:
 
         # Food consumption
         food_needed = self.settings.food_consumption * self.population.count * dt
-        self.inventory.spend(Resource.FOOD, food_needed)
+        self.inventory[Resource.FOOD] = self.inventory[Resource.FOOD] - food_needed

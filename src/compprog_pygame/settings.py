@@ -31,7 +31,7 @@ class GameSettings:
 def easy_settings() -> GameSettings:
     return GameSettings(
         gravity=765.0 * 0.8,
-        spawn_interval=5,
+        spawn_interval=5.0,
         line_lifetime=0.5,
         random_spawn_x=False,
     )

@@ -1,5 +1,4 @@
-﻿
-"""Rendering for Hex Colony â€” draws tiles, buildings, people, and HUD.
+"""Rendering for Hex Colony — draws tiles, buildings, people, and HUD.
 
 Uses procedural pixel-art detail for terrain, buildings, and characters
 while keeping the crisp low-resolution aesthetic.
@@ -39,7 +38,7 @@ from compprog_pygame.games.hex_colony.people import Person, Task
 from compprog_pygame.games.hex_colony.resources import Inventory, Resource
 from compprog_pygame.games.hex_colony.world import World
 
-# â”€â”€ Colour palette â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Colour palette ───────────────────────────────────────────────
 
 BACKGROUND = (9, 12, 25)
 
@@ -91,7 +90,7 @@ RESOURCE_COLORS: dict[Resource, tuple[int, int, int]] = {
 _OUTLINE_COLORS: dict[Terrain, tuple[int, int, int]] = {}
 
 
-# â”€â”€ Pre-computed per-tile detail data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Pre-computed per-tile detail data ────────────────────────────
 # Each terrain type produces a list of lightweight draw commands that
 # are generated ONCE (deterministically seeded by coord) and replayed
 # every frame with only a multiply + offset for the current zoom/pan.
@@ -130,10 +129,21 @@ class _PeakDetail:
 _DetailItem = _GrassTuft | _TreeDetail | _RockDetail | _WaterRipple | _BushDetail | _PeakDetail
 
 
+def _tile_detail_seed(coord: HexCoord) -> int:
+    """Return a deterministic seed for per-tile procedural detail."""
+    q = coord.q & 0xFFFFFFFF
+    r = coord.r & 0xFFFFFFFF
+    seed = 42
+    seed ^= q + 0x9E3779B9 + ((seed << 6) & 0xFFFFFFFF) + (seed >> 2)
+    seed &= 0xFFFFFFFF
+    seed ^= r + 0x9E3779B9 + ((seed << 6) & 0xFFFFFFFF) + (seed >> 2)
+    return seed & 0xFFFFFFFF
+
+
 def _build_tile_detail(coord: HexCoord, terrain: Terrain) -> list[_DetailItem]:
     """Generate detail items once for a tile.  Positions are normalised
     fractions of hex_size, centred on (0, 0)."""
-    rng = _random.Random(hash((coord.q, coord.r, 42)))
+    rng = _random.Random(_tile_detail_seed(coord))
     items: list[_DetailItem] = []
 
     if terrain == Terrain.GRASS:
@@ -212,7 +222,7 @@ class Renderer:
         self.selected_hex: HexCoord | None = None
         self._water_tick: float = 0.0
 
-        # â”€â”€ Caches â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Caches ───────────────────────────────────────────────
         # Pixel position of each hex centre (never changes for a given grid).
         self._pixel_cache: dict[HexCoord, tuple[float, float]] = {}
         # Corner positions in world coords (6 corners per hex, never change).
@@ -229,7 +239,7 @@ class Renderer:
         self._hud_cache_key: tuple = ()
         self._hud_text_surfs: dict[str, pygame.Surface] = {}
 
-    # â”€â”€ Cache helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Cache helpers ────────────────────────────────────────────
 
     def _get_pixel(self, coord: HexCoord, size: int) -> tuple[float, float]:
         cached = self._pixel_cache.get(coord)
@@ -252,7 +262,7 @@ class Renderer:
             self._detail_cache[tile.coord] = cached
         return cached
 
-    # â”€â”€ Public draw entry point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Public draw entry point ──────────────────────────────────
 
     def draw(
         self,
@@ -270,7 +280,7 @@ class Renderer:
             self._draw_hex_highlight(surface, self.selected_hex, camera, world.settings.hex_size)
         self._draw_hud(surface, world)
 
-    # â”€â”€ Hex tiles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Hex tiles ────────────────────────────────────────────────
 
     def _draw_tiles(
         self, surface: pygame.Surface, world: World, camera: Camera
@@ -340,7 +350,7 @@ class Renderer:
             if draw_outline:
                 pygame.draw.polygon(surface, _OUTLINE_COLORS.get(tile.terrain, (40, 40, 40)), corners_screen, width=1)
 
-    # â”€â”€ Terrain detail (from pre-computed cache) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Terrain detail (from pre-computed cache) ─────────────────
 
     def _draw_terrain_detail_cached(
         self, surface: pygame.Surface, tile: HexTile,
@@ -423,7 +433,7 @@ class Renderer:
                     cap = [(mx - c2, my - mh + c2), (mx, my - mh), (mx + c2, my - mh + c2)]
                     _draw_polygon(surface, (230, 235, 240), cap)
 
-    # â”€â”€ Buildings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Buildings ────────────────────────────────────────────────
 
     def _draw_buildings(
         self, surface: pygame.Surface, world: World, camera: Camera
@@ -558,7 +568,7 @@ class Renderer:
         pygame.draw.rect(surface, _darken(ware_col, 0.4),
                          (int(sx - dw // 2), int(sy + r * 0.4 - dh), dw, dh))
 
-    # â”€â”€ People â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── People ───────────────────────────────────────────────────
 
     def _draw_people(
         self, surface: pygame.Surface, world: World, camera: Camera
@@ -607,7 +617,7 @@ class Renderer:
                                    (isx + head_r + iz, isy - leg_h - body_h),
                                    max(1, int(zoom * 1.5)))
 
-    # â”€â”€ Selection highlight â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Selection highlight ──────────────────────────────────────
 
     def _draw_hex_highlight(
         self,
@@ -644,7 +654,7 @@ class Renderer:
             pygame.draw.polygon(overlay, (255, 255, 100, 30), shifted)
             surface.blit(overlay, (min_x, min_y))
 
-    # â”€â”€ HUD overlay â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── HUD overlay ──────────────────────────────────────────────
 
     def _draw_hud(self, surface: pygame.Surface, world: World) -> None:
         x, y = 10, 10
