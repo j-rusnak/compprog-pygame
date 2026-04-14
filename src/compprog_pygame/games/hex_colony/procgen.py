@@ -85,7 +85,7 @@ class NoiseMap:
 
 # ── Impassable terrain helpers ────────────────────────────────────
 
-IMPASSABLE = frozenset({Terrain.WATER, Terrain.MOUNTAIN})
+IMPASSABLE = frozenset({Terrain.WATER, Terrain.MOUNTAIN, Terrain.STONE_DEPOSIT})
 SAFE_RADIUS = 2  # fixed 2-tile exclusion zone around the camp
 
 

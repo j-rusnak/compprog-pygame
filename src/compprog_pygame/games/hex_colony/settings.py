@@ -9,7 +9,7 @@ from dataclasses import dataclass
 class HexColonySettings:
     # Display
     hex_size: int = 32  # radius of each hex in pixels (center to vertex)
-    fps: int = 60
+    fps: int = 144
 
     # Starting resources
     start_wood: int = 50
