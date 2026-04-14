@@ -937,7 +937,10 @@ def _draw_storage(surface: pygame.Surface, sx: float, sy: float, r: int, z: floa
 
 # Direction d (0=E, 1=NE, 2=NW, 3=W, 4=SW, 5=SE) maps to the shared
 # hex edge between adjacent corners in the order produced by hex_corners().
-_DIR_EDGE = [(5, 0), (0, 1), (1, 2), (2, 3), (3, 4), (4, 5)]
+# hex_corners() places corner i at angle (60*i + 30)°, so in screen coords
+# (y-down): 0=right-bottom, 1=bottom, 2=left-bottom, 3=left-top, 4=top,
+# 5=right-top.  Direction d's shared edge uses corners (6-d)%6 and (5-d)%6.
+_DIR_EDGE = [(5, 0), (4, 5), (3, 4), (2, 3), (1, 2), (0, 1)]
 
 
 @lru_cache(maxsize=512)
