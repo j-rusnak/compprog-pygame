@@ -1,6 +1,7 @@
 """Hexagonal grid coordinate system and utilities.
 
-Uses axial coordinates (q, r) with flat-top hexagons.
+Uses axial coordinates (q, r) with pointy-top hexagons so the map forms
+straight horizontal rows, which reads more naturally in the colony view.
 Reference: https://www.redblobgames.com/grids/hexagons/
 """
 
@@ -37,7 +38,7 @@ class HexCoord:
         return hash((self.q, self.r))
 
 
-# Direction offsets for flat-top hexes (E, NE, NW, W, SW, SE)
+# Direction offsets for axial hex coordinates (E, NE, NW, W, SW, SE)
 HEX_DIRECTIONS: list[tuple[int, int]] = [
     (+1, 0), (+1, -1), (0, -1),
     (-1, 0), (-1, +1), (0, +1),
@@ -52,6 +53,7 @@ class Terrain(Enum):
     STONE_DEPOSIT = auto()
     WATER = auto()
     FIBER_PATCH = auto()  # berry bushes / flax field
+    MOUNTAIN = auto()
 
 
 @dataclass(slots=True)
@@ -91,19 +93,19 @@ class HexGrid:
         return len(self._tiles)
 
 
-# ── Pixel conversion (flat-top hexagons) ─────────────────────────
+# ── Pixel conversion (pointy-top hexagons) ───────────────────────
 
 def hex_to_pixel(coord: HexCoord, size: int) -> tuple[float, float]:
-    """Convert axial hex coord to pixel centre (flat-top)."""
-    x = size * (3 / 2 * coord.q)
-    y = size * (math.sqrt(3) / 2 * coord.q + math.sqrt(3) * coord.r)
+    """Convert axial hex coord to pixel centre (pointy-top)."""
+    x = size * math.sqrt(3) * (coord.q + coord.r / 2)
+    y = size * (3 / 2 * coord.r)
     return x, y
 
 
 def pixel_to_hex(x: float, y: float, size: int) -> HexCoord:
-    """Convert pixel position to the nearest axial hex coord (flat-top)."""
-    q = (2 / 3 * x) / size
-    r = (-1 / 3 * x + math.sqrt(3) / 3 * y) / size
+    """Convert pixel position to the nearest axial hex coord (pointy-top)."""
+    q = (math.sqrt(3) / 3 * x - 1 / 3 * y) / size
+    r = (2 / 3 * y) / size
     return _axial_round(q, r)
 
 
@@ -119,9 +121,9 @@ def _axial_round(q: float, r: float) -> HexCoord:
 
 
 def hex_corners(cx: float, cy: float, size: int) -> list[tuple[float, float]]:
-    """Return the 6 corner pixel positions for a flat-top hex centred at (cx, cy)."""
+    """Return the 6 corner pixel positions for a pointy-top hex centred at (cx, cy)."""
     corners = []
     for i in range(6):
-        angle = math.radians(60 * i)
+        angle = math.radians(60 * i + 30)
         corners.append((cx + size * math.cos(angle), cy + size * math.sin(angle)))
     return corners

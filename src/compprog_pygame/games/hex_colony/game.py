@@ -26,9 +26,9 @@ BUILDABLE = [
 class Game:
     """Top-level game object — owns the world, camera, and renderer."""
 
-    def __init__(self, settings: HexColonySettings | None = None) -> None:
+    def __init__(self, settings: HexColonySettings | None = None, seed: str = "default") -> None:
         self.settings = settings or HexColonySettings()
-        self.world = World.generate(self.settings)
+        self.world = World.generate(self.settings, seed=seed)
         self.camera: Camera | None = None
         self.renderer = Renderer()
         self.running = True

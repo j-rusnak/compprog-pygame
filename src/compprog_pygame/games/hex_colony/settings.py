@@ -21,7 +21,7 @@ class HexColonySettings:
     start_population: int = 5
 
     # World generation
-    world_radius: int = 20  # hex radius of the generated map
+    world_radius: int = 80  # hex radius of the generated map
 
     # People movement
     person_speed: float = 60.0  # pixels per second

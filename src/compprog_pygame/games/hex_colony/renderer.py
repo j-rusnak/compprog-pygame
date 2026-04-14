@@ -30,6 +30,7 @@ TERRAIN_COLORS: dict[Terrain, tuple[int, int, int]] = {
     Terrain.STONE_DEPOSIT: (140, 140, 130),
     Terrain.WATER: (40, 90, 180),
     Terrain.FIBER_PATCH: (120, 160, 60),
+    Terrain.MOUNTAIN: (110, 100, 90),
 }
 
 BUILDING_COLORS: dict[BuildingType, tuple[int, int, int]] = {

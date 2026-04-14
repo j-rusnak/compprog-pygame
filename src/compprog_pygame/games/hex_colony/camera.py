@@ -6,7 +6,7 @@ from __future__ import annotations
 class Camera:
     """Tracks offset and zoom for the top-down view."""
 
-    MIN_ZOOM = 0.3
+    MIN_ZOOM = 0.1
     MAX_ZOOM = 3.0
 
     def __init__(self, screen_w: int, screen_h: int) -> None:
