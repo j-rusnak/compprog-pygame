@@ -1,0 +1,88 @@
+"""People (colonists) for Hex Colony.
+
+People are the core unit — they gather resources, build, and carry goods.
+Each person has a current hex position, a task assignment, and simple
+interpolated movement between hexes.
+"""
+
+from __future__ import annotations
+
+import math
+import random
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from typing import TYPE_CHECKING
+
+from compprog_pygame.games.hex_colony.hex_grid import HexCoord, hex_to_pixel
+
+if TYPE_CHECKING:
+    from compprog_pygame.games.hex_colony.world import World
+
+
+class Task(Enum):
+    IDLE = auto()
+    GATHER = auto()       # walking to or harvesting at a resource tile
+    BUILD = auto()        # constructing a building
+    HAUL = auto()         # carrying resources back to camp
+
+
+@dataclass(slots=True)
+class Person:
+    """A single colonist."""
+    id: int
+    hex_pos: HexCoord           # current logical hex
+    px: float = 0.0             # pixel x (interpolated)
+    py: float = 0.0             # pixel y (interpolated)
+    task: Task = Task.IDLE
+    target_hex: HexCoord | None = None
+    path: list[HexCoord] = field(default_factory=list)
+    work_timer: float = 0.0     # time spent on current work action
+    carry_resource: object | None = None  # (Resource, amount) tuple when hauling
+
+    def snap_to_hex(self, size: int) -> None:
+        """Set pixel position to centre of current hex."""
+        self.px, self.py = hex_to_pixel(self.hex_pos, size)
+
+
+class PopulationManager:
+    """Manages all people in the colony."""
+
+    def __init__(self) -> None:
+        self.people: list[Person] = []
+        self._next_id = 0
+
+    def spawn(self, coord: HexCoord, hex_size: int) -> Person:
+        p = Person(id=self._next_id, hex_pos=coord)
+        p.snap_to_hex(hex_size)
+        # Slight random offset so people don't stack perfectly
+        p.px += random.uniform(-4, 4)
+        p.py += random.uniform(-4, 4)
+        self._next_id += 1
+        self.people.append(p)
+        return p
+
+    @property
+    def count(self) -> int:
+        return len(self.people)
+
+    def idle_people(self) -> list[Person]:
+        return [p for p in self.people if p.task == Task.IDLE]
+
+    def update(self, dt: float, world: World, hex_size: int) -> None:
+        """Advance all people by *dt* seconds."""
+        speed = world.settings.person_speed  # px/s
+        for person in self.people:
+            if person.path:
+                # Move toward next hex in path
+                target = person.path[0]
+                tx, ty = hex_to_pixel(target, hex_size)
+                dx, dy = tx - person.px, ty - person.py
+                dist = math.hypot(dx, dy)
+                step = speed * dt
+                if dist <= step:
+                    person.px, person.py = tx, ty
+                    person.hex_pos = target
+                    person.path.pop(0)
+                else:
+                    person.px += dx / dist * step
+                    person.py += dy / dist * step

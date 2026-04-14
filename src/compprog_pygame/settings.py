@@ -16,7 +16,7 @@ class GameSettings:
 
     # Physics
     gravity: float = 765.0  # pixels/s² downward
-    spawn_interval: float = 3.5  # seconds between new pieces
+    spawn_interval: float = 5.0  # seconds between new pieces
     physics_steps: int = 20  # sub-steps per frame for stability
     random_spawn_x: bool = True  # spawn across full width vs centre cluster
 
@@ -31,7 +31,7 @@ class GameSettings:
 def easy_settings() -> GameSettings:
     return GameSettings(
         gravity=765.0 * 0.8,
-        spawn_interval=3.5,
+        spawn_interval=5.0,
         line_lifetime=0.5,
         random_spawn_x=False,
     )
@@ -40,7 +40,7 @@ def easy_settings() -> GameSettings:
 def hard_settings() -> GameSettings:
     return GameSettings(
         gravity=765.0,
-        spawn_interval=3.5 / 1.5,
+        spawn_interval=5.0 / 1.5,
         line_lifetime=0.3,
         random_spawn_x=True,
     )
