@@ -182,7 +182,6 @@ class Renderer:
         self._draw_people(surface, world, camera)
         if self.selected_hex is not None:
             self._draw_hex_highlight(surface, self.selected_hex, camera, world.settings.hex_size)
-        self._draw_hud(surface, world)
 
     # ── Data preparation ─────────────────────────────────────────
 

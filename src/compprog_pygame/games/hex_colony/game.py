@@ -12,6 +12,9 @@ from compprog_pygame.games.hex_colony.camera import Camera
 from compprog_pygame.games.hex_colony.hex_grid import pixel_to_hex
 from compprog_pygame.games.hex_colony.renderer import Renderer
 from compprog_pygame.games.hex_colony.settings import HexColonySettings
+from compprog_pygame.games.hex_colony.ui import UIManager
+from compprog_pygame.games.hex_colony.ui_bottom_bar import BottomBar
+from compprog_pygame.games.hex_colony.ui_resource_bar import ResourceBar
 from compprog_pygame.games.hex_colony.world import World
 
 # Build-mode palette order
@@ -35,11 +38,24 @@ class Game:
         self.build_mode: BuildingType | None = None
         self._hint_font = pygame.font.Font(None, 26)
 
+        # UI
+        self.ui = UIManager()
+        self._resource_bar = ResourceBar()
+        self._bottom_bar = BottomBar()
+        self.ui.add_panel(self._resource_bar)
+        self.ui.add_panel(self._bottom_bar)
+
+        # Wire building tab -> build mode
+        buildings_tab = self._bottom_bar.buildings_tab
+        if buildings_tab:
+            buildings_tab.set_on_select(self._on_building_selected)
+
     # ── Public entry point ───────────────────────────────────────
 
     def run(self, screen: pygame.Surface, clock: pygame.time.Clock) -> None:
         w, h = screen.get_size()
         self.camera = Camera(w, h)
+        self.ui.layout(w, h)
 
         while self.running:
             dt = clock.tick(self.settings.fps) / 1000.0
@@ -50,10 +66,7 @@ class Game:
 
             self.world.update(dt)
             self.renderer.draw(screen, self.world, self.camera, dt=dt)
-
-            # Build-mode indicator
-            if self.build_mode is not None:
-                self._draw_build_mode_hint(screen)
+            self.ui.draw(screen, self.world)
 
             pygame.display.flip()
 
@@ -64,11 +77,19 @@ class Game:
 
         if event.type == pygame.QUIT:
             self.running = False
+            return
 
-        elif event.type == pygame.KEYDOWN:
+        # Let UI consume events first
+        if self.ui.handle_event(event):
+            return
+
+        if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
                 if self.build_mode is not None:
                     self.build_mode = None
+                    btab = self._bottom_bar.buildings_tab
+                    if btab:
+                        btab.selected_building = None
                 else:
                     self.running = False
             elif event.key == pygame.K_b:
@@ -77,7 +98,9 @@ class Game:
 
         elif event.type == pygame.VIDEORESIZE:
             screen = pygame.display.get_surface()
-            self.camera.resize(screen.get_width(), screen.get_height())
+            w, h = screen.get_width(), screen.get_height()
+            self.camera.resize(w, h)
+            self.ui.layout(w, h)
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1:  # left click
@@ -140,6 +163,14 @@ class Game:
         building = self.world.buildings.place(self.build_mode, coord)
         tile.building = building
         self.build_mode = None
+        # Clear selection in buildings tab
+        btab = self._bottom_bar.buildings_tab
+        if btab:
+            btab.selected_building = None
+
+    def _on_building_selected(self, btype: BuildingType | None) -> None:
+        """Callback from the Buildings tab when a building card is clicked."""
+        self.build_mode = btype
 
     def _cycle_build_mode(self) -> None:
         if self.build_mode is None:
@@ -148,8 +179,7 @@ class Game:
             idx = BUILDABLE.index(self.build_mode)
             next_idx = (idx + 1) % len(BUILDABLE)
             self.build_mode = BUILDABLE[next_idx]
-
-    def _draw_build_mode_hint(self, surface: pygame.Surface) -> None:
-        text = f"Build: {self.build_mode.name}  [B] cycle  [ESC] cancel"
-        surf = self._hint_font.render(text, True, (255, 255, 100))
-        surface.blit(surf, (surface.get_width() // 2 - surf.get_width() // 2, 10))
+        # Sync to buildings tab
+        btab = self._bottom_bar.buildings_tab
+        if btab:
+            btab.selected_building = self.build_mode
