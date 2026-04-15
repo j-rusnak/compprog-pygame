@@ -174,6 +174,26 @@ def build_overlays(
 
 # ── Forest ───────────────────────────────────────────────────────
 
+def _make_canopy_tree(
+    wx: float, wy: float, s: int, is_dense: bool, rng: _random.Random,
+) -> tuple[float, OverlayItem]:
+    ox = rng.uniform(-s * 0.3, s * 0.3)
+    oy = rng.uniform(-s * 0.3, s * 0.3)
+    cr = s * rng.uniform(0.7, 1.2) * (1.2 if is_dense else 1.0)
+    return (wy + oy, OverlayTree(
+        wx=wx + ox, wy=wy + oy,
+        trunk_h=s * rng.uniform(0.4, 0.7),
+        crown_rx=cr, crown_ry=cr * rng.uniform(0.7, 0.9),
+        crown_color=rng.choice(
+            [(18, 68, 22), (22, 78, 28), (14, 58, 18)]
+            if is_dense else [(32, 95, 34), (42, 115, 42), (28, 85, 28)]
+        ),
+        trunk_color=rng.choice([(80, 55, 30), (70, 48, 25), (90, 62, 35)]),
+        highlight_color=rng.choice([(38, 98, 38), (28, 85, 28)]),
+        style="canopy",
+    ))
+
+
 def _gen_forest_tile(
     wx: float, wy: float, s: int, depth: int, terrain: Terrain, rng: _random.Random,
 ) -> list[tuple[float, OverlayItem]]:
@@ -181,24 +201,13 @@ def _gen_forest_tile(
     items: list[tuple[float, OverlayItem]] = []
 
     if depth >= 4:
-        for _ in range(rng.randint(1, 2)):
-            ox = rng.uniform(-s * 0.3, s * 0.3)
-            oy = rng.uniform(-s * 0.3, s * 0.3)
-            cr = s * rng.uniform(0.7, 1.2) * (1.2 if is_dense else 1.0)
-            items.append((wy + oy, OverlayTree(
-                wx=wx + ox, wy=wy + oy,
-                trunk_h=s * rng.uniform(0.4, 0.7),
-                crown_rx=cr, crown_ry=cr * rng.uniform(0.7, 0.9),
-                crown_color=rng.choice(
-                    [(18, 68, 22), (22, 78, 28), (14, 58, 18)]
-                    if is_dense else [(32, 95, 34), (42, 115, 42), (28, 85, 28)]
-                ),
-                trunk_color=rng.choice([(80, 55, 30), (70, 48, 25), (90, 62, 35)]),
-                highlight_color=rng.choice([(38, 98, 38), (28, 85, 28)]),
-                style="canopy",
-            )))
+        # Deep interior: one large canopy tree (skip ~40% of dense-forest tiles)
+        if is_dense and rng.random() < 0.4:
+            pass  # skip for density reduction
+        else:
+            items.append(_make_canopy_tree(wx, wy, s, is_dense, rng))
     elif depth >= 2:
-        n = rng.randint(2, 3) if is_dense else rng.randint(1, 2)
+        n = rng.randint(1, 2) if is_dense else rng.randint(1, 1)
         for _ in range(n):
             ox = rng.uniform(-s * 0.4, s * 0.4)
             oy = rng.uniform(-s * 0.35, s * 0.35)
@@ -217,7 +226,7 @@ def _gen_forest_tile(
             )))
     else:
         # Edge tiles: sparse small trees + grass tufts for natural blending
-        for _ in range(rng.randint(1, 2)):
+        if rng.random() < 0.6:  # only ~60% of edge tiles get a tree
             ox = rng.uniform(-s * 0.42, s * 0.42)
             oy = rng.uniform(-s * 0.38, s * 0.38)
             cr = s * rng.uniform(0.12, 0.24) * (1.1 if is_dense else 1.0)

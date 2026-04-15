@@ -80,6 +80,7 @@ _TERRAIN_CAT: dict[Terrain, int] = {
 
 BUILDING_COLORS: dict[BuildingType, tuple[int, int, int]] = {
     BuildingType.CAMP: (200, 160, 60),
+    BuildingType.HOUSE: (170, 140, 90),
     BuildingType.WOODCUTTER: (160, 100, 50),
     BuildingType.QUARRY: (170, 170, 160),
     BuildingType.GATHERER: (100, 180, 80),
@@ -538,7 +539,7 @@ class Renderer:
             if sx < -margin or sx > sw + margin or sy < -margin or sy > sh + margin:
                 continue
 
-            r = int(size * 0.5 * zoom)
+            r = int(size * 0.75 * zoom)
             color = BUILDING_COLORS.get(building.type, (200, 200, 200))
             if r < 3:
                 pygame.draw.circle(surface, color, (int(sx), int(sy)), max(2, r))
@@ -546,6 +547,8 @@ class Renderer:
 
             if building.type == BuildingType.CAMP:
                 _draw_camp(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.HOUSE:
+                _draw_house(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.WOODCUTTER:
                 _draw_woodcutter(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.QUARRY:
@@ -566,6 +569,10 @@ class Renderer:
         half_sw, half_sh = sw * 0.5, sh * 0.5
 
         for person in world.population.people:
+            # Hide people stationed inside a building (idle with a home)
+            if person.task == Task.IDLE and person.home is not None:
+                continue
+
             sx = (person.px - cam_x) * zoom + half_sw
             sy = (person.py - cam_y) * zoom + half_sh
             if sx < -20 or sx > sw + 20 or sy < -20 or sy > sh + 20:
@@ -851,6 +858,51 @@ def _draw_camp(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) 
     pygame.draw.line(surface, (120, 80, 40), (fx, fy), (fx, fy - pole_h), iz)
     flag_pts = [(fx, fy - pole_h), (fx + pole_h, fy - max(1, int(2 * z))), (fx, fy - iz)]
     pygame.draw.polygon(surface, (200, 50, 50), flag_pts)
+
+
+def _draw_house(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Teepee / hut — conical tent with hide covering and smoke hole."""
+    iz = max(1, int(z))
+    hide_col = (155, 130, 85)
+    hide_dark = _darken(hide_col, 0.75)
+
+    # Main cone (wider than camp tent)
+    apex_y = sy - r * 0.95
+    base_y = sy + r * 0.55
+    lx = sx - r * 0.7
+    rx = sx + r * 0.7
+
+    # Right half (shaded)
+    right_pts = [(sx, apex_y), (sx, base_y), (rx, base_y)]
+    pygame.draw.polygon(surface, hide_dark, right_pts)
+    # Left half (lit)
+    left_pts = [(sx, apex_y), (lx, base_y), (sx, base_y)]
+    pygame.draw.polygon(surface, hide_col, left_pts)
+    # Outline
+    full_pts = [(sx, apex_y), (lx, base_y), (rx, base_y)]
+    pygame.draw.polygon(surface, _darken(hide_col, 0.5), full_pts, iz)
+
+    # Support poles poking above
+    pole_col = (110, 80, 45)
+    for dx in (-0.12, 0.0, 0.12):
+        px = int(sx + r * dx)
+        pygame.draw.line(surface, pole_col,
+                         (px, int(apex_y)), (px, int(apex_y - r * 0.2)), iz)
+
+    # Decorative band around middle
+    band_y = int(sy - r * 0.2)
+    pygame.draw.line(surface, (180, 80, 50),
+                     (int(lx + r * 0.15), band_y), (int(rx - r * 0.15), band_y), max(1, iz))
+
+    # Door opening
+    door_w = max(2, int(r * 0.25))
+    door_h = max(3, int(r * 0.35))
+    door_pts = [
+        (sx, base_y - door_h),
+        (sx - door_w, base_y),
+        (sx + door_w, base_y),
+    ]
+    pygame.draw.polygon(surface, (50, 35, 18), door_pts)
 
 
 def _draw_woodcutter(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:

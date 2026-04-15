@@ -14,6 +14,7 @@ from compprog_pygame.games.hex_colony.resources import Resource
 
 class BuildingType(Enum):
     CAMP = auto()           # starting base — stores resources, shelters people
+    HOUSE = auto()          # houses up to 5 people
     WOODCUTTER = auto()     # harvests wood from adjacent forest hexes
     QUARRY = auto()         # harvests stone from adjacent stone deposits
     GATHERER = auto()       # harvests fiber and food from adjacent patches
@@ -29,6 +30,7 @@ class BuildingCost:
 # What each building costs to place
 BUILDING_COSTS: dict[BuildingType, BuildingCost] = {
     BuildingType.CAMP: BuildingCost({}),  # free (starting building)
+    BuildingType.HOUSE: BuildingCost({Resource.WOOD: 12, Resource.FIBER: 4}),
     BuildingType.WOODCUTTER: BuildingCost({Resource.WOOD: 10, Resource.STONE: 5}),
     BuildingType.QUARRY: BuildingCost({Resource.WOOD: 15, Resource.FIBER: 5}),
     BuildingType.GATHERER: BuildingCost({Resource.WOOD: 8, Resource.STONE: 3}),
@@ -38,9 +40,20 @@ BUILDING_COSTS: dict[BuildingType, BuildingCost] = {
 # Max workers each building supports
 BUILDING_MAX_WORKERS: dict[BuildingType, int] = {
     BuildingType.CAMP: 0,
+    BuildingType.HOUSE: 0,
     BuildingType.WOODCUTTER: 2,
     BuildingType.QUARRY: 2,
     BuildingType.GATHERER: 3,
+    BuildingType.STORAGE: 0,
+}
+
+# Housing capacity per building type (0 = not a dwelling)
+BUILDING_HOUSING: dict[BuildingType, int] = {
+    BuildingType.CAMP: 10,
+    BuildingType.HOUSE: 5,
+    BuildingType.WOODCUTTER: 0,
+    BuildingType.QUARRY: 0,
+    BuildingType.GATHERER: 0,
     BuildingType.STORAGE: 0,
 }
 
@@ -51,12 +64,17 @@ class Building:
     type: BuildingType
     coord: HexCoord
     workers: int = 0
+    residents: int = 0  # people living here (for dwellings)
     built: bool = True  # False while under construction
     build_progress: float = 0.0  # 0..1
 
     @property
     def max_workers(self) -> int:
         return BUILDING_MAX_WORKERS.get(self.type, 0)
+
+    @property
+    def housing_capacity(self) -> int:
+        return BUILDING_HOUSING.get(self.type, 0)
 
 
 class BuildingManager:

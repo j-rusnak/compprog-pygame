@@ -14,11 +14,13 @@ from compprog_pygame.games.hex_colony.renderer import Renderer
 from compprog_pygame.games.hex_colony.settings import HexColonySettings
 from compprog_pygame.games.hex_colony.ui import UIManager
 from compprog_pygame.games.hex_colony.ui_bottom_bar import BottomBar
+from compprog_pygame.games.hex_colony.ui_building_info import BuildingInfoPanel
 from compprog_pygame.games.hex_colony.ui_resource_bar import ResourceBar
 from compprog_pygame.games.hex_colony.world import World
 
 # Build-mode palette order
 BUILDABLE = [
+    BuildingType.HOUSE,
     BuildingType.WOODCUTTER,
     BuildingType.QUARRY,
     BuildingType.GATHERER,
@@ -42,8 +44,10 @@ class Game:
         self.ui = UIManager()
         self._resource_bar = ResourceBar()
         self._bottom_bar = BottomBar()
+        self._building_info = BuildingInfoPanel()
         self.ui.add_panel(self._resource_bar)
         self.ui.add_panel(self._bottom_bar)
+        self.ui.add_panel(self._building_info)
 
         # Wire building tab -> build mode
         buildings_tab = self._bottom_bar.buildings_tab
@@ -141,6 +145,9 @@ class Game:
         else:
             # Select tile
             self.renderer.selected_hex = coord
+            # Show building info if there's a building
+            building = self.world.buildings.at(coord)
+            self._building_info.building = building
 
     def _try_place_building(self, coord) -> None:
         tile = self.world.grid[coord]

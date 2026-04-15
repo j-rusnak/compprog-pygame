@@ -51,8 +51,13 @@ class World:
 
     def _spawn_people(self) -> None:
         origin = HexCoord(0, 0)
+        camp = self.buildings.at(origin)
         for _ in range(self.settings.start_population):
-            self.population.spawn(origin, self.settings.hex_size)
+            p = self.population.spawn(origin, self.settings.hex_size)
+            # Assign to camp as resident
+            if camp is not None and camp.residents < camp.housing_capacity:
+                camp.residents += 1
+                p.home = camp
 
     # ── Per-frame update ─────────────────────────────────────────
 
@@ -62,7 +67,3 @@ class World:
 
         # Move people
         self.population.update(dt, self, self.settings.hex_size)
-
-        # Food consumption
-        food_needed = self.settings.food_consumption * self.population.count * dt
-        self.inventory[Resource.FOOD] = self.inventory[Resource.FOOD] - food_needed

@@ -38,6 +38,7 @@ class Person:
     path: list[HexCoord] = field(default_factory=list)
     work_timer: float = 0.0     # time spent on current work action
     carry_resource: object | None = None  # (Resource, amount) tuple when hauling
+    home: object | None = None  # Building reference (dwelling)
 
     def snap_to_hex(self, size: int) -> None:
         """Set pixel position to centre of current hex."""
