@@ -39,6 +39,9 @@ class Game:
         self.renderer = Renderer()
         self.running = True
         self.build_mode: BuildingType | None = None
+        self.delete_mode = False
+        self.sandbox = False
+        self._build_dragging = False
         self._hint_font = pygame.font.Font(None, 26)
 
         # UI
@@ -54,6 +57,10 @@ class Game:
         buildings_tab = self._bottom_bar.buildings_tab
         if buildings_tab:
             buildings_tab.set_on_select(self._on_building_selected)
+            buildings_tab.set_on_delete_toggle(self._on_delete_toggled)
+
+        # Wire sandbox population buttons
+        self._resource_bar.set_on_pop_change(self._on_pop_change)
 
     # ── Public entry point ───────────────────────────────────────
 
@@ -70,6 +77,7 @@ class Game:
                 self._handle_event(event)
 
             self.world.update(dt)
+            self._resource_bar.delete_mode = self.delete_mode
             self.renderer.draw(screen, self.world, self.camera, dt=dt)
             self.ui.draw(screen, self.world)
 
@@ -95,11 +103,32 @@ class Game:
                     btab = self._bottom_bar.buildings_tab
                     if btab:
                         btab.selected_building = None
+                elif self.delete_mode:
+                    self.delete_mode = False
+                    btab = self._bottom_bar.buildings_tab
+                    if btab:
+                        btab.delete_active = False
                 else:
                     self.running = False
+            elif event.key == pygame.K_TAB:
+                self.sandbox = not self.sandbox
+                self._resource_bar.sandbox = self.sandbox
             elif event.key == pygame.K_b:
                 # Cycle build mode
                 self._cycle_build_mode()
+            elif event.key == pygame.K_x:
+                # Toggle delete mode
+                self.delete_mode = not self.delete_mode
+                if self.delete_mode:
+                    self.build_mode = None
+                    btab = self._bottom_bar.buildings_tab
+                    if btab:
+                        btab.selected_building = None
+                        btab.delete_active = True
+                else:
+                    btab = self._bottom_bar.buildings_tab
+                    if btab:
+                        btab.delete_active = False
 
         elif event.type == pygame.VIDEORESIZE:
             screen = pygame.display.get_surface()
@@ -110,21 +139,42 @@ class Game:
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1:  # left click
                 self._on_left_click(event.pos)
+                if self.build_mode is not None:
+                    self._build_dragging = True
             elif event.button == 2:  # middle click — pan start
                 self.camera.start_drag(event.pos)
-            elif event.button == 3:  # right click — pan start
-                self.camera.start_drag(event.pos)
+            elif event.button == 3:  # right click
+                if self.build_mode is not None:
+                    self.build_mode = None
+                    self._build_dragging = False
+                    btab = self._bottom_bar.buildings_tab
+                    if btab:
+                        btab.selected_building = None
+                elif self.delete_mode:
+                    self.delete_mode = False
+                    btab = self._bottom_bar.buildings_tab
+                    if btab:
+                        btab.delete_active = False
+                else:
+                    self.camera.start_drag(event.pos)
             elif event.button == 4:  # scroll up
                 self.camera.zoom_at(event.pos, 1.1)
             elif event.button == 5:  # scroll down
                 self.camera.zoom_at(event.pos, 1 / 1.1)
 
         elif event.type == pygame.MOUSEBUTTONUP:
+            if event.button == 1:
+                self._build_dragging = False
             if event.button in (2, 3):
                 self.camera.stop_drag()
 
         elif event.type == pygame.MOUSEMOTION:
             self.camera.drag(event.pos)
+            if self._build_dragging and self.build_mode is not None:
+                wx, wy = self.camera.screen_to_world(*event.pos)
+                coord = pixel_to_hex(wx, wy, self.settings.hex_size)
+                if coord in self.world.grid:
+                    self._try_place_building(coord)
 
         elif event.type == pygame.MOUSEWHEEL:
             pos = pygame.mouse.get_pos()
@@ -141,7 +191,9 @@ class Game:
         if coord not in self.world.grid:
             return
 
-        if self.build_mode is not None:
+        if self.delete_mode:
+            self._try_delete_building(coord)
+        elif self.build_mode is not None:
             self._try_place_building(coord)
         else:
             # Select tile
@@ -156,31 +208,71 @@ class Game:
         from compprog_pygame.games.hex_colony.hex_grid import Terrain
         if tile.terrain == Terrain.WATER:
             return
-        # Can't build where there's already a building
-        if tile.building is not None:
-            return
-        # Check cost
-        cost = BUILDING_COSTS[self.build_mode]
-        for res, amount in cost.costs.items():
-            if self.world.inventory[res] < amount:
-                return  # can't afford
-        # Spend resources
-        for res, amount in cost.costs.items():
-            self.world.inventory.spend(res, amount)
+        # Check existing building
+        existing = tile.building
+        if existing is not None:
+            # Can only build on top of a path (not camp, not other buildings)
+            if existing.type != BuildingType.PATH:
+                return
+            # Can't place another path on a path
+            if self.build_mode == BuildingType.PATH:
+                return
+        # Check cost (skip in sandbox mode)
+        if not self.sandbox:
+            cost = BUILDING_COSTS[self.build_mode]
+            for res, amount in cost.costs.items():
+                if self.world.inventory[res] < amount:
+                    return  # can't afford
+            for res, amount in cost.costs.items():
+                self.world.inventory.spend(res, amount)
+        # If building on top of a path, refund path cost and remove it
+        if existing is not None and existing.type == BuildingType.PATH:
+            if not self.sandbox:
+                path_cost = BUILDING_COSTS[BuildingType.PATH]
+                for res, amount in path_cost.costs.items():
+                    self.world.inventory[res] += amount
+            self.world.buildings.remove(existing)
+            tile.building = None
         # Place building
         building = self.world.buildings.place(self.build_mode, coord)
         tile.building = building
-        self.build_mode = None
-        # Clear selection in buildings tab
-        btab = self._bottom_bar.buildings_tab
-        if btab:
-            btab.selected_building = None
+        # Clear overlays on the tile so building is visible
+        self.renderer.remove_overlays_at(coord, self.settings.hex_size)
+
+    def _try_delete_building(self, coord) -> None:
+        """Delete a building at the given coordinate, refunding half its cost."""
+        tile = self.world.grid[coord]
+        building = tile.building
+        if building is None:
+            return
+        # Can't delete the camp
+        if building.type == BuildingType.CAMP:
+            return
+        # Refund half the cost (rounded down)
+        if not self.sandbox:
+            cost = BUILDING_COSTS[building.type]
+            for res, amount in cost.costs.items():
+                self.world.inventory[res] += amount // 2
+        # Remove building
+        self.world.buildings.remove(building)
+        tile.building = None
+        # Invalidate tile layer cache so cleared tile redraws
+        self.renderer._tile_layer = None
 
     def _on_building_selected(self, btype: BuildingType | None) -> None:
         """Callback from the Buildings tab when a building card is clicked."""
         self.build_mode = btype
+        if btype is not None:
+            self.delete_mode = False
+
+    def _on_delete_toggled(self, active: bool) -> None:
+        """Callback from the Buildings tab when delete card is clicked."""
+        self.delete_mode = active
+        if active:
+            self.build_mode = None
 
     def _cycle_build_mode(self) -> None:
+        self.delete_mode = False
         if self.build_mode is None:
             self.build_mode = BUILDABLE[0]
         else:
@@ -191,3 +283,17 @@ class Game:
         btab = self._bottom_bar.buildings_tab
         if btab:
             btab.selected_building = self.build_mode
+
+    def _on_pop_change(self, delta: int) -> None:
+        """Sandbox callback: add or remove population."""
+        from compprog_pygame.games.hex_colony.hex_grid import HexCoord
+        if delta > 0:
+            # Spawn at camp — housing assignment handled by _update_housing
+            self.world.population.spawn(HexCoord(0, 0), self.settings.hex_size)
+        elif delta < 0 and self.world.population.people:
+            # Remove last person
+            pop = self.world.population
+            target = pop.people[-1]
+            if target.home is not None:
+                target.home.residents = max(0, target.home.residents - 1)
+            pop.people.remove(target)

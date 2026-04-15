@@ -98,5 +98,9 @@ class BuildingManager:
                 return b
         return None
 
+    def remove(self, building: Building) -> None:
+        """Remove a building from the manager."""
+        self.buildings.remove(building)
+
     def by_type(self, btype: BuildingType) -> list[Building]:
         return [b for b in self.buildings if b.type == btype]

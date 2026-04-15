@@ -13,7 +13,6 @@ Performance notes
 from __future__ import annotations
 
 import math
-from functools import lru_cache
 
 import pygame
 
@@ -24,6 +23,7 @@ from compprog_pygame.games.hex_colony.hex_grid import (
     Terrain,
     hex_corners,
     hex_to_pixel,
+    pixel_to_hex,
 )
 from compprog_pygame.games.hex_colony.overlay import (
     OverlayBush,
@@ -38,87 +38,54 @@ from compprog_pygame.games.hex_colony.people import Task
 from compprog_pygame.games.hex_colony.resources import Resource
 from compprog_pygame.games.hex_colony.world import World
 
-# ── Colour palette ───────────────────────────────────────────────
-
-BACKGROUND = (9, 12, 25)
-
-TERRAIN_BASE_COLOR: dict[Terrain, tuple[int, int, int]] = {
-    Terrain.GRASS:         (82, 148, 64),
-    Terrain.FOREST:        (38, 105, 38),
-    Terrain.DENSE_FOREST:  (20, 72, 24),
-    Terrain.STONE_DEPOSIT: (142, 142, 132),
-    Terrain.WATER:         (38, 85, 175),
-    Terrain.FIBER_PATCH:   (115, 155, 58),
-    Terrain.MOUNTAIN:      (110, 100, 90),
-}
-
-# Blending weight for neighbor influence (0 = no blend, 1 = full average)
-_BLEND_STRENGTH = 0.45
-
-# Bank colour tinted toward water-adjacent tiles
-_BANK_COLOR = (148, 138, 105)  # sandy/muddy
-
-# Tile-layer cache: pre-render tiles + static overlays to an off-screen
-# surface sized at ``_TILE_LAYER_PAD`` \u00d7 the screen dimensions.
-_TILE_LAYER_PAD = 2.0
-_SQRT3 = 1.7320508075688772
-
-# Intra-tile gradient: how much edge sub-triangles blend toward the neighbor
-_EDGE_BLEND = 0.38
-
-# Terrain categories — hard borders between these three groups.
-# 0 = grass-type, 1 = water, 2 = rocky
-_TERRAIN_CAT: dict[Terrain, int] = {
-    Terrain.GRASS: 0,
-    Terrain.FOREST: 0,
-    Terrain.DENSE_FOREST: 0,
-    Terrain.FIBER_PATCH: 0,
-    Terrain.WATER: 1,
-    Terrain.MOUNTAIN: 2,
-    Terrain.STONE_DEPOSIT: 2,
-}
-
-BUILDING_COLORS: dict[BuildingType, tuple[int, int, int]] = {
-    BuildingType.CAMP: (200, 160, 60),
-    BuildingType.HOUSE: (170, 140, 90),
-    BuildingType.PATH: (185, 165, 120),
-    BuildingType.WOODCUTTER: (160, 100, 50),
-    BuildingType.QUARRY: (170, 170, 160),
-    BuildingType.GATHERER: (100, 180, 80),
-    BuildingType.STORAGE: (140, 120, 100),
-}
-
-_PATH_BASE = (185, 165, 120)
-_PATH_DARK = (155, 135, 95)
-_PATH_LIGHT = (205, 190, 150)
-
-PERSON_COLOR = (230, 210, 170)
-PERSON_GATHER_COLOR = (180, 220, 120)
-PERSON_SKIN = (220, 185, 140)
-PERSON_HAIR = (80, 55, 30)
-
-HUD_BG = (16, 24, 45, 220)
-HUD_TEXT = (242, 244, 255)
-MUTED_TEXT = (140, 150, 175)
-HUD_ACCENT = (200, 160, 60)
-HUD_BORDER = (60, 70, 100)
-
-RESOURCE_ICONS: dict[Resource, str] = {
-    Resource.WOOD: "\u25b2",
-    Resource.FIBER: "\u2022",
-    Resource.STONE: "\u25a0",
-    Resource.FOOD: "\u2665",
-}
-
-RESOURCE_COLORS: dict[Resource, tuple[int, int, int]] = {
-    Resource.WOOD: (160, 100, 50),
-    Resource.FIBER: (120, 200, 80),
-    Resource.STONE: (170, 170, 160),
-    Resource.FOOD: (220, 100, 80),
-}
-
-
-# ── Renderer ─────────────────────────────────────────────────────
+from compprog_pygame.games.hex_colony.render_utils import (
+    BACKGROUND,
+    TERRAIN_BASE_COLOR,
+    _BLEND_STRENGTH,
+    _BANK_COLOR,
+    _TILE_LAYER_PAD,
+    _SQRT3,
+    _EDGE_BLEND,
+    _TERRAIN_CAT,
+    BUILDING_COLORS,
+    _PATH_BASE,
+    PERSON_COLOR,
+    PERSON_GATHER_COLOR,
+    PERSON_SKIN,
+    PERSON_HAIR,
+    HUD_BG,
+    HUD_TEXT,
+    MUTED_TEXT,
+    HUD_ACCENT,
+    HUD_BORDER,
+    RESOURCE_ICONS,
+    RESOURCE_COLORS,
+    _darken,
+    _lighten,
+    _tile_hash,
+)
+from compprog_pygame.games.hex_colony.render_overlays import (
+    draw_tree,
+    draw_rock,
+    draw_ripple,
+    draw_bush,
+    draw_grass,
+)
+from compprog_pygame.games.hex_colony.render_buildings import (
+    draw_overcrowded,
+    draw_camp,
+    draw_house,
+    draw_woodcutter,
+    draw_quarry,
+    draw_gatherer,
+    draw_storage,
+    draw_path,
+)
+from compprog_pygame.games.hex_colony.render_terrain import (
+    DIR_EDGE,
+    mountain_tile_color,
+    draw_contours,
+)
 
 class Renderer:
     """Draws the entire game scene."""
@@ -207,6 +174,22 @@ class Renderer:
             ]
         self._ensure_blended_colors(world)
 
+    def remove_overlays_at(self, coord: HexCoord, hex_size: int) -> None:
+        """Remove all overlay items that fall within the given hex tile."""
+        cx, cy = hex_to_pixel(coord, hex_size)
+        radius = hex_size * 0.85  # slightly smaller than full hex
+        r2 = radius * radius
+        self._static_overlays = [
+            item for item in self._static_overlays
+            if (item.wx - cx) ** 2 + (item.wy - cy) ** 2 > r2
+        ]
+        self._ripples = [
+            item for item in self._ripples
+            if (item.wx - cx) ** 2 + (item.wy - cy) ** 2 > r2
+        ]
+        # Invalidate tile layer cache so cleared tile is redrawn
+        self._tile_layer = None
+
     # ── Blended tile colours (two-pass smoothing) ────────────────
 
     def _ensure_blended_colors(self, world: World) -> None:
@@ -222,7 +205,7 @@ class Renderer:
             coord = tile.coord
             mtn_info = mtn.get(coord)
             if mtn_info is not None:
-                base = _mountain_tile_color(*mtn_info)
+                base = mountain_tile_color(*mtn_info)
             else:
                 base = TERRAIN_BASE_COLOR.get(tile.terrain, (80, 80, 80))
 
@@ -250,7 +233,7 @@ class Renderer:
                     continue
                 nb_mtn = mtn.get(nb_coord)
                 if nb_mtn is not None:
-                    nc = _mountain_tile_color(*nb_mtn)
+                    nc = mountain_tile_color(*nb_mtn)
                 else:
                     nc = TERRAIN_BASE_COLOR.get(nb_tile.terrain, (80, 80, 80))
                 nb_r += nc[0]; nb_g += nc[1]; nb_b += nc[2]
@@ -446,8 +429,8 @@ class Renderer:
                         cys = (corners[0][1] + corners[1][1] + corners[2][1]
                                + corners[3][1] + corners[4][1] + corners[5][1]) / 6.0
                         for d in range(6):
-                            i1 = _DIR_EDGE[d][0]
-                            i2 = _DIR_EDGE[d][1]
+                            i1 = DIR_EDGE[d][0]
+                            i2 = DIR_EDGE[d][1]
                             ax, ay = corners[i1]
                             bx, by = corners[i2]
                             xf = xcat[d]
@@ -477,7 +460,7 @@ class Renderer:
                 if lod_high or lod_mid:
                     mtn_info = mtn.get(coord)
                     if mtn_info is not None and mtn_info[0] > 0:
-                        _draw_contours(
+                        draw_contours(
                             cache, coord, mtn_info[0], corners,
                             base, mtn, zoom,
                         )
@@ -494,13 +477,13 @@ class Renderer:
                     continue
                 iz = max(1, int(zoom))
                 if isinstance(item, OverlayTree):
-                    _draw_tree(cache, item, sx, sy, zoom, iz)
+                    draw_tree(cache, item, sx, sy, zoom, iz)
                 elif isinstance(item, OverlayRock):
-                    _draw_rock(cache, item, sx, sy, zoom, iz)
+                    draw_rock(cache, item, sx, sy, zoom, iz)
                 elif isinstance(item, OverlayBush):
-                    _draw_bush(cache, item, sx, sy, zoom, iz)
+                    draw_bush(cache, item, sx, sy, zoom, iz)
                 elif isinstance(item, OverlayGrassTuft):
-                    _draw_grass(cache, item, sx, sy, zoom, iz)
+                    draw_grass(cache, item, sx, sy, zoom, iz)
 
     # ── Animated overlays (ripples) ──────────────────────────────
 
@@ -523,7 +506,7 @@ class Renderer:
             if sx < -margin or sx > sw + margin or sy < -margin or sy > sh + margin:
                 continue
             iz = max(1, int(zoom))
-            _draw_ripple(surface, item, sx, sy, zoom, iz, tick)
+            draw_ripple(surface, item, sx, sy, zoom, iz, tick)
 
     # ── Buildings ────────────────────────────────────────────────
 
@@ -538,6 +521,8 @@ class Renderer:
         margin = size * 2 * zoom
 
         # First pass: paths (ground-level, drawn beneath other buildings)
+        # Also track non-path buildings that need a path disc underneath
+        buildings_needing_path: set[HexCoord] = set()
         for building in world.buildings.buildings:
             if building.type != BuildingType.PATH:
                 continue
@@ -550,17 +535,45 @@ class Renderer:
             if r < 2:
                 pygame.draw.circle(surface, _PATH_BASE, (int(sx), int(sy)), max(1, r))
                 continue
-            # Compute screen positions of adjacent path neighbours
+            # Compute screen positions of adjacent path or building neighbours
             nb_positions: list[tuple[float, float]] = []
             for nb_coord in building.coord.neighbors():
+                nb_building = world.buildings.at(nb_coord)
+                if nb_building is not None:
+                    nwx, nwy = self._get_pixel(nb_coord, size)
+                    nsx = (nwx - cam_x) * zoom + half_sw
+                    nsy = (nwy - cam_y) * zoom + half_sh
+                    nb_positions.append((nsx, nsy))
+                    if nb_building.type != BuildingType.PATH:
+                        buildings_needing_path.add(nb_coord)
+            draw_path(surface, sx, sy, r, zoom, nb_positions,
+                      building.coord.q, building.coord.r)
+
+        # Draw path discs under non-path buildings adjacent to paths
+        for coord in buildings_needing_path:
+            bld = world.buildings.at(coord)
+            if bld is None:
+                continue
+            wx, wy = self._get_pixel(coord, size)
+            sx = (wx - cam_x) * zoom + half_sw
+            sy = (wy - cam_y) * zoom + half_sh
+            if sx < -margin or sx > sw + margin or sy < -margin or sy > sh + margin:
+                continue
+            r = int(size * 0.75 * zoom)
+            if r < 2:
+                pygame.draw.circle(surface, _PATH_BASE, (int(sx), int(sy)), max(1, r))
+                continue
+            # Gather path neighbours for the under-building path disc
+            nb_positions_b: list[tuple[float, float]] = []
+            for nb_coord in coord.neighbors():
                 nb_building = world.buildings.at(nb_coord)
                 if nb_building is not None and nb_building.type == BuildingType.PATH:
                     nwx, nwy = self._get_pixel(nb_coord, size)
                     nsx = (nwx - cam_x) * zoom + half_sw
                     nsy = (nwy - cam_y) * zoom + half_sh
-                    nb_positions.append((nsx, nsy))
-            _draw_path(surface, sx, sy, r, zoom, nb_positions,
-                       building.coord.q, building.coord.r)
+                    nb_positions_b.append((nsx, nsy))
+            draw_path(surface, sx, sy, r, zoom, nb_positions_b,
+                      coord.q, coord.r)
 
         # Second pass: non-path buildings
         for building in world.buildings.buildings:
@@ -579,17 +592,23 @@ class Renderer:
                 continue
 
             if building.type == BuildingType.CAMP:
-                _draw_camp(surface, sx, sy, r, zoom)
+                draw_camp(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.HOUSE:
-                _draw_house(surface, sx, sy, r, zoom)
+                draw_house(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.WOODCUTTER:
-                _draw_woodcutter(surface, sx, sy, r, zoom)
+                draw_woodcutter(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.QUARRY:
-                _draw_quarry(surface, sx, sy, r, zoom)
+                draw_quarry(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.GATHERER:
-                _draw_gatherer(surface, sx, sy, r, zoom)
+                draw_gatherer(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.STORAGE:
-                _draw_storage(surface, sx, sy, r, zoom)
+                draw_storage(surface, sx, sy, r, zoom)
+
+            # Overcrowding indicator: red ! above dwelling
+            if (building.housing_capacity > 0
+                    and building.residents > building.housing_capacity
+                    and r >= 3):
+                draw_overcrowded(surface, sx, sy, r, zoom)
 
     # ── People ───────────────────────────────────────────────────
 
@@ -748,487 +767,3 @@ class Renderer:
                 surface.blit(info_surf, (sw // 2 - info_surf.get_width() // 2, sh - bar_h + 6))
 
 
-# ── Free-function overlay renderers ─────────────────────────────
-# Pulled out of the class so they carry no `self` overhead and can be
-# referenced as plain function pointers for clarity.
-
-def _draw_tree(
-    surface: pygame.Surface, item: OverlayTree,
-    sx: float, sy: float, z: float, iz: int,
-) -> None:
-    if item.style == "canopy":
-        crx = max(3, int(item.crown_rx * z))
-        cry = max(2, int(item.crown_ry * z))
-        th = max(2, int(item.trunk_h * z))
-        tw = max(1, int(2 * z))
-        # Shadow
-        sh_rx, sh_ry = max(2, crx // 2), max(1, cry // 4)
-        pygame.draw.ellipse(
-            surface, (10, 30, 10),
-            (int(sx - sh_rx), int(sy + iz), sh_rx * 2, sh_ry * 2),
-        )
-        # Trunk
-        pygame.draw.line(surface, item.trunk_color,
-                         (int(sx), int(sy)), (int(sx), int(sy - th)), tw)
-        # Crown
-        cy_top = int(sy - th - cry)
-        pygame.draw.ellipse(
-            surface, item.crown_color,
-            (int(sx - crx), cy_top, crx * 2, cry * 2),
-        )
-        # Highlight
-        hl_rx = max(1, crx // 2)
-        hl_ry = max(1, int(cry * 0.6))
-        pygame.draw.ellipse(
-            surface, item.highlight_color,
-            (int(sx - crx * 0.6), int(cy_top + cry * 0.15), hl_rx * 2, hl_ry * 2),
-        )
-    elif item.style == "conifer":
-        crx = max(2, int(item.crown_rx * z))
-        cry = max(3, int(item.crown_ry * z * 1.3))
-        th = max(1, int(item.trunk_h * z))
-        pygame.draw.line(surface, item.trunk_color,
-                         (int(sx), int(sy)), (int(sx), int(sy - th)), max(1, int(z)))
-        top_y = int(sy - th - cry)
-        pts = [(int(sx), top_y), (int(sx - crx), int(sy - th)), (int(sx + crx), int(sy - th))]
-        pygame.draw.polygon(surface, item.crown_color, pts)
-        hl_pts = [
-            (int(sx), top_y),
-            (int(sx - crx * 0.4), int(sy - th - cry * 0.35)),
-            (int(sx), int(sy - th)),
-        ]
-        pygame.draw.polygon(surface, item.highlight_color, hl_pts)
-    else:
-        cr = max(2, int(item.crown_rx * z))
-        th = max(1, int(item.trunk_h * z))
-        pygame.draw.line(surface, item.trunk_color,
-                         (int(sx), int(sy)), (int(sx), int(sy - th)), max(1, int(z)))
-        head_y = int(sy - th - cr)
-        pygame.draw.circle(surface, item.crown_color, (int(sx), head_y), cr)
-        hl_r = max(1, cr // 2)
-        pygame.draw.circle(surface, item.highlight_color, (int(sx) - iz, head_y - iz), hl_r)
-
-
-def _draw_rock(
-    surface: pygame.Surface, item: OverlayRock,
-    sx: float, sy: float, z: float, iz: int,
-) -> None:
-    rw = max(2, int(item.w * z))
-    rh = max(2, int(item.h * z))
-    pts = [
-        (int(sx - rw), int(sy + rh // 2)),
-        (int(sx - rw // 2), int(sy - rh)),
-        (int(sx + rw // 2), int(sy - rh)),
-        (int(sx + rw), int(sy + rh // 2)),
-    ]
-    pygame.draw.polygon(surface, item.color, pts)
-    pygame.draw.line(surface, item.highlight_color, pts[1], pts[2], iz)
-    pygame.draw.line(surface, _darken(item.color, 0.6), pts[3], pts[0], iz)
-
-
-def _draw_ripple(
-    surface: pygame.Surface, item: OverlayRipple,
-    sx: float, sy: float, z: float, iz: int, tick: float,
-) -> None:
-    phase = tick * 1.5
-    offset = math.sin(phase + item.phase_offset) * 2 * z
-    px = int(sx + offset)
-    py = int(sy)
-    w = max(2, int(item.w * z))
-    # Vary colour slightly per ripple for depth
-    bright = 0.85 + 0.15 * math.sin(item.phase_offset)
-    col = (int(55 * bright), int(115 * bright), int(215 * bright))
-    pygame.draw.line(surface, col, (px - w, py), (px + w, py), iz)
-    # Faint highlight above
-    if z > 0.5:
-        hl = (int(80 * bright), int(145 * bright), int(230 * bright))
-        pygame.draw.line(surface, hl, (px - w + iz, py - iz), (px + w - iz, py - iz), max(1, iz - 1))
-
-
-def _draw_bush(
-    surface: pygame.Surface, item: OverlayBush,
-    sx: float, sy: float, z: float, iz: int,
-) -> None:
-    br = max(2, int(item.radius * z))
-    pygame.draw.circle(surface, item.color, (int(sx), int(sy)), br)
-    if item.berry_color is not None:
-        pygame.draw.circle(surface, item.berry_color, (int(sx) + iz, int(sy) - iz), iz)
-
-
-def _draw_grass(
-    surface: pygame.Surface, item: OverlayGrassTuft,
-    sx: float, sy: float, z: float, iz: int,
-) -> None:
-    h = max(1, int(item.h * z))
-    px, py = int(sx), int(sy)
-    # Two blades at slight angles for a more natural look
-    pygame.draw.line(surface, item.color, (px, py), (px + iz, py - h), iz)
-    if h > 1:
-        darker = _darken(item.color, 0.85)
-        pygame.draw.line(surface, darker, (px, py), (px - iz, py - max(1, h - 1)), iz)
-
-
-# ── Building renderers ──────────────────────────────────────────
-
-def _draw_camp(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
-    iz = max(1, int(z))
-    tent_col = (180, 150, 80)
-    pts = [(sx, sy - r * 0.9), (sx - r * 0.85, sy + r * 0.5), (sx + r * 0.85, sy + r * 0.5)]
-    pygame.draw.polygon(surface, tent_col, pts)
-    left_pts = [pts[0], pts[1], (sx, sy + r * 0.5)]
-    pygame.draw.polygon(surface, _lighten(tent_col, 1.2), left_pts)
-    pygame.draw.polygon(surface, _darken(tent_col, 0.6), pts, iz)
-    door_w = max(2, int(r * 0.3))
-    door_h = max(3, int(r * 0.4))
-    pygame.draw.rect(surface, (60, 40, 20),
-                     (int(sx - door_w // 2), int(sy + r * 0.5 - door_h), door_w, door_h))
-    fire_x, fire_y = int(sx + r * 0.6), int(sy + r * 0.3)
-    fr = max(1, int(2 * z))
-    pygame.draw.circle(surface, (220, 120, 20), (fire_x, fire_y), fr + iz)
-    pygame.draw.circle(surface, (255, 200, 50), (fire_x, fire_y - iz), fr)
-    fx, fy = int(sx), int(sy - r * 0.9)
-    pole_h = max(2, int(4 * z))
-    pygame.draw.line(surface, (120, 80, 40), (fx, fy), (fx, fy - pole_h), iz)
-    flag_pts = [(fx, fy - pole_h), (fx + pole_h, fy - max(1, int(2 * z))), (fx, fy - iz)]
-    pygame.draw.polygon(surface, (200, 50, 50), flag_pts)
-
-
-def _draw_house(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
-    """Teepee / hut — conical tent with hide covering and smoke hole."""
-    iz = max(1, int(z))
-    hide_col = (155, 130, 85)
-    hide_dark = _darken(hide_col, 0.75)
-
-    # Main cone (wider than camp tent)
-    apex_y = sy - r * 0.95
-    base_y = sy + r * 0.55
-    lx = sx - r * 0.7
-    rx = sx + r * 0.7
-
-    # Right half (shaded)
-    right_pts = [(sx, apex_y), (sx, base_y), (rx, base_y)]
-    pygame.draw.polygon(surface, hide_dark, right_pts)
-    # Left half (lit)
-    left_pts = [(sx, apex_y), (lx, base_y), (sx, base_y)]
-    pygame.draw.polygon(surface, hide_col, left_pts)
-    # Outline
-    full_pts = [(sx, apex_y), (lx, base_y), (rx, base_y)]
-    pygame.draw.polygon(surface, _darken(hide_col, 0.5), full_pts, iz)
-
-    # Support poles poking above
-    pole_col = (110, 80, 45)
-    for dx in (-0.12, 0.0, 0.12):
-        px = int(sx + r * dx)
-        pygame.draw.line(surface, pole_col,
-                         (px, int(apex_y)), (px, int(apex_y - r * 0.2)), iz)
-
-    # Decorative band around middle
-    band_y = int(sy - r * 0.2)
-    pygame.draw.line(surface, (180, 80, 50),
-                     (int(lx + r * 0.15), band_y), (int(rx - r * 0.15), band_y), max(1, iz))
-
-    # Door opening
-    door_w = max(2, int(r * 0.25))
-    door_h = max(3, int(r * 0.35))
-    door_pts = [
-        (sx, base_y - door_h),
-        (sx - door_w, base_y),
-        (sx + door_w, base_y),
-    ]
-    pygame.draw.polygon(surface, (50, 35, 18), door_pts)
-
-
-def _draw_woodcutter(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
-    iz = max(1, int(z))
-    cabin = (140, 90, 45)
-    rect = pygame.Rect(int(sx - r * 0.55), int(sy - r * 0.3), int(r * 1.1), int(r * 0.7))
-    pygame.draw.rect(surface, cabin, rect)
-    pygame.draw.rect(surface, _lighten(cabin, 1.2), pygame.Rect(rect.x, rect.y, rect.w, max(1, int(2 * z))))
-    pygame.draw.rect(surface, _darken(cabin, 0.6), rect, iz)
-    for i in range(1, 4):
-        ly = rect.y + i * rect.h // 4
-        pygame.draw.line(surface, _darken(cabin, 0.7), (rect.x, ly), (rect.right, ly), iz)
-    roof_col = (100, 60, 30)
-    roof_pts = [(sx - r * 0.65, sy - r * 0.3), (sx, sy - r * 0.75), (sx + r * 0.65, sy - r * 0.3)]
-    pygame.draw.polygon(surface, roof_col, roof_pts)
-    pygame.draw.polygon(surface, _darken(roof_col, 0.7), roof_pts, iz)
-    ax, ay = int(sx + r * 0.65), int(sy)
-    axe_h = max(2, int(4 * z))
-    pygame.draw.line(surface, (120, 90, 50), (ax, ay - axe_h), (ax, ay + max(1, int(3 * z))), iz)
-    pygame.draw.polygon(surface, (160, 160, 170),
-                        [(ax, ay - axe_h), (ax + max(2, int(3 * z)), ay - max(1, int(2 * z))), (ax, ay - iz)])
-
-
-def _draw_quarry(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
-    iz = max(1, int(z))
-    arch_col = (150, 145, 135)
-    pw = max(2, int(r * 0.2))
-    ph = max(4, int(r * 0.7))
-    pygame.draw.rect(surface, arch_col, (int(sx - r * 0.45), int(sy + r * 0.3 - ph), pw, ph))
-    pygame.draw.rect(surface, arch_col, (int(sx + r * 0.45 - pw), int(sy + r * 0.3 - ph), pw, ph))
-    arch_rect = pygame.Rect(int(sx - r * 0.45), int(sy - r * 0.55), int(r * 0.9), int(r * 0.3))
-    pygame.draw.rect(surface, arch_col, arch_rect)
-    pygame.draw.rect(surface, _lighten(arch_col, 1.2),
-                     pygame.Rect(arch_rect.x, arch_rect.y, arch_rect.w, max(1, int(2 * z))))
-    pygame.draw.rect(surface, (30, 25, 20),
-                     (int(sx - r * 0.25), int(sy - r * 0.25), int(r * 0.5), int(r * 0.55)))
-    px, py = int(sx + r * 0.55), int(sy - r * 0.2)
-    pick_h = max(2, int(3 * z))
-    pygame.draw.line(surface, (120, 90, 50), (px, py - pick_h), (px, py + pick_h), iz)
-    pygame.draw.line(surface, (160, 160, 170),
-                     (px - max(1, int(2 * z)), py - pick_h),
-                     (px + max(1, int(2 * z)), py - pick_h), max(1, int(z * 1.5)))
-
-
-def _draw_gatherer(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
-    iz = max(1, int(z))
-    hut_col = (85, 150, 65)
-    rect = pygame.Rect(int(sx - r * 0.4), int(sy - r * 0.15), int(r * 0.8), int(r * 0.55))
-    pygame.draw.rect(surface, hut_col, rect)
-    pygame.draw.rect(surface, _lighten(hut_col, 1.2),
-                     pygame.Rect(rect.x, rect.y, rect.w, max(1, int(2 * z))))
-    pygame.draw.rect(surface, _darken(hut_col, 0.6), rect, iz)
-    roof_col = (160, 140, 60)
-    roof_pts = [(sx - r * 0.5, sy - r * 0.15), (sx, sy - r * 0.6), (sx + r * 0.5, sy - r * 0.15)]
-    pygame.draw.polygon(surface, roof_col, roof_pts)
-    pygame.draw.polygon(surface, _darken(roof_col, 0.7), roof_pts, iz)
-    bx, by = int(sx + r * 0.5), int(sy + r * 0.15)
-    br = max(2, int(3 * z))
-    pygame.draw.arc(surface, (140, 110, 60), (bx - br, by - br, br * 2, br * 2), 0, math.pi, iz)
-    pygame.draw.circle(surface, (200, 60, 60), (bx, by - iz), iz)
-
-
-def _draw_storage(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
-    iz = max(1, int(z))
-    ware_col = (130, 110, 85)
-    rect = pygame.Rect(int(sx - r * 0.6), int(sy - r * 0.25), int(r * 1.2), int(r * 0.65))
-    pygame.draw.rect(surface, ware_col, rect)
-    pygame.draw.rect(surface, _lighten(ware_col, 1.2),
-                     pygame.Rect(rect.x, rect.y, rect.w, max(1, int(2 * z))))
-    pygame.draw.rect(surface, _darken(ware_col, 0.6), rect, iz)
-    c2 = max(1, int(2 * z))
-    pygame.draw.rect(surface, _darken(ware_col, 0.75),
-                     (rect.x - c2, rect.y - c2, rect.w + c2 * 2, max(2, int(4 * z))))
-    pygame.draw.line(surface, _darken(ware_col, 0.65), (rect.x, rect.y), (rect.right, rect.bottom), iz)
-    pygame.draw.line(surface, _darken(ware_col, 0.65), (rect.right, rect.y), (rect.x, rect.bottom), iz)
-    dw = max(2, int(r * 0.3))
-    dh = max(3, int(r * 0.35))
-    pygame.draw.rect(surface, _darken(ware_col, 0.4),
-                     (int(sx - dw // 2), int(sy + r * 0.4 - dh), dw, dh))
-
-
-def _draw_path(
-    surface: pygame.Surface,
-    sx: float, sy: float,
-    r: int, z: float,
-    nb_positions: list[tuple[float, float]],
-    q: int, rr: int,
-) -> None:
-    """Draw a dirt path tile.  Isolated → textured circle.  Adjacent paths →
-    thick connecting bands that naturally merge into filled areas."""
-    isx, isy = int(sx), int(sy)
-    iz = max(1, int(z))
-    h = _tile_hash(q, rr)
-
-    # Band half-width: roughly 40 % of hex radius so adjacent bands overlap
-    band_hw = max(2, int(r * 0.40))
-
-    # Draw connecting bands to each neighbour first (underneath the center disc)
-    for nsx, nsy in nb_positions:
-        # Direction vector from center to neighbour
-        dx = nsx - sx
-        dy = nsy - sy
-        length = math.hypot(dx, dy)
-        if length < 1:
-            continue
-        # Unit perpendicular (rotated 90°)
-        px = -dy / length * band_hw
-        py = dx / length * band_hw
-        # Quad from center to midpoint between the two hexes
-        mx = sx + dx * 0.5
-        my = sy + dy * 0.5
-        pts = [
-            (sx + px, sy + py),
-            (sx - px, sy - py),
-            (mx - px, my - py),
-            (mx + px, my + py),
-        ]
-        pygame.draw.polygon(surface, _PATH_BASE, pts)
-        # Subtle edge darkening
-        pygame.draw.line(surface, _PATH_DARK,
-                         (int(pts[0][0]), int(pts[0][1])),
-                         (int(pts[3][0]), int(pts[3][1])), iz)
-        pygame.draw.line(surface, _PATH_DARK,
-                         (int(pts[1][0]), int(pts[1][1])),
-                         (int(pts[2][0]), int(pts[2][1])), iz)
-
-    # Center disc
-    pygame.draw.circle(surface, _PATH_BASE, (isx, isy), band_hw + max(1, int(r * 0.10)))
-
-    # Dirt texture: deterministic speckles
-    speck_count = max(3, int(r * 0.6))
-    for i in range(speck_count):
-        sh2 = _tile_hash(q + i * 7, rr + i * 13)
-        ox = ((sh2 & 0xFF) - 128) * band_hw // 160
-        oy = (((sh2 >> 8) & 0xFF) - 128) * band_hw // 160
-        col = _PATH_DARK if (sh2 >> 16) & 1 else _PATH_LIGHT
-        pygame.draw.circle(surface, col, (isx + ox, isy + oy), iz)
-
-    # Edge ring for definition when isolated
-    if not nb_positions:
-        pygame.draw.circle(surface, _PATH_DARK, (isx, isy),
-                           band_hw + max(1, int(r * 0.10)), iz)
-
-
-# ── Mountain top-down helpers ────────────────────────────────────
-
-# Direction d (0=E, 1=NE, 2=NW, 3=W, 4=SW, 5=SE) maps to the shared
-# hex edge between adjacent corners in the order produced by hex_corners().
-# hex_corners() places corner i at angle (60*i + 30)°, so in screen coords
-# (y-down): 0=right-bottom, 1=bottom, 2=left-bottom, 3=left-top, 4=top,
-# 5=right-top.  Direction d's shared edge uses corners (6-d)%6 and (5-d)%6.
-_DIR_EDGE = [(5, 0), (4, 5), (3, 4), (2, 3), (1, 2), (0, 1)]
-
-
-@lru_cache(maxsize=512)
-def _mountain_tile_color(depth: int, max_depth: int) -> tuple[int, int, int]:
-    """Depth-based mountain colour: brown foothills → grey rock → white snow."""
-    if max_depth <= 0:
-        return (105, 95, 82)
-    t = min(1.0, depth / max(1, max_depth))
-    # Three-band: 0–0.35 brown rock, 0.35–0.7 grey rock, 0.7–1.0 snow
-    if t < 0.35:
-        s = t / 0.35
-        return (
-            int(95 + 25 * s),
-            int(85 + 25 * s),
-            int(72 + 28 * s),
-        )
-    elif t < 0.7:
-        s = (t - 0.35) / 0.35
-        return (
-            int(120 + 50 * s),
-            int(110 + 55 * s),
-            int(100 + 60 * s),
-        )
-    else:
-        s = (t - 0.7) / 0.3
-        s = s * s  # ease into snow
-        return (
-            min(255, int(170 + 70 * s)),
-            min(255, int(165 + 75 * s)),
-            min(255, int(160 + 80 * s)),
-        )
-
-
-@lru_cache(maxsize=4096)
-def _tile_hash(q: int, r: int) -> int:
-    """Fast deterministic hash for per-tile randomness in contours."""
-    h = (q * 0x45D9F3B + r * 0x119DE1F3) & 0xFFFFFFFF
-    h ^= h >> 16
-    h = (h * 0x45D9F3B) & 0xFFFFFFFF
-    return h
-
-
-def _draw_contours(
-    surface: pygame.Surface,
-    coord: HexCoord,
-    depth: int,
-    corners_screen: list[tuple[float, float]],
-    base: tuple[int, int, int],
-    mountain_depths: dict[HexCoord, tuple[int, int]],
-    zoom: float,
-) -> None:
-    """Draw mountain ridge spurs running downhill with lit/shadow relief."""
-    th = _tile_hash(coord.q, coord.r)
-
-    # ~25% of tiles get a ridge spur
-    if (th & 0xFF) >= 64:
-        return
-
-    cx = sum(p[0] for p in corners_screen) / 6.0
-    cy = sum(p[1] for p in corners_screen) / 6.0
-
-    # Gradient vector (downhill direction)
-    gx, gy = 0.0, 0.0
-    for d, nb_coord in enumerate(coord.neighbors()):
-        nb_info = mountain_depths.get(nb_coord)
-        if nb_info is None:
-            continue
-        diff = depth - nb_info[0]
-        if diff == 0:
-            continue
-        c1_idx, c2_idx = _DIR_EDGE[d]
-        mx = (corners_screen[c1_idx][0] + corners_screen[c2_idx][0]) * 0.5
-        my = (corners_screen[c1_idx][1] + corners_screen[c2_idx][1]) * 0.5
-        gx += (mx - cx) * diff
-        gy += (my - cy) * diff
-
-    glen = (gx * gx + gy * gy) ** 0.5
-    if glen < 0.1:
-        return
-
-    dx, dy = gx / glen, gy / glen
-    nx, ny = -dy, dx  # perpendicular
-
-    hex_r = zoom * 14.0
-    length = hex_r * (0.6 + ((th >> 8) & 0xF) / 15.0 * 0.5)
-    start_back = hex_r * (0.1 + ((th >> 12) & 0x7) / 7.0 * 0.2)
-    half_w = zoom * (1.2 + ((th >> 16) & 0x7) / 7.0 * 1.4)
-    tip_w = zoom * 0.3
-
-    lat_off = ((th >> 24) & 0xFF) / 255.0 * 2.0 - 1.0
-    lat_shift = lat_off * zoom * 2.5
-
-    rx = cx - dx * start_back + nx * lat_shift
-    ry = cy - dy * start_back + ny * lat_shift
-
-    bend = ((th >> 15) & 0xFF) / 255.0 * 2.0 - 1.0
-    bend_mag = zoom * 2.0 * bend
-    mx = rx + dx * length * 0.5 + nx * bend_mag
-    my = ry + dy * length * 0.5 + ny * bend_mag
-    tx = rx + dx * length
-    ty = ry + dy * length
-
-    mw = (half_w + tip_w) * 0.5
-
-    # Lit half (upper-left when looking downhill)
-    lit = [
-        (int(rx), int(ry)),
-        (int(rx + nx * half_w), int(ry + ny * half_w)),
-        (int(mx + nx * mw), int(my + ny * mw)),
-        (int(tx + nx * tip_w), int(ty + ny * tip_w)),
-        (int(tx), int(ty)),
-        (int(mx), int(my)),
-    ]
-    pygame.draw.polygon(surface, _lighten(base, 1.12), lit)
-
-    # Shadow half
-    shd = [
-        (int(rx), int(ry)),
-        (int(rx - nx * half_w), int(ry - ny * half_w)),
-        (int(mx - nx * mw), int(my - ny * mw)),
-        (int(tx - nx * tip_w), int(ty - ny * tip_w)),
-        (int(tx), int(ty)),
-        (int(mx), int(my)),
-    ]
-    pygame.draw.polygon(surface, _darken(base, 0.72), shd)
-
-    # Spine highlight
-    lw = max(1, int(zoom * 0.7))
-    pygame.draw.line(surface, _lighten(base, 1.22),
-                     (int(rx), int(ry)), (int(mx), int(my)), lw)
-    pygame.draw.line(surface, _lighten(base, 1.18),
-                     (int(mx), int(my)), (int(tx), int(ty)), lw)
-
-
-# ── Colour utilities ────────────────────────────────────────────
-
-@lru_cache(maxsize=256)
-def _darken(color: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
-    return tuple(max(0, int(c * factor)) for c in color)  # type: ignore[return-value]
-
-
-@lru_cache(maxsize=256)
-def _lighten(color: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
-    return tuple(min(255, int(c * factor)) for c in color)  # type: ignore[return-value]

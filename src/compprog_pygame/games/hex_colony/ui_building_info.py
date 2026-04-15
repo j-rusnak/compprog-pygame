@@ -98,12 +98,21 @@ class BuildingInfoPanel(Panel):
         # Housing info for dwellings
         cap = BUILDING_HOUSING.get(b.type, 0)
         if cap > 0:
-            lines.append((f"Residents: {b.residents}/{cap}", UI_TEXT, self._font))
+            if b.type == BuildingType.CAMP and b.residents > cap:
+                res_text = f"Residents: ({cap}+{b.residents - cap})/{cap}"
+                lines.append((res_text, (200, 60, 60), self._font))
+            else:
+                lines.append((f"Residents: {b.residents}/{cap}", UI_TEXT, self._font))
 
-        # Camp-specific: show all resources + total population
+        # Camp-specific: show all resources + total population + housing
         if b.type == BuildingType.CAMP:
             lines.append(("", UI_TEXT, self._small))  # spacer
-            lines.append((f"Total Population: {world.population.count}", UI_TEXT, self._font))
+            total_housing = world.connected_housing()
+            pop = world.population.count
+            homeless = max(0, pop - total_housing)
+            lines.append((f"Population: {pop}/{total_housing}", UI_TEXT, self._font))
+            if homeless > 0:
+                lines.append((f"Homeless: {homeless}", (200, 60, 60), self._font))
             lines.append(("", UI_TEXT, self._small))  # spacer
             lines.append(("Resources:", UI_MUTED, self._small))
             for res in Resource:

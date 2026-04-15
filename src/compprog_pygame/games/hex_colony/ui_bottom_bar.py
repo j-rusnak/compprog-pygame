@@ -120,11 +120,17 @@ class BuildingsTabContent(TabContent):
         self._small = pygame.font.Font(None, 20)
         self.hovered: int = -1
         self.selected_building: BuildingType | None = None
+        self.delete_active = False
         self._on_select: "_BuildingSelectCallback | None" = None
+        self._on_delete_toggle: "callable | None" = None
 
     def set_on_select(self, callback: "_BuildingSelectCallback") -> None:
         """Register a callback: ``callback(building_type | None)``."""
         self._on_select = callback
+
+    def set_on_delete_toggle(self, callback) -> None:
+        """Register a callback: ``callback(active: bool)``."""
+        self._on_delete_toggle = callback
 
     def draw_content(
         self, surface: pygame.Surface, rect: pygame.Rect, world: World,
@@ -177,6 +183,29 @@ class BuildingsTabContent(TabContent):
 
             x += card_w + gap
 
+        # Delete tool card
+        del_idx = len(self.BUILDABLE)
+        card_rect = pygame.Rect(x, y, card_w, card_h)
+        is_sel = self.delete_active
+        is_hov = self.hovered == del_idx
+        if is_sel:
+            bg_col = (60, 20, 20, 220)
+        elif is_hov:
+            bg_col = UI_TAB_HOVER
+        else:
+            bg_col = UI_TAB_INACTIVE
+        card_bg = pygame.Surface((card_w, card_h), pygame.SRCALPHA)
+        card_bg.fill(bg_col)
+        surface.blit(card_bg, card_rect.topleft)
+        border_col = (200, 60, 60) if is_sel else UI_BORDER
+        pygame.draw.rect(surface, border_col, card_rect, width=2, border_radius=4)
+        icon_surf = self._font.render("\u2716", True, (200, 60, 60))  # ✖
+        name_surf = self._font.render("Delete", True, UI_TEXT)
+        surface.blit(icon_surf, (x + 6, y + 6))
+        surface.blit(name_surf, (x + 6 + icon_surf.get_width() + 4, y + 6))
+        hint_surf = self._small.render("50% refund", True, UI_MUTED)
+        surface.blit(hint_surf, (x + 8, y + 6 + name_surf.get_height() + 4))
+
     def handle_event(
         self, event: pygame.event.Event, rect: pygame.Rect,
     ) -> bool:
@@ -185,12 +214,26 @@ class BuildingsTabContent(TabContent):
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if rect.collidepoint(event.pos):
                 idx = self._card_index_at(event.pos, rect)
-                if 0 <= idx < len(self.BUILDABLE):
+                del_idx = len(self.BUILDABLE)
+                if idx == del_idx:
+                    # Toggle delete mode
+                    self.delete_active = not self.delete_active
+                    if self.delete_active:
+                        self.selected_building = None
+                        if self._on_select:
+                            self._on_select(None)
+                    if self._on_delete_toggle:
+                        self._on_delete_toggle(self.delete_active)
+                    return True
+                elif 0 <= idx < len(self.BUILDABLE):
                     btype = self.BUILDABLE[idx]
                     if self.selected_building == btype:
                         self.selected_building = None
                     else:
                         self.selected_building = btype
+                        self.delete_active = False
+                        if self._on_delete_toggle:
+                            self._on_delete_toggle(False)
                     if self._on_select:
                         self._on_select(self.selected_building)
                     return True

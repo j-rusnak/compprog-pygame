@@ -24,6 +24,7 @@ class Task(Enum):
     GATHER = auto()       # walking to or harvesting at a resource tile
     BUILD = auto()        # constructing a building
     HAUL = auto()         # carrying resources back to camp
+    RELOCATE = auto()     # moving to a new home (house)
 
 
 @dataclass(slots=True)
@@ -67,7 +68,8 @@ class PopulationManager:
         return len(self.people)
 
     def idle_people(self) -> list[Person]:
-        return [p for p in self.people if p.task == Task.IDLE]
+        """Return idle people who have a home (available for work tasks)."""
+        return [p for p in self.people if p.task == Task.IDLE and p.home is not None]
 
     def update(self, dt: float, world: World, hex_size: int) -> None:
         """Advance all people by *dt* seconds."""
@@ -84,6 +86,9 @@ class PopulationManager:
                     person.px, person.py = tx, ty
                     person.hex_pos = target
                     person.path.pop(0)
+                    # Arrived at destination for RELOCATE
+                    if not person.path and person.task == Task.RELOCATE:
+                        person.task = Task.IDLE
                 else:
                     person.px += dx / dist * step
                     person.py += dy / dist * step
