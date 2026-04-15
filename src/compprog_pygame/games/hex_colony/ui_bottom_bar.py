@@ -76,6 +76,7 @@ class BuildingsTabContent(TabContent):
 
     BUILDABLE = [
         BuildingType.HOUSE,
+        BuildingType.PATH,
         BuildingType.WOODCUTTER,
         BuildingType.QUARRY,
         BuildingType.GATHERER,
@@ -84,6 +85,7 @@ class BuildingsTabContent(TabContent):
 
     _ICON: dict[BuildingType, str] = {
         BuildingType.HOUSE: "\u26fa",       # ⛺
+        BuildingType.PATH: "\u2505",        # ┅
         BuildingType.WOODCUTTER: "\u2692",  # ⚒
         BuildingType.QUARRY: "\u26cf",      # ⛏
         BuildingType.GATHERER: "\u2618",    # ☘
@@ -92,6 +94,7 @@ class BuildingsTabContent(TabContent):
 
     _COLOR: dict[BuildingType, tuple[int, int, int]] = {
         BuildingType.HOUSE: (170, 140, 90),
+        BuildingType.PATH: (185, 165, 120),
         BuildingType.WOODCUTTER: (160, 100, 50),
         BuildingType.QUARRY: (170, 170, 160),
         BuildingType.GATHERER: (100, 180, 80),

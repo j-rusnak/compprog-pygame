@@ -81,11 +81,16 @@ _TERRAIN_CAT: dict[Terrain, int] = {
 BUILDING_COLORS: dict[BuildingType, tuple[int, int, int]] = {
     BuildingType.CAMP: (200, 160, 60),
     BuildingType.HOUSE: (170, 140, 90),
+    BuildingType.PATH: (185, 165, 120),
     BuildingType.WOODCUTTER: (160, 100, 50),
     BuildingType.QUARRY: (170, 170, 160),
     BuildingType.GATHERER: (100, 180, 80),
     BuildingType.STORAGE: (140, 120, 100),
 }
+
+_PATH_BASE = (185, 165, 120)
+_PATH_DARK = (155, 135, 95)
+_PATH_LIGHT = (205, 190, 150)
 
 PERSON_COLOR = (230, 210, 170)
 PERSON_GATHER_COLOR = (180, 220, 120)
@@ -532,7 +537,35 @@ class Renderer:
         half_sw, half_sh = sw * 0.5, sh * 0.5
         margin = size * 2 * zoom
 
+        # First pass: paths (ground-level, drawn beneath other buildings)
         for building in world.buildings.buildings:
+            if building.type != BuildingType.PATH:
+                continue
+            wx, wy = self._get_pixel(building.coord, size)
+            sx = (wx - cam_x) * zoom + half_sw
+            sy = (wy - cam_y) * zoom + half_sh
+            if sx < -margin or sx > sw + margin or sy < -margin or sy > sh + margin:
+                continue
+            r = int(size * 0.75 * zoom)
+            if r < 2:
+                pygame.draw.circle(surface, _PATH_BASE, (int(sx), int(sy)), max(1, r))
+                continue
+            # Compute screen positions of adjacent path neighbours
+            nb_positions: list[tuple[float, float]] = []
+            for nb_coord in building.coord.neighbors():
+                nb_building = world.buildings.at(nb_coord)
+                if nb_building is not None and nb_building.type == BuildingType.PATH:
+                    nwx, nwy = self._get_pixel(nb_coord, size)
+                    nsx = (nwx - cam_x) * zoom + half_sw
+                    nsy = (nwy - cam_y) * zoom + half_sh
+                    nb_positions.append((nsx, nsy))
+            _draw_path(surface, sx, sy, r, zoom, nb_positions,
+                       building.coord.q, building.coord.r)
+
+        # Second pass: non-path buildings
+        for building in world.buildings.buildings:
+            if building.type == BuildingType.PATH:
+                continue
             wx, wy = self._get_pixel(building.coord, size)
             sx = (wx - cam_x) * zoom + half_sw
             sy = (wy - cam_y) * zoom + half_sh
@@ -982,6 +1015,69 @@ def _draw_storage(surface: pygame.Surface, sx: float, sy: float, r: int, z: floa
     dh = max(3, int(r * 0.35))
     pygame.draw.rect(surface, _darken(ware_col, 0.4),
                      (int(sx - dw // 2), int(sy + r * 0.4 - dh), dw, dh))
+
+
+def _draw_path(
+    surface: pygame.Surface,
+    sx: float, sy: float,
+    r: int, z: float,
+    nb_positions: list[tuple[float, float]],
+    q: int, rr: int,
+) -> None:
+    """Draw a dirt path tile.  Isolated → textured circle.  Adjacent paths →
+    thick connecting bands that naturally merge into filled areas."""
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    h = _tile_hash(q, rr)
+
+    # Band half-width: roughly 40 % of hex radius so adjacent bands overlap
+    band_hw = max(2, int(r * 0.40))
+
+    # Draw connecting bands to each neighbour first (underneath the center disc)
+    for nsx, nsy in nb_positions:
+        # Direction vector from center to neighbour
+        dx = nsx - sx
+        dy = nsy - sy
+        length = math.hypot(dx, dy)
+        if length < 1:
+            continue
+        # Unit perpendicular (rotated 90°)
+        px = -dy / length * band_hw
+        py = dx / length * band_hw
+        # Quad from center to midpoint between the two hexes
+        mx = sx + dx * 0.5
+        my = sy + dy * 0.5
+        pts = [
+            (sx + px, sy + py),
+            (sx - px, sy - py),
+            (mx - px, my - py),
+            (mx + px, my + py),
+        ]
+        pygame.draw.polygon(surface, _PATH_BASE, pts)
+        # Subtle edge darkening
+        pygame.draw.line(surface, _PATH_DARK,
+                         (int(pts[0][0]), int(pts[0][1])),
+                         (int(pts[3][0]), int(pts[3][1])), iz)
+        pygame.draw.line(surface, _PATH_DARK,
+                         (int(pts[1][0]), int(pts[1][1])),
+                         (int(pts[2][0]), int(pts[2][1])), iz)
+
+    # Center disc
+    pygame.draw.circle(surface, _PATH_BASE, (isx, isy), band_hw + max(1, int(r * 0.10)))
+
+    # Dirt texture: deterministic speckles
+    speck_count = max(3, int(r * 0.6))
+    for i in range(speck_count):
+        sh2 = _tile_hash(q + i * 7, rr + i * 13)
+        ox = ((sh2 & 0xFF) - 128) * band_hw // 160
+        oy = (((sh2 >> 8) & 0xFF) - 128) * band_hw // 160
+        col = _PATH_DARK if (sh2 >> 16) & 1 else _PATH_LIGHT
+        pygame.draw.circle(surface, col, (isx + ox, isy + oy), iz)
+
+    # Edge ring for definition when isolated
+    if not nb_positions:
+        pygame.draw.circle(surface, _PATH_DARK, (isx, isy),
+                           band_hw + max(1, int(r * 0.10)), iz)
 
 
 # ── Mountain top-down helpers ────────────────────────────────────

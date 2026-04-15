@@ -21,6 +21,7 @@ from compprog_pygame.games.hex_colony.world import World
 # Build-mode palette order
 BUILDABLE = [
     BuildingType.HOUSE,
+    BuildingType.PATH,
     BuildingType.WOODCUTTER,
     BuildingType.QUARRY,
     BuildingType.GATHERER,

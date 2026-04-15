@@ -15,6 +15,7 @@ from compprog_pygame.games.hex_colony.resources import Resource
 class BuildingType(Enum):
     CAMP = auto()           # starting base — stores resources, shelters people
     HOUSE = auto()          # houses up to 5 people
+    PATH = auto()           # dirt path — connects visually to adjacent paths
     WOODCUTTER = auto()     # harvests wood from adjacent forest hexes
     QUARRY = auto()         # harvests stone from adjacent stone deposits
     GATHERER = auto()       # harvests fiber and food from adjacent patches
@@ -31,6 +32,7 @@ class BuildingCost:
 BUILDING_COSTS: dict[BuildingType, BuildingCost] = {
     BuildingType.CAMP: BuildingCost({}),  # free (starting building)
     BuildingType.HOUSE: BuildingCost({Resource.WOOD: 12, Resource.FIBER: 4}),
+    BuildingType.PATH: BuildingCost({Resource.STONE: 2}),
     BuildingType.WOODCUTTER: BuildingCost({Resource.WOOD: 10, Resource.STONE: 5}),
     BuildingType.QUARRY: BuildingCost({Resource.WOOD: 15, Resource.FIBER: 5}),
     BuildingType.GATHERER: BuildingCost({Resource.WOOD: 8, Resource.STONE: 3}),
@@ -41,6 +43,7 @@ BUILDING_COSTS: dict[BuildingType, BuildingCost] = {
 BUILDING_MAX_WORKERS: dict[BuildingType, int] = {
     BuildingType.CAMP: 0,
     BuildingType.HOUSE: 0,
+    BuildingType.PATH: 0,
     BuildingType.WOODCUTTER: 2,
     BuildingType.QUARRY: 2,
     BuildingType.GATHERER: 3,
@@ -51,6 +54,7 @@ BUILDING_MAX_WORKERS: dict[BuildingType, int] = {
 BUILDING_HOUSING: dict[BuildingType, int] = {
     BuildingType.CAMP: 10,
     BuildingType.HOUSE: 5,
+    BuildingType.PATH: 0,
     BuildingType.WOODCUTTER: 0,
     BuildingType.QUARRY: 0,
     BuildingType.GATHERER: 0,

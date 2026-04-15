@@ -58,6 +58,7 @@ _RES_COL: dict[Resource, tuple[int, int, int]] = {
 _BUILDING_LABEL: dict[BuildingType, str] = {
     BuildingType.CAMP: "Camp",
     BuildingType.HOUSE: "House",
+    BuildingType.PATH: "Path",
     BuildingType.WOODCUTTER: "Woodcutter",
     BuildingType.QUARRY: "Quarry",
     BuildingType.GATHERER: "Gatherer",
