@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import deque
+
 import pygame
 
 from compprog_pygame.games.hex_colony.buildings import (
@@ -9,12 +11,15 @@ from compprog_pygame.games.hex_colony.buildings import (
     BuildingType,
 )
 from compprog_pygame.games.hex_colony.camera import Camera
+from compprog_pygame.games.hex_colony.people import Task
 from compprog_pygame.games.hex_colony.hex_grid import pixel_to_hex
 from compprog_pygame.games.hex_colony.renderer import Renderer
 from compprog_pygame.games.hex_colony.settings import HexColonySettings
 from compprog_pygame.games.hex_colony.ui import UIManager
 from compprog_pygame.games.hex_colony.ui_bottom_bar import BottomBar
 from compprog_pygame.games.hex_colony.ui_building_info import BuildingInfoPanel
+from compprog_pygame.games.hex_colony.ui_game_over import GameOverOverlay
+from compprog_pygame.games.hex_colony.ui_help import HelpOverlay
 from compprog_pygame.games.hex_colony.ui_pause_menu import PauseOverlay
 from compprog_pygame.games.hex_colony.ui_resource_bar import ResourceBar
 from compprog_pygame.games.hex_colony.world import World
@@ -46,6 +51,8 @@ class Game:
         self._build_dragging = False
         self._delete_dragging = False
         self._hint_font = pygame.font.Font(None, 26)
+        self._sim_speed: float = 1.0  # 1x, 2x, or 3x
+        self._drag_button: int = 0  # which mouse button started camera drag
 
         # UI
         self.ui = UIManager()
@@ -53,10 +60,14 @@ class Game:
         self._bottom_bar = BottomBar()
         self._building_info = BuildingInfoPanel()
         self._pause_overlay = PauseOverlay()
+        self._game_over_overlay = GameOverOverlay()
+        self._help_overlay = HelpOverlay()
         self.ui.add_panel(self._resource_bar)
         self.ui.add_panel(self._bottom_bar)
         self.ui.add_panel(self._building_info)
+        self.ui.add_panel(self._help_overlay)
         self.ui.add_panel(self._pause_overlay)
+        self.ui.add_panel(self._game_over_overlay)
 
         # Wire building tab -> build mode
         buildings_tab = self._bottom_bar.buildings_tab
@@ -73,6 +84,10 @@ class Game:
         # Wire sandbox population buttons
         self._resource_bar.set_on_pop_change(self._on_pop_change)
 
+        # Wire game-over overlay callbacks
+        self._game_over_overlay.on_return_to_menu = self._on_pause_return_to_menu
+        self._game_over_overlay.on_quit = self._on_pause_quit
+
     # ── Public entry point ───────────────────────────────────────
 
     def run(self, screen: pygame.Surface, clock: pygame.time.Clock) -> None:
@@ -87,12 +102,13 @@ class Game:
             for event in pygame.event.get():
                 self._handle_event(event)
 
-            if not self._pause_overlay.visible:
+            if not self._pause_overlay.visible and not self.world.game_over:
                 self._update_keyboard_pan(dt)
                 self._update_alt_overlay()
                 self._update_ghost_building()
-                self.world.update(dt)
+                self.world.update(dt * self._sim_speed)
             self._resource_bar.delete_mode = self.delete_mode
+            self._resource_bar.sim_speed = self._sim_speed
             self.renderer.draw(screen, self.world, self.camera, dt=dt)
             self.ui.draw(screen, self.world)
 
@@ -109,6 +125,8 @@ class Game:
             return
 
         # Let UI consume events first
+        # Sync game-over overlay before event dispatch to avoid 1-frame leak
+        self._game_over_overlay.active = self.world.game_over
         if self.ui.handle_event(event):
             return
 
@@ -146,6 +164,14 @@ class Game:
                     btab = self._bottom_bar.buildings_tab
                     if btab:
                         btab.delete_active = False
+            elif event.key == pygame.K_h:
+                self._help_overlay.toggle()
+            elif event.key == pygame.K_1:
+                self._sim_speed = 1.0
+            elif event.key == pygame.K_2:
+                self._sim_speed = 2.0
+            elif event.key == pygame.K_3:
+                self._sim_speed = 3.0
 
         elif event.type == pygame.VIDEORESIZE:
             screen = pygame.display.get_surface()
@@ -162,6 +188,7 @@ class Game:
                     self._delete_dragging = True
             elif event.button == 2:  # middle click — pan start
                 self.camera.start_drag(event.pos)
+                self._drag_button = 2
             elif event.button == 3:  # right click
                 if self.build_mode is not None:
                     self.build_mode = None
@@ -179,17 +206,15 @@ class Game:
                     self._building_info.building = None
                 else:
                     self.camera.start_drag(event.pos)
-            elif event.button == 4:  # scroll up
-                self.camera.zoom_at(event.pos, 1.1)
-            elif event.button == 5:  # scroll down
-                self.camera.zoom_at(event.pos, 1 / 1.1)
+                    self._drag_button = 3
 
         elif event.type == pygame.MOUSEBUTTONUP:
             if event.button == 1:
                 self._build_dragging = False
                 self._delete_dragging = False
-            if event.button in (2, 3):
+            if event.button in (2, 3) and event.button == self._drag_button:
                 self.camera.stop_drag()
+                self._drag_button = 0
 
         elif event.type == pygame.MOUSEMOTION:
             self.camera.drag(event.pos)
@@ -297,6 +322,16 @@ class Game:
         # Can't delete the camp
         if building.type == BuildingType.CAMP:
             return
+        # Unassign workers and residents referencing this building
+        for person in self.world.population.people:
+            if person.workplace is building:
+                person.workplace = None
+                person.carry_resource = None
+                person.task = Task.IDLE
+                person.path = deque()
+                building.workers = max(0, building.workers - 1)
+            if person.home is building:
+                person.home = None
         # Refund half the cost (rounded down)
         if not self.sandbox:
             cost = BUILDING_COSTS[building.type]
@@ -361,6 +396,8 @@ class Game:
             target = pop.people[-1]
             if target.home is not None:
                 target.home.residents = max(0, target.home.residents - 1)
+            if target.workplace is not None:
+                target.workplace.workers = max(0, target.workplace.workers - 1)
             pop.people.remove(target)
 
     # ── Alt overlay toggle ───────────────────────────────────────

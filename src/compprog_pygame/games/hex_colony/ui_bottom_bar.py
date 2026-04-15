@@ -116,6 +116,15 @@ class BuildingsTabContent(TabContent):
         Resource.FOOD: (220, 100, 80),
     }
 
+    _DESC: dict[BuildingType, str] = {
+        BuildingType.HOUSE: "Houses 5 colonists",
+        BuildingType.PATH: "Connects buildings",
+        BuildingType.WOODCUTTER: "Harvests nearby wood",
+        BuildingType.QUARRY: "Harvests nearby stone",
+        BuildingType.GATHERER: "Gathers fiber & food",
+        BuildingType.STORAGE: "Stores 100 resources",
+    }
+
     def __init__(self) -> None:
         self._font = pygame.font.Font(None, 24)
         self._small = pygame.font.Font(None, 20)
@@ -181,6 +190,12 @@ class BuildingsTabContent(TabContent):
                 surface.blit(ri, (x + 8, cy))
                 surface.blit(rv, (x + 8 + ri.get_width() + 2, cy))
                 cy += rv.get_height() + 1
+
+            # Description
+            desc = self._DESC.get(btype)
+            if desc:
+                desc_surf = self._small.render(desc, True, UI_MUTED)
+                surface.blit(desc_surf, (x + 8, y + card_h - desc_surf.get_height() - 4))
 
             x += card_w + gap
 
@@ -270,8 +285,9 @@ class InfoTabContent(TabContent):
     def draw_content(
         self, surface: pygame.Surface, rect: pygame.Rect, world: World,
     ) -> None:
+        mins, secs = divmod(int(world.time_elapsed), 60)
         text = self._font.render(
-            f"Colony age: {world.time_elapsed:.0f}s   |   "
+            f"Colony age: {mins}:{secs:02d}   |   "
             f"Population: {world.population.count}   |   "
             f"Buildings: {sum(1 for b in world.buildings.buildings if b.type != BuildingType.PATH)}",
             True, UI_MUTED,

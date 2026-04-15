@@ -53,13 +53,6 @@ from compprog_pygame.games.hex_colony.render_utils import (
     PERSON_GATHER_COLOR,
     PERSON_SKIN,
     PERSON_HAIR,
-    HUD_BG,
-    HUD_TEXT,
-    MUTED_TEXT,
-    HUD_ACCENT,
-    HUD_BORDER,
-    RESOURCE_ICONS,
-    RESOURCE_COLORS,
     _darken,
     _lighten,
     _tile_hash,
@@ -95,8 +88,6 @@ class Renderer:
 
     def __init__(self) -> None:
         self.font = pygame.font.Font(None, 22)
-        self.hud_font = pygame.font.Font(None, 28)
-        self.hud_title_font = pygame.font.Font(None, 34)
         self.small_font = pygame.font.Font(None, 18)
         self.selected_hex: HexCoord | None = None
         self._water_tick: float = 0.0
@@ -108,12 +99,6 @@ class Renderer:
         self._overlays: list[OverlayItem] | None = None
         self._mountain_depths: dict[HexCoord, tuple[int, int]] = {}
         self._blended_colors: dict[HexCoord, tuple[int, int, int]] = {}
-        self._hud_panel: pygame.Surface | None = None
-        self._hud_panel_size: tuple[int, int] = (0, 0)
-        self._bar_surf: pygame.Surface | None = None
-        self._bar_surf_w: int = 0
-        self._hud_cache_key: tuple = ()
-        self._hud_text_surfs: dict[str, pygame.Surface] = {}
 
         # Tile layer cache (tiles + static overlays, pre-rendered)
         self._tile_layer: pygame.Surface | None = None
@@ -555,6 +540,23 @@ class Renderer:
         half_sw, half_sh = sw * 0.5, sh * 0.5
         margin = size * 2 * zoom
 
+        # Compute reachable buildings from camp (for disconnected indicator)
+        from collections import deque as _deque
+        camp = world.buildings.at(HexCoord(0, 0))
+        reachable: set[HexCoord] = set()
+        if camp is not None:
+            reachable.add(camp.coord)
+            bq: _deque[HexCoord] = _deque([camp.coord])
+            while bq:
+                c = bq.popleft()
+                for nb in c.neighbors():
+                    if nb in reachable:
+                        continue
+                    if world.buildings.at(nb) is None:
+                        continue
+                    reachable.add(nb)
+                    bq.append(nb)
+
         # First pass: paths (ground-level, drawn beneath other buildings)
         # Also track non-path buildings that need a path disc underneath
         buildings_needing_path: set[HexCoord] = set()
@@ -644,6 +646,19 @@ class Renderer:
                     and building.residents > building.housing_capacity
                     and r >= 3):
                 draw_overcrowded(surface, sx, sy, r, zoom)
+
+            # Disconnected indicator: red ✕ for buildings not reachable from camp
+            if (building.coord not in reachable
+                    and building.type != BuildingType.CAMP
+                    and r >= 3):
+                x_off = int(r * 0.6)
+                y_off = -int(r * 0.9)
+                col = (220, 50, 50)
+                lw = max(1, int(1.5 * zoom))
+                cx, cy = int(sx) + x_off, int(sy) + y_off
+                d = max(2, int(3 * zoom))
+                pygame.draw.line(surface, col, (cx - d, cy - d), (cx + d, cy + d), lw)
+                pygame.draw.line(surface, col, (cx - d, cy + d), (cx + d, cy - d), lw)
 
     # ── People ───────────────────────────────────────────────────
 
@@ -868,7 +883,7 @@ class Renderer:
         self, surface: pygame.Surface, center: HexCoord,
         camera: Camera, size: int,
     ) -> None:
-        """Draw a white pulsing outline around all hexes within 2-tile radius."""
+        """Draw a white pulsing outline around all hexes within 1-tile radius."""
         zoom = camera.zoom
         cam_x, cam_y = camera.x, camera.y
         sw, sh = surface.get_size()
@@ -878,13 +893,8 @@ class Renderer:
         ring_color = (int(255 * pulse), int(255 * pulse), int(255 * pulse))
 
 
-        # Collect all hex coords within radius 2
-        ring_coords: list[HexCoord] = []
-        for dq in range(-2, 3):
-            for dr in range(-2, 3):
-                ds = -dq - dr
-                if abs(dq) + abs(dr) + abs(ds) <= 4:  # hex distance <= 2
-                    ring_coords.append(HexCoord(center.q + dq, center.r + dr))
+        # Collect all hex coords within radius 1 (center + neighbors)
+        ring_coords: list[HexCoord] = [center] + center.neighbors()
 
         # Find outer edges: edges of ring hexes that don't border another ring hex
         ring_set = set(ring_coords)
@@ -907,76 +917,4 @@ class Renderer:
                         (int(corners_screen[i2][0]), int(corners_screen[i2][1])),
                         line_w,
                     )
-
-    # ── HUD ──────────────────────────────────────────────────────
-
-    def _draw_hud(self, surface: pygame.Surface, world: World) -> None:
-        x, y = 10, 10
-        line_h = 28
-        inv = world.inventory
-
-        panel_w = 220
-        panel_h = line_h * (len(Resource) + 3) + 20
-        needed = (panel_w, panel_h)
-        if self._hud_panel is None or self._hud_panel_size != needed:
-            self._hud_panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-            self._hud_panel.fill(HUD_BG)
-            self._hud_panel_size = needed
-        surface.blit(self._hud_panel, (x, y))
-
-        panel_rect = pygame.Rect(x, y, panel_w, panel_h)
-        pygame.draw.rect(surface, HUD_BORDER, panel_rect, width=2, border_radius=4)
-        pygame.draw.line(surface, HUD_ACCENT, (x, y), (x + panel_w, y), 2)
-
-        res_vals = tuple(int(inv[r]) for r in Resource)
-        cache_key = (world.population.count, res_vals)
-
-        if cache_key != self._hud_cache_key:
-            self._hud_cache_key = cache_key
-            ts = self._hud_text_surfs
-            ts["title"] = self.hud_title_font.render("Colony", True, HUD_TEXT)
-            ts["pop_icon"] = self.font.render("\u263a", True, PERSON_COLOR)
-            ts["pop_text"] = self.font.render(f"Population: {world.population.count}", True, HUD_TEXT)
-            for res in Resource:
-                ts[f"icon_{res.name}"] = self.font.render(RESOURCE_ICONS[res], True, RESOURCE_COLORS[res])
-                ts[f"val_{res.name}"] = self.font.render(
-                    f"{res.name.capitalize()}: {inv[res]:.0f}", True, HUD_TEXT
-                )
-
-        ts = self._hud_text_surfs
-        title = ts["title"]
-        surface.blit(title, (x + 10, y + 6))
-        ty = y + 6 + title.get_height() + 2
-        pygame.draw.line(surface, HUD_ACCENT, (x + 10, ty), (x + panel_w - 10, ty), 1)
-        y = ty + 6
-
-        surface.blit(ts["pop_icon"], (x + 10, y))
-        surface.blit(ts["pop_text"], (x + 28, y))
-        y += line_h
-
-        for res in Resource:
-            surface.blit(ts[f"icon_{res.name}"], (x + 10, y))
-            surface.blit(ts[f"val_{res.name}"], (x + 28, y))
-            y += line_h
-
-        if self.selected_hex is not None:
-            tile = world.grid.get(self.selected_hex)
-            if tile:
-                sw, sh = surface.get_size()
-                bar_h = 32
-                if self._bar_surf is None or self._bar_surf_w != sw:
-                    self._bar_surf = pygame.Surface((sw, bar_h), pygame.SRCALPHA)
-                    self._bar_surf.fill((16, 24, 45, 200))
-                    self._bar_surf_w = sw
-                surface.blit(self._bar_surf, (0, sh - bar_h))
-                pygame.draw.line(surface, HUD_ACCENT, (0, sh - bar_h), (sw, sh - bar_h), 1)
-
-                info_parts = [f"Hex ({tile.coord.q},{tile.coord.r})", tile.terrain.name]
-                building = world.buildings.at(self.selected_hex)
-                if building:
-                    info_parts.append(building.type.name)
-                info = "  \u2502  ".join(info_parts)
-                info_surf = self.font.render(info, True, MUTED_TEXT)
-                surface.blit(info_surf, (sw // 2 - info_surf.get_width() // 2, sh - bar_h + 6))
-
 

@@ -75,14 +75,6 @@ BUILDING_STORAGE_CAPACITY: dict[BuildingType, int] = {
     BuildingType.STORAGE: 100,
 }
 
-# Default starting stock when a building is placed.
-# Camp stock is set dynamically (2× starting resources).
-BUILDING_DEFAULT_STOCK: dict[BuildingType, dict[Resource, float]] = {
-    BuildingType.WOODCUTTER: {Resource.WOOD: 10},
-    BuildingType.QUARRY: {Resource.STONE: 10},
-    BuildingType.GATHERER: {Resource.FIBER: 10, Resource.FOOD: 10},
-}
-
 
 @dataclass(slots=True)
 class Building:
@@ -91,8 +83,6 @@ class Building:
     coord: HexCoord
     workers: int = 0
     residents: int = 0  # people living here (for dwellings)
-    built: bool = True  # False while under construction
-    build_progress: float = 0.0  # 0..1
     storage: dict[Resource, float] = field(default_factory=dict)
     storage_capacity: int = 0  # max total resources stored
 
@@ -115,26 +105,33 @@ class BuildingManager:
 
     def __init__(self) -> None:
         self.buildings: list[Building] = []
+        self._by_coord: dict[HexCoord, Building] = {}
 
     def place(self, btype: BuildingType, coord: HexCoord) -> Building:
         b = Building(
             type=btype,
             coord=coord,
-            storage=dict(BUILDING_DEFAULT_STOCK.get(btype, {})),
             storage_capacity=BUILDING_STORAGE_CAPACITY.get(btype, 0),
         )
         self.buildings.append(b)
+        self._by_coord[coord] = b
         return b
 
     def at(self, coord: HexCoord) -> Building | None:
-        for b in self.buildings:
-            if b.coord == coord:
-                return b
-        return None
+        return self._by_coord.get(coord)
 
     def remove(self, building: Building) -> None:
         """Remove a building from the manager."""
         self.buildings.remove(building)
+        self._by_coord.pop(building.coord, None)
 
     def by_type(self, btype: BuildingType) -> list[Building]:
         return [b for b in self.buildings if b.type == btype]
+
+
+# Resources each production building can harvest
+BUILDING_HARVEST_RESOURCES: dict[BuildingType, set[Resource]] = {
+    BuildingType.WOODCUTTER: {Resource.WOOD},
+    BuildingType.QUARRY: {Resource.STONE},
+    BuildingType.GATHERER: {Resource.FIBER, Resource.FOOD},
+}
