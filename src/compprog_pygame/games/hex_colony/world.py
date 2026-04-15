@@ -43,6 +43,17 @@ class World:
         camp = self.buildings.place(BuildingType.CAMP, origin)
         tile = self.grid[origin]
         tile.building = camp
+        # Camp stores 2× starting resources
+        s = self.settings
+        camp.storage = {
+            Resource.WOOD: float(s.start_wood * 2),
+            Resource.FIBER: float(s.start_fiber * 2),
+            Resource.STONE: float(s.start_stone * 2),
+            Resource.FOOD: float(s.start_food * 2),
+        }
+        camp.storage_capacity = sum(
+            v * 2 for v in (s.start_wood, s.start_fiber, s.start_stone, s.start_food)
+        )
 
     def _init_resources(self) -> None:
         s = self.settings

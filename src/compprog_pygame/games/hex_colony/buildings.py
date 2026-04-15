@@ -5,7 +5,7 @@ Buildings occupy a single hex tile. The camp is the starting structure.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 
 from compprog_pygame.games.hex_colony.hex_grid import HexCoord
@@ -61,6 +61,28 @@ BUILDING_HOUSING: dict[BuildingType, int] = {
     BuildingType.STORAGE: 0,
 }
 
+# Storage capacity per building type.
+# Harvesting buildings store up to 10 of their resource type.
+# Storage building stores up to 100 total (mixed).
+# Camp capacity is set at placement time (2× starting resources).
+BUILDING_STORAGE_CAPACITY: dict[BuildingType, int] = {
+    BuildingType.CAMP: 0,        # set dynamically at placement
+    BuildingType.HOUSE: 0,
+    BuildingType.PATH: 0,
+    BuildingType.WOODCUTTER: 10,
+    BuildingType.QUARRY: 10,
+    BuildingType.GATHERER: 20,   # 10 fiber + 10 food
+    BuildingType.STORAGE: 100,
+}
+
+# Default starting stock when a building is placed.
+# Camp stock is set dynamically (2× starting resources).
+BUILDING_DEFAULT_STOCK: dict[BuildingType, dict[Resource, float]] = {
+    BuildingType.WOODCUTTER: {Resource.WOOD: 10},
+    BuildingType.QUARRY: {Resource.STONE: 10},
+    BuildingType.GATHERER: {Resource.FIBER: 10, Resource.FOOD: 10},
+}
+
 
 @dataclass(slots=True)
 class Building:
@@ -71,6 +93,8 @@ class Building:
     residents: int = 0  # people living here (for dwellings)
     built: bool = True  # False while under construction
     build_progress: float = 0.0  # 0..1
+    storage: dict[Resource, float] = field(default_factory=dict)
+    storage_capacity: int = 0  # max total resources stored
 
     @property
     def max_workers(self) -> int:
@@ -80,6 +104,11 @@ class Building:
     def housing_capacity(self) -> int:
         return BUILDING_HOUSING.get(self.type, 0)
 
+    @property
+    def stored_total(self) -> float:
+        """Sum of all resources currently stored."""
+        return sum(self.storage.values())
+
 
 class BuildingManager:
     """Tracks all placed buildings."""
@@ -88,7 +117,12 @@ class BuildingManager:
         self.buildings: list[Building] = []
 
     def place(self, btype: BuildingType, coord: HexCoord) -> Building:
-        b = Building(type=btype, coord=coord)
+        b = Building(
+            type=btype,
+            coord=coord,
+            storage=dict(BUILDING_DEFAULT_STOCK.get(btype, {})),
+            storage_capacity=BUILDING_STORAGE_CAPACITY.get(btype, 0),
+        )
         self.buildings.append(b)
         return b
 

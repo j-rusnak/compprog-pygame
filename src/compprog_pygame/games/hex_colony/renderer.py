@@ -35,7 +35,7 @@ from compprog_pygame.games.hex_colony.overlay import (
     build_overlays,
 )
 from compprog_pygame.games.hex_colony.people import Task
-from compprog_pygame.games.hex_colony.resources import Resource
+from compprog_pygame.games.hex_colony.resources import Resource, TERRAIN_RESOURCE
 from compprog_pygame.games.hex_colony.world import World
 
 from compprog_pygame.games.hex_colony.render_utils import (
@@ -87,6 +87,9 @@ from compprog_pygame.games.hex_colony.render_terrain import (
     draw_contours,
 )
 
+# Building types that collect resources (show range ring)
+_COLLECTION_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER}
+
 class Renderer:
     """Draws the entire game scene."""
 
@@ -121,6 +124,13 @@ class Renderer:
         self._static_overlays: list[OverlayItem] = []
         self._edge_colors: dict[HexCoord, list[tuple[int, int, int]]] = {}
         self._cross_cat: dict[HexCoord, list[int]] = {}  # 0=same category, 2=cross-category: use own colour
+
+        # Alt resource overlay
+        self.show_resource_overlay: bool = False
+
+        # Ghost building preview
+        self.ghost_building: BuildingType | None = None
+        self.ghost_coord: HexCoord | None = None  # snapped hex coord
 
     @property
     def graphics_quality(self) -> str:
@@ -165,8 +175,16 @@ class Renderer:
             self._draw_ripples(surface, camera, world.settings.hex_size)
         self._draw_buildings(surface, world, camera)
         self._draw_people(surface, world, camera)
+        if self.show_resource_overlay:
+            self._draw_resource_overlay(surface, world, camera)
+        if self.ghost_building is not None and self.ghost_coord is not None:
+            self._draw_ghost_building(surface, world, camera)
         if self.selected_hex is not None:
             self._draw_hex_highlight(surface, self.selected_hex, camera, world.settings.hex_size)
+            # Range ring for selected collection buildings
+            building = world.buildings.at(self.selected_hex)
+            if building is not None and building.type in _COLLECTION_BUILDINGS:
+                self._draw_range_ring(surface, self.selected_hex, camera, world.settings.hex_size)
 
     # ── Data preparation ─────────────────────────────────────────
 
@@ -711,6 +729,184 @@ class Renderer:
             shifted = [(px - min_x, py - min_y) for px, py in corners_screen]
             pygame.draw.polygon(overlay, (255, 255, 100, 30), shifted)
             surface.blit(overlay, (min_x, min_y))
+
+    # ── Alt resource overlay ─────────────────────────────────────
+
+    def _draw_resource_overlay(
+        self, surface: pygame.Surface, world: World, camera: Camera,
+    ) -> None:
+        """Colour-code every resource tile and building when Alt is held."""
+        zoom = camera.zoom
+        cam_x, cam_y = camera.x, camera.y
+        sw, sh = surface.get_size()
+        half_sw, half_sh = sw * 0.5, sh * 0.5
+        size = world.settings.hex_size
+
+        # Terrain overlay colours (semi-transparent per resource)
+        _TERRAIN_OVERLAY: dict[Terrain, tuple[int, int, int, int]] = {
+            Terrain.FOREST:        (100, 160, 60, 60),
+            Terrain.DENSE_FOREST:  (100, 160, 60, 60),
+            Terrain.STONE_DEPOSIT: (180, 180, 170, 60),
+            Terrain.FIBER_PATCH:   (140, 220, 90, 60),
+            Terrain.WATER:         (50, 100, 200, 40),
+        }
+        _BUILDING_OVERLAY: dict[str, tuple[int, int, int, int]] = {
+            "resource": (220, 160, 50, 70),
+            "path":     (200, 180, 140, 50),
+            "storage":  (160, 130, 100, 70),
+            "housing":  (100, 160, 220, 70),
+        }
+        _RESOURCE_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER}
+        _HOUSING_BUILDINGS = {BuildingType.CAMP, BuildingType.HOUSE}
+
+        # Spatial culling bounds
+        half_world_w = (sw * 0.5) / zoom + size * 2
+        half_world_h = (sh * 0.5) / zoom + size * 2
+        r_lo = int((cam_y - half_world_h) / (1.5 * size)) - 1
+        r_hi = int((cam_y + half_world_h) / (1.5 * size)) + 1
+
+        for r in range(r_lo, r_hi + 1):
+            q_lo = int((cam_x - half_world_w) / (size * _SQRT3) - r * 0.5) - 1
+            q_hi = int((cam_x + half_world_w) / (size * _SQRT3) - r * 0.5) + 1
+            for q in range(q_lo, q_hi + 1):
+                coord = HexCoord(q, r)
+                tile = world.grid.get(coord)
+                if tile is None:
+                    continue
+
+                # Determine overlay colour
+                overlay_col = None
+                building = world.buildings.at(coord)
+                if building is not None:
+                    if building.type in _RESOURCE_BUILDINGS:
+                        overlay_col = _BUILDING_OVERLAY["resource"]
+                    elif building.type == BuildingType.PATH:
+                        overlay_col = _BUILDING_OVERLAY["path"]
+                    elif building.type == BuildingType.STORAGE:
+                        overlay_col = _BUILDING_OVERLAY["storage"]
+                    elif building.type in _HOUSING_BUILDINGS:
+                        overlay_col = _BUILDING_OVERLAY["housing"]
+                elif tile.terrain in _TERRAIN_OVERLAY:
+                    overlay_col = _TERRAIN_OVERLAY[tile.terrain]
+
+                if overlay_col is None:
+                    continue
+
+                wx, wy = self._get_pixel(coord, size)
+                corners_world = self._get_corners(coord, wx, wy, size)
+                corners_screen = [
+                    ((cx - cam_x) * zoom + half_sw, (cy - cam_y) * zoom + half_sh)
+                    for cx, cy in corners_world
+                ]
+
+                xs = [p[0] for p in corners_screen]
+                ys = [p[1] for p in corners_screen]
+                min_x, max_x = int(min(xs)) - 1, int(max(xs)) + 1
+                min_y, max_y = int(min(ys)) - 1, int(max(ys)) + 1
+                w = max_x - min_x
+                h = max_y - min_y
+                if w > 0 and h > 0:
+                    ov = pygame.Surface((w, h), pygame.SRCALPHA)
+                    shifted = [(px - min_x, py - min_y) for px, py in corners_screen]
+                    pygame.draw.polygon(ov, overlay_col, shifted)
+                    surface.blit(ov, (min_x, min_y))
+
+    # ── Ghost building preview ───────────────────────────────────
+
+    def _draw_ghost_building(
+        self, surface: pygame.Surface, world: World, camera: Camera,
+    ) -> None:
+        """Draw a semi-transparent building at ghost_coord with range ring."""
+        coord = self.ghost_coord
+        btype = self.ghost_building
+        if coord is None or btype is None:
+            return
+
+        size = world.settings.hex_size
+        zoom = camera.zoom
+        cam_x, cam_y = camera.x, camera.y
+        sw, sh = surface.get_size()
+        half_sw, half_sh = sw * 0.5, sh * 0.5
+
+        wx, wy = self._get_pixel(coord, size)
+        sx = (wx - cam_x) * zoom + half_sw
+        sy = (wy - cam_y) * zoom + half_sh
+        r = int(size * 0.75 * zoom)
+        if r < 2:
+            return
+
+        # Draw building at half alpha using a temp surface
+        bld_size = r * 4
+        bld_surf = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)
+        cx_local = bld_size // 2
+        cy_local = bld_size // 2
+        # Draw the building shape onto the temp surface
+        if btype == BuildingType.CAMP:
+            draw_camp(bld_surf, cx_local, cy_local, r, zoom)
+        elif btype == BuildingType.HOUSE:
+            draw_house(bld_surf, cx_local, cy_local, r, zoom)
+        elif btype == BuildingType.WOODCUTTER:
+            draw_woodcutter(bld_surf, cx_local, cy_local, r, zoom)
+        elif btype == BuildingType.QUARRY:
+            draw_quarry(bld_surf, cx_local, cy_local, r, zoom)
+        elif btype == BuildingType.GATHERER:
+            draw_gatherer(bld_surf, cx_local, cy_local, r, zoom)
+        elif btype == BuildingType.STORAGE:
+            draw_storage(bld_surf, cx_local, cy_local, r, zoom)
+        elif btype == BuildingType.PATH:
+            draw_path(bld_surf, cx_local, cy_local, r, zoom, [], coord.q, coord.r)
+        bld_surf.set_alpha(140)
+        surface.blit(bld_surf, (int(sx) - cx_local, int(sy) - cy_local))
+
+        # Range ring for collection buildings
+        if btype in _COLLECTION_BUILDINGS:
+            self._draw_range_ring(surface, coord, camera, size)
+
+    # ── Resource collection range ring ───────────────────────────
+
+    def _draw_range_ring(
+        self, surface: pygame.Surface, center: HexCoord,
+        camera: Camera, size: int,
+    ) -> None:
+        """Draw a white pulsing outline around all hexes within 2-tile radius."""
+        zoom = camera.zoom
+        cam_x, cam_y = camera.x, camera.y
+        sw, sh = surface.get_size()
+        half_sw, half_sh = sw * 0.5, sh * 0.5
+
+        pulse = 0.6 + 0.4 * math.sin(pygame.time.get_ticks() / 250)
+        ring_color = (int(255 * pulse), int(255 * pulse), int(255 * pulse))
+
+
+        # Collect all hex coords within radius 2
+        ring_coords: list[HexCoord] = []
+        for dq in range(-2, 3):
+            for dr in range(-2, 3):
+                ds = -dq - dr
+                if abs(dq) + abs(dr) + abs(ds) <= 4:  # hex distance <= 2
+                    ring_coords.append(HexCoord(center.q + dq, center.r + dr))
+
+        # Find outer edges: edges of ring hexes that don't border another ring hex
+        ring_set = set(ring_coords)
+        line_w = max(2, int(2 * zoom))
+        for coord in ring_coords:
+            wx, wy = self._get_pixel(coord, size)
+            corners_world = self._get_corners(coord, wx, wy, size)
+            corners_screen = [
+                ((cx - cam_x) * zoom + half_sw, (cy - cam_y) * zoom + half_sh)
+                for cx, cy in corners_world
+            ]
+            for d in range(6):
+                nb = coord.neighbor(d)
+                if nb not in ring_set:
+                    # This edge is on the boundary — use DIR_EDGE mapping
+                    i1, i2 = DIR_EDGE[d]
+                    pygame.draw.line(
+                        surface, ring_color,
+                        (int(corners_screen[i1][0]), int(corners_screen[i1][1])),
+                        (int(corners_screen[i2][0]), int(corners_screen[i2][1])),
+                        line_w,
+                    )
 
     # ── HUD ──────────────────────────────────────────────────────
 

@@ -343,17 +343,17 @@ def _gen_fiber_tile(
     wx: float, wy: float, s: int, depth: int, rng: _random.Random,
 ) -> list[tuple[float, OverlayItem]]:
     items: list[tuple[float, OverlayItem]] = []
-    n = rng.randint(2, 4) if depth >= 1 else rng.randint(1, 3)
+    n = rng.randint(4, 7) if depth >= 1 else rng.randint(3, 5)
     for _ in range(n):
-        ox = rng.uniform(-s * 0.42, s * 0.42)
-        oy = rng.uniform(-s * 0.35, s * 0.35)
-        r = s * rng.uniform(0.08, 0.18) * (1.0 + depth * 0.12)
+        ox = rng.uniform(-s * 0.44, s * 0.44)
+        oy = rng.uniform(-s * 0.38, s * 0.38)
+        r = s * rng.uniform(0.14, 0.26) * (1.0 + depth * 0.15)
         berry: tuple[int, int, int] | None = None
-        if rng.random() > 0.3:
+        if rng.random() > 0.2:
             berry = rng.choice([(200, 60, 60), (180, 50, 120), (220, 180, 40)])
         items.append((wy + oy, OverlayBush(
             wx=wx + ox, wy=wy + oy, radius=r,
-            color=rng.choice([(100, 150, 50), (130, 170, 65)]),
+            color=rng.choice([(85, 140, 42), (110, 160, 55), (70, 130, 38)]),
             berry_color=berry,
         )))
     return items

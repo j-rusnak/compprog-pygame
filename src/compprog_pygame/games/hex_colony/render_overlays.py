@@ -114,9 +114,12 @@ def draw_bush(
     sx: float, sy: float, z: float, iz: int,
 ) -> None:
     br = max(2, int(item.radius * z))
+    # Dark outline for contrast against grass
+    pygame.draw.circle(surface, _darken(item.color, 0.7), (int(sx), int(sy)), br + max(1, iz))
     pygame.draw.circle(surface, item.color, (int(sx), int(sy)), br)
     if item.berry_color is not None:
-        pygame.draw.circle(surface, item.berry_color, (int(sx) + iz, int(sy) - iz), iz)
+        berry_r = max(1, iz + (1 if br > 4 else 0))
+        pygame.draw.circle(surface, item.berry_color, (int(sx) + iz, int(sy) - iz), berry_r)
 
 
 def draw_grass(

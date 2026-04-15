@@ -44,6 +44,7 @@ class Game:
         self.delete_mode = False
         self.sandbox = False
         self._build_dragging = False
+        self._delete_dragging = False
         self._hint_font = pygame.font.Font(None, 26)
 
         # UI
@@ -88,6 +89,8 @@ class Game:
 
             if not self._pause_overlay.visible:
                 self._update_keyboard_pan(dt)
+                self._update_alt_overlay()
+                self._update_ghost_building()
                 self.world.update(dt)
             self._resource_bar.delete_mode = self.delete_mode
             self.renderer.draw(screen, self.world, self.camera, dt=dt)
@@ -155,6 +158,8 @@ class Game:
                 self._on_left_click(event.pos)
                 if self.build_mode is not None:
                     self._build_dragging = True
+                elif self.delete_mode:
+                    self._delete_dragging = True
             elif event.button == 2:  # middle click — pan start
                 self.camera.start_drag(event.pos)
             elif event.button == 3:  # right click
@@ -182,6 +187,7 @@ class Game:
         elif event.type == pygame.MOUSEBUTTONUP:
             if event.button == 1:
                 self._build_dragging = False
+                self._delete_dragging = False
             if event.button in (2, 3):
                 self.camera.stop_drag()
 
@@ -192,6 +198,11 @@ class Game:
                 coord = pixel_to_hex(wx, wy, self.settings.hex_size)
                 if coord in self.world.grid:
                     self._try_place_building(coord)
+            elif self._delete_dragging and self.delete_mode:
+                wx, wy = self.camera.screen_to_world(*event.pos)
+                coord = pixel_to_hex(wx, wy, self.settings.hex_size)
+                if coord in self.world.grid:
+                    self._try_delete_building(coord)
 
         elif event.type == pygame.MOUSEWHEEL:
             pos = pygame.mouse.get_pos()
@@ -351,3 +362,47 @@ class Game:
             if target.home is not None:
                 target.home.residents = max(0, target.home.residents - 1)
             pop.people.remove(target)
+
+    # ── Alt overlay toggle ───────────────────────────────────────
+
+    def _update_alt_overlay(self) -> None:
+        """Show resource overlay while Alt is held."""
+        keys = pygame.key.get_pressed()
+        self.renderer.show_resource_overlay = keys[pygame.K_LALT] or keys[pygame.K_RALT]
+
+    # ── Ghost building preview ───────────────────────────────────
+
+    def _update_ghost_building(self) -> None:
+        """Update the ghost building preview coord based on mouse position."""
+        assert self.camera is not None
+        if self.build_mode is None:
+            self.renderer.ghost_building = None
+            self.renderer.ghost_coord = None
+            return
+
+        self.renderer.ghost_building = self.build_mode
+        mx, my = pygame.mouse.get_pos()
+        wx, wy = self.camera.screen_to_world(mx, my)
+        coord = pixel_to_hex(wx, wy, self.settings.hex_size)
+
+        # Only snap if the tile is in range and placeable
+        if coord in self.world.grid and self._can_place_at(coord):
+            self.renderer.ghost_coord = coord
+        else:
+            self.renderer.ghost_coord = None
+
+    def _can_place_at(self, coord) -> bool:
+        """Check if the current build_mode can be placed at coord."""
+        from compprog_pygame.games.hex_colony.hex_grid import Terrain
+        tile = self.world.grid.get(coord)
+        if tile is None:
+            return False
+        if tile.terrain == Terrain.WATER:
+            return False
+        existing = tile.building
+        if existing is not None:
+            if existing.type != BuildingType.PATH:
+                return False
+            if self.build_mode == BuildingType.PATH:
+                return False
+        return True

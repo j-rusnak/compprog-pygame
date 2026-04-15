@@ -19,6 +19,7 @@ import pygame
 
 from compprog_pygame.games.hex_colony.buildings import (
     BUILDING_HOUSING,
+    BUILDING_STORAGE_CAPACITY,
     BuildingType,
 )
 from compprog_pygame.games.hex_colony.resources import Resource
@@ -124,9 +125,15 @@ class BuildingInfoPanel(Panel):
         if b.max_workers > 0:
             lines.append((f"Workers: {b.workers}/{b.max_workers}", UI_TEXT, self._font))
 
-        # Stats placeholder
-        lines.append(("", UI_TEXT, self._small))
-        lines.append(("(More stats coming soon)", UI_MUTED, self._small))
+        # Storage info
+        if b.storage_capacity > 0:
+            lines.append(("", UI_TEXT, self._small))  # spacer
+            stored = int(b.stored_total)
+            lines.append((f"Storage: {stored}/{b.storage_capacity}", UI_TEXT, self._font))
+            for res, amount in b.storage.items():
+                if amount > 0:
+                    icon = _RES_ICON[res]
+                    lines.append((f"  {icon} {res.name.capitalize()}: {int(amount)}", _RES_COL[res], self._font))
 
         # Compute panel height
         panel_h = _PADDING * 2

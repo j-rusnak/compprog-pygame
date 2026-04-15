@@ -18,7 +18,7 @@ TERRAIN_BASE_COLOR: dict[Terrain, tuple[int, int, int]] = {
     Terrain.DENSE_FOREST:  (20, 72, 24),
     Terrain.STONE_DEPOSIT: (142, 142, 132),
     Terrain.WATER:         (38, 85, 175),
-    Terrain.FIBER_PATCH:   (115, 155, 58),
+    Terrain.FIBER_PATCH:   (105, 148, 48),
     Terrain.MOUNTAIN:      (110, 100, 90),
 }
 
@@ -41,7 +41,7 @@ _TERRAIN_CAT: dict[Terrain, int] = {
     Terrain.GRASS: 0,
     Terrain.FOREST: 0,
     Terrain.DENSE_FOREST: 0,
-    Terrain.FIBER_PATCH: 0,
+    Terrain.FIBER_PATCH: 3,
     Terrain.WATER: 1,
     Terrain.MOUNTAIN: 2,
     Terrain.STONE_DEPOSIT: 2,
