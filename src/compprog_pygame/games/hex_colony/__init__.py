@@ -15,15 +15,20 @@ from compprog_pygame.games.hex_colony.settings import HexColonySettings
 
 def _launch(screen: pygame.Surface, clock: pygame.time.Clock) -> None:
     """Show the menu, then run the Hex Colony game with the chosen seed."""
-    menu = HexColonyMenu(screen.get_width(), screen.get_height())
-    result = menu.run(screen, clock)
-    if result is None:
-        return  # player pressed Escape → back to game-select
+    while True:
+        menu = HexColonyMenu(screen.get_width(), screen.get_height())
+        result = menu.run(screen, clock)
+        if result is None:
+            return  # player pressed Escape → back to game-select
 
-    from dataclasses import replace
-    settings = replace(HexColonySettings(), world_radius=result.world_radius)
-    game = Game(settings, seed=result.seed)
-    game.run(screen, clock)
+        from dataclasses import replace
+        settings = replace(HexColonySettings(), world_radius=result.world_radius)
+        game = Game(settings, seed=result.seed)
+        game.run(screen, clock)
+
+        if game.quit_to_desktop:
+            raise SystemExit
+        # Return to main menu → loop back
 
 
 register(

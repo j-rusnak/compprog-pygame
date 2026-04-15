@@ -30,6 +30,7 @@ from compprog_pygame.games.hex_colony.buildings import (
     BuildingType,
 )
 from compprog_pygame.games.hex_colony.resources import Resource
+
 from compprog_pygame.games.hex_colony.ui import (
     Panel,
     TabContent,
@@ -272,7 +273,7 @@ class InfoTabContent(TabContent):
         text = self._font.render(
             f"Colony age: {world.time_elapsed:.0f}s   |   "
             f"Population: {world.population.count}   |   "
-            f"Buildings: {len(world.buildings.buildings)}",
+            f"Buildings: {sum(1 for b in world.buildings.buildings if b.type != BuildingType.PATH)}",
             True, UI_MUTED,
         )
         surface.blit(text, (rect.x + 10, rect.y + rect.h // 2 - text.get_height() // 2))

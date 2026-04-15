@@ -97,6 +97,7 @@ class Renderer:
         self.small_font = pygame.font.Font(None, 18)
         self.selected_hex: HexCoord | None = None
         self._water_tick: float = 0.0
+        self._graphics_quality: str = "high"  # "high", "medium", "low"
 
         # Caches
         self._pixel_cache: dict[HexCoord, tuple[float, float]] = {}
@@ -120,6 +121,16 @@ class Renderer:
         self._static_overlays: list[OverlayItem] = []
         self._edge_colors: dict[HexCoord, list[tuple[int, int, int]]] = {}
         self._cross_cat: dict[HexCoord, list[int]] = {}  # 0=same category, 2=cross-category: use own colour
+
+    @property
+    def graphics_quality(self) -> str:
+        return self._graphics_quality
+
+    @graphics_quality.setter
+    def graphics_quality(self, value: str) -> None:
+        if value != self._graphics_quality:
+            self._graphics_quality = value
+            self._tile_layer = None  # force rebuild
 
     # ── Cache helpers ────────────────────────────────────────────
 
@@ -150,7 +161,8 @@ class Renderer:
         self._ensure_data(world)
         surface.fill(BACKGROUND)
         self._blit_tile_layer(surface, world, camera)
-        self._draw_ripples(surface, camera, world.settings.hex_size)
+        if self._graphics_quality != "low":
+            self._draw_ripples(surface, camera, world.settings.hex_size)
         self._draw_buildings(surface, world, camera)
         self._draw_people(surface, world, camera)
         if self.selected_hex is not None:
@@ -387,8 +399,9 @@ class Renderer:
         cache = self._tile_layer
         draw_poly = pygame.draw.polygon
 
-        lod_high = zoom > 0.45
-        lod_mid = not lod_high and zoom >= 0.25
+        lod_high = zoom > 0.45 and self._graphics_quality == "high"
+        lod_mid = not lod_high and zoom >= 0.25 and self._graphics_quality != "low"
+        lod_low = self._graphics_quality == "low"
 
         # Spatial culling: iterate only hex coords within cache bounds
         half_world_w = half_cw / zoom + size * 2
@@ -416,7 +429,11 @@ class Renderer:
 
                 base = blended.get(coord, (80, 80, 80))
 
-                if lod_high:
+                if lod_low:
+                    # Low quality: flat terrain base colour, no blending
+                    flat = TERRAIN_BASE_COLOR.get(tile.terrain, (80, 80, 80))
+                    draw_poly(cache, flat, corners)
+                elif lod_high:
                     # Intra-tile rendering: 6 wedges (center→corner→corner).
                     # Same-category: 4-triangle gradient.
                     # Cross-category yield: midpoint boundary (smooth line).
@@ -456,8 +473,8 @@ class Renderer:
                 else:
                     draw_poly(cache, base, corners)
 
-                # Mountain ridge spurs (skip at very low zoom)
-                if lod_high or lod_mid:
+                # Mountain ridge spurs (skip at low quality and very low zoom)
+                if (lod_high or lod_mid) and not lod_low:
                     mtn_info = mtn.get(coord)
                     if mtn_info is not None and mtn_info[0] > 0:
                         draw_contours(
@@ -465,8 +482,8 @@ class Renderer:
                             base, mtn, zoom,
                         )
 
-        # Static overlays (skip entirely when zoom < 0.25)
-        if lod_high or lod_mid:
+        # Static overlays (skip on low quality or when zoom < 0.25)
+        if (lod_high or lod_mid) and not lod_low:
             margin = size * 16 * zoom
             stride = 1 if lod_high else 2
             for idx in range(0, len(self._static_overlays), stride):

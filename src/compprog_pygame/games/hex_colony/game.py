@@ -15,6 +15,7 @@ from compprog_pygame.games.hex_colony.settings import HexColonySettings
 from compprog_pygame.games.hex_colony.ui import UIManager
 from compprog_pygame.games.hex_colony.ui_bottom_bar import BottomBar
 from compprog_pygame.games.hex_colony.ui_building_info import BuildingInfoPanel
+from compprog_pygame.games.hex_colony.ui_pause_menu import PauseOverlay
 from compprog_pygame.games.hex_colony.ui_resource_bar import ResourceBar
 from compprog_pygame.games.hex_colony.world import World
 
@@ -38,6 +39,7 @@ class Game:
         self.camera: Camera | None = None
         self.renderer = Renderer()
         self.running = True
+        self.quit_to_desktop = False
         self.build_mode: BuildingType | None = None
         self.delete_mode = False
         self.sandbox = False
@@ -49,15 +51,23 @@ class Game:
         self._resource_bar = ResourceBar()
         self._bottom_bar = BottomBar()
         self._building_info = BuildingInfoPanel()
+        self._pause_overlay = PauseOverlay()
         self.ui.add_panel(self._resource_bar)
         self.ui.add_panel(self._bottom_bar)
         self.ui.add_panel(self._building_info)
+        self.ui.add_panel(self._pause_overlay)
 
         # Wire building tab -> build mode
         buildings_tab = self._bottom_bar.buildings_tab
         if buildings_tab:
             buildings_tab.set_on_select(self._on_building_selected)
             buildings_tab.set_on_delete_toggle(self._on_delete_toggled)
+
+        # Wire pause overlay callbacks
+        self._pause_overlay.on_resume = self._on_pause_resume
+        self._pause_overlay.on_return_to_menu = self._on_pause_return_to_menu
+        self._pause_overlay.on_quit = self._on_pause_quit
+        self._pause_overlay.on_graphics_changed = self._on_graphics_changed
 
         # Wire sandbox population buttons
         self._resource_bar.set_on_pop_change(self._on_pop_change)
@@ -76,7 +86,9 @@ class Game:
             for event in pygame.event.get():
                 self._handle_event(event)
 
-            self.world.update(dt)
+            if not self._pause_overlay.visible:
+                self._update_keyboard_pan(dt)
+                self.world.update(dt)
             self._resource_bar.delete_mode = self.delete_mode
             self.renderer.draw(screen, self.world, self.camera, dt=dt)
             self.ui.draw(screen, self.world)
@@ -90,6 +102,7 @@ class Game:
 
         if event.type == pygame.QUIT:
             self.running = False
+            self.quit_to_desktop = True
             return
 
         # Let UI consume events first
@@ -100,6 +113,7 @@ class Game:
             if event.key == pygame.K_ESCAPE:
                 if self.build_mode is not None:
                     self.build_mode = None
+                    self._build_dragging = False
                     btab = self._bottom_bar.buildings_tab
                     if btab:
                         btab.selected_building = None
@@ -109,7 +123,7 @@ class Game:
                     if btab:
                         btab.delete_active = False
                 else:
-                    self.running = False
+                    self._pause_overlay.show()
             elif event.key == pygame.K_TAB:
                 self.sandbox = not self.sandbox
                 self._resource_bar.sandbox = self.sandbox
@@ -155,6 +169,9 @@ class Game:
                     btab = self._bottom_bar.buildings_tab
                     if btab:
                         btab.delete_active = False
+                elif self.renderer.selected_hex is not None:
+                    self.renderer.selected_hex = None
+                    self._building_info.building = None
                 else:
                     self.camera.start_drag(event.pos)
             elif event.button == 4:  # scroll up
@@ -180,6 +197,27 @@ class Game:
             pos = pygame.mouse.get_pos()
             factor = 1.1 ** event.y
             self.camera.zoom_at(pos, factor)
+
+    # ── Keyboard camera pan ────────────────────────────────────────
+
+    _PAN_SPEED = 400  # world-pixels per second at zoom 1.0
+
+    def _update_keyboard_pan(self, dt: float) -> None:
+        assert self.camera is not None
+        keys = pygame.key.get_pressed()
+        dx = dy = 0.0
+        if keys[pygame.K_w] or keys[pygame.K_UP]:
+            dy -= 1
+        if keys[pygame.K_s] or keys[pygame.K_DOWN]:
+            dy += 1
+        if keys[pygame.K_a] or keys[pygame.K_LEFT]:
+            dx -= 1
+        if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
+            dx += 1
+        if dx or dy:
+            speed = self._PAN_SPEED / self.camera.zoom * dt
+            self.camera.x += dx * speed
+            self.camera.y += dy * speed
 
     # ── Click actions ────────────────────────────────────────────
 
@@ -283,6 +321,22 @@ class Game:
         btab = self._bottom_bar.buildings_tab
         if btab:
             btab.selected_building = self.build_mode
+
+    def _on_pause_resume(self) -> None:
+        """Callback from pause overlay Resume button."""
+
+    def _on_pause_return_to_menu(self) -> None:
+        """Callback from pause overlay Return to Main Menu button."""
+        self.running = False
+
+    def _on_pause_quit(self) -> None:
+        """Callback from pause overlay Quit button."""
+        self.running = False
+        self.quit_to_desktop = True
+
+    def _on_graphics_changed(self, quality: str) -> None:
+        """Callback from options menu when graphics quality changes."""
+        self.renderer.graphics_quality = quality
 
     def _on_pop_change(self, delta: int) -> None:
         """Sandbox callback: add or remove population."""
