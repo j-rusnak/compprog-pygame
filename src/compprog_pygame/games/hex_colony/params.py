@@ -64,6 +64,7 @@ BUILDING_COST_REFINERY: dict[str, int] = {"IRON": 8, "STONE": 15, "WOOD": 10}
 BUILDING_COST_FARM: dict[str, int] = {"WOOD": 12, "FIBER": 8, "STONE": 4}
 BUILDING_COST_WELL: dict[str, int] = {"STONE": 10, "WOOD": 6}
 BUILDING_COST_WALL: dict[str, int] = {"STONE": 8, "WOOD": 4}
+BUILDING_COST_WORKSHOP: dict[str, int] = {}
 
 # ═══════════════════════════════════════════════════════════════════
 #  BUILDING CAPACITY
@@ -83,6 +84,7 @@ BUILDING_MAX_WORKERS_REFINERY: int = 2
 BUILDING_MAX_WORKERS_FARM: int = 3
 BUILDING_MAX_WORKERS_WELL: int = 0
 BUILDING_MAX_WORKERS_WALL: int = 0
+BUILDING_MAX_WORKERS_WORKSHOP: int = 2
 
 # Housing capacity (number of people that can live here; 0 = not a dwelling)
 BUILDING_HOUSING_CAMP: int = 10
@@ -98,6 +100,7 @@ BUILDING_HOUSING_REFINERY: int = 0
 BUILDING_HOUSING_FARM: int = 0
 BUILDING_HOUSING_WELL: int = 0
 BUILDING_HOUSING_WALL: int = 0
+BUILDING_HOUSING_WORKSHOP: int = 0
 
 # Storage capacity (max total resources stored; 0 = none)
 # Camp capacity is set dynamically at placement time.
@@ -114,6 +117,7 @@ BUILDING_STORAGE_REFINERY: int = 15
 BUILDING_STORAGE_FARM: int = 25
 BUILDING_STORAGE_WELL: int = 0
 BUILDING_STORAGE_WALL: int = 0
+BUILDING_STORAGE_WORKSHOP: int = 0
 
 # ═══════════════════════════════════════════════════════════════════
 #  BUILDING DELETE REFUND
@@ -134,6 +138,33 @@ FARM_FOOD_RATE: float = 0.8
 
 # Well: bonus food multiplier for adjacent farms (1.0 = +100%)
 WELL_FARM_BONUS: float = 1.0
+
+# ═══════════════════════════════════════════════════════════════════
+#  WORKSHOP CRAFTING
+# ═══════════════════════════════════════════════════════════════════
+
+# Time in seconds (at 1x speed) to craft one building
+WORKSHOP_CRAFT_TIME: float = 15.0
+
+# ═══════════════════════════════════════════════════════════════════
+#  STARTING BUILDING INVENTORY
+#  (buildings the player starts with, placed from the building tab)
+# ═══════════════════════════════════════════════════════════════════
+
+START_BUILDINGS: dict[str, int] = {
+    "PATH": 30,
+    "WALL": 10,
+    "BRIDGE": 4,
+    "WORKSHOP": 3,
+    "HABITAT": 3,
+    "WOODCUTTER": 2,
+    "QUARRY": 2,
+    "GATHERER": 2,
+    "STORAGE": 2,
+    "REFINERY": 1,
+    "FARM": 2,
+    "WELL": 1,
+}
 
 # ═══════════════════════════════════════════════════════════════════
 #  RUINS

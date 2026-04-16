@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 import pygame
 
-from compprog_pygame.games.hex_colony.resources import Resource
+from compprog_pygame.games.hex_colony.resources import BuildingInventory, Resource
 from compprog_pygame.games.hex_colony.ui import (
     Panel,
     RESOURCE_COLORS,

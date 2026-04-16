@@ -5,7 +5,6 @@ from __future__ import annotations
 import pygame
 
 from compprog_pygame.games.hex_colony.buildings import (
-    BUILDING_COSTS,
     BuildingType,
 )
 from compprog_pygame.games.hex_colony.camera import Camera
@@ -43,6 +42,7 @@ BUILDABLE = [
     BuildingType.REFINERY,
     BuildingType.FARM,
     BuildingType.WELL,
+    BuildingType.WORKSHOP,
 ]
 
 
@@ -98,6 +98,7 @@ class Game:
         if buildings_tab:
             buildings_tab.set_on_select(self._on_building_selected)
             buildings_tab.set_on_delete_toggle(self._on_delete_toggled)
+            buildings_tab.building_inventory = self.world.building_inventory
 
         # Wire pause overlay callbacks
         self._pause_overlay.on_resume = self._on_pause_resume
@@ -346,18 +347,13 @@ class Game:
                 return
         # Check cost (skip in sandbox mode)
         if not self.sandbox:
-            cost = BUILDING_COSTS[self.build_mode]
-            for res, amount in cost.costs.items():
-                if self.world.inventory[res] < amount:
-                    return  # can't afford
-            for res, amount in cost.costs.items():
-                self.world.inventory.spend(res, amount)
-        # If building on top of a path/bridge, refund its cost and remove it
+            if self.world.building_inventory[self.build_mode] < 1:
+                return  # no stock
+            self.world.building_inventory.spend(self.build_mode)
+        # If building on top of a path/bridge, return it to inventory
         if existing is not None and existing.type in _PATH_LIKE:
             if not self.sandbox:
-                old_cost = BUILDING_COSTS[existing.type]
-                for res, amount in old_cost.costs.items():
-                    self.world.inventory[res] += amount
+                self.world.building_inventory.add(existing.type)
             self.world.buildings.remove(existing)
             tile.building = None
         # Place building
@@ -393,11 +389,9 @@ class Game:
                 building.workers = max(0, building.workers - 1)
             if person.home is building:
                 person.home = None
-        # Refund a fraction of the cost
+        # Return building to inventory
         if not self.sandbox:
-            cost = BUILDING_COSTS[building.type]
-            for res, amount in cost.costs.items():
-                self.world.inventory[res] += int(amount * params.DELETE_REFUND_FRACTION)
+            self.world.building_inventory.add(building.type)
         # Remove building
         self.world.buildings.remove(building)
         tile.building = None
@@ -507,6 +501,10 @@ class Game:
         # Tech tree gate
         if not self.tech_tree.is_building_unlocked(self.build_mode):
             return False
+        # Building inventory check (skip in sandbox)
+        if not self.sandbox:
+            if self.world.building_inventory[self.build_mode] < 1:
+                return False
         _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE}
         existing = tile.building
         if existing is not None:

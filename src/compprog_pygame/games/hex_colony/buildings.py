@@ -27,6 +27,7 @@ class BuildingType(Enum):
     FARM = auto()           # produces food without terrain requirement
     WELL = auto()           # boosts adjacent farm output
     WALL = auto()           # defensive stone wall — connects to adjacent walls
+    WORKSHOP = auto()       # crafting workshop — produces buildings from resources
 
 
 @dataclass(slots=True)
@@ -55,6 +56,7 @@ BUILDING_COSTS: dict[BuildingType, BuildingCost] = {
     BuildingType.FARM: BuildingCost(_costs_from_dict(params.BUILDING_COST_FARM)),
     BuildingType.WELL: BuildingCost(_costs_from_dict(params.BUILDING_COST_WELL)),
     BuildingType.WALL: BuildingCost(_costs_from_dict(params.BUILDING_COST_WALL)),
+    BuildingType.WORKSHOP: BuildingCost(_costs_from_dict(params.BUILDING_COST_WORKSHOP)),
 }
 
 # Max workers each building supports
@@ -72,6 +74,7 @@ BUILDING_MAX_WORKERS: dict[BuildingType, int] = {
     BuildingType.FARM: params.BUILDING_MAX_WORKERS_FARM,
     BuildingType.WELL: params.BUILDING_MAX_WORKERS_WELL,
     BuildingType.WALL: params.BUILDING_MAX_WORKERS_WALL,
+    BuildingType.WORKSHOP: params.BUILDING_MAX_WORKERS_WORKSHOP,
 }
 
 # Housing capacity per building type (0 = not a dwelling)
@@ -89,6 +92,7 @@ BUILDING_HOUSING: dict[BuildingType, int] = {
     BuildingType.FARM: params.BUILDING_HOUSING_FARM,
     BuildingType.WELL: params.BUILDING_HOUSING_WELL,
     BuildingType.WALL: params.BUILDING_HOUSING_WALL,
+    BuildingType.WORKSHOP: params.BUILDING_HOUSING_WORKSHOP,
 }
 
 # Storage capacity per building type.
@@ -109,6 +113,7 @@ BUILDING_STORAGE_CAPACITY: dict[BuildingType, int] = {
     BuildingType.FARM: params.BUILDING_STORAGE_FARM,
     BuildingType.WELL: params.BUILDING_STORAGE_WELL,
     BuildingType.WALL: params.BUILDING_STORAGE_WALL,
+    BuildingType.WORKSHOP: params.BUILDING_STORAGE_WORKSHOP,
 }
 
 
@@ -123,6 +128,8 @@ class Building:
     storage: dict[Resource, float] = field(default_factory=dict)
     storage_capacity: int = 0  # max total resources stored
     upgrade_level: int = 0  # current upgrade tier (0 = base)
+    recipe: BuildingType | None = None  # workshop: what building to craft
+    craft_progress: float = 0.0  # workshop: seconds of work done
 
     @property
     def max_workers(self) -> int:

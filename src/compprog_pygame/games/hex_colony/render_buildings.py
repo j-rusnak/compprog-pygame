@@ -605,3 +605,37 @@ def draw_wall(
         pygame.draw.rect(surface, _darken(wall_col, 0.5),
                          (nx, isy - wall_h - max(1, int(r * 0.08)),
                           notch_w, max(1, int(r * 0.08))))
+
+
+def draw_workshop(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Workshop — crafting building with anvil/workbench look."""
+    if _try_sprite(surface, "buildings/workshop", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    base_col = (180, 140, 60)
+    dark = _darken(base_col, 0.6)
+    light = _lighten(base_col, 1.15)
+
+    # Main building body (rectangle)
+    bw = max(4, int(r * 0.9))
+    bh = max(3, int(r * 0.6))
+    body = pygame.Rect(isx - bw // 2, isy - bh, bw, bh)
+    pygame.draw.rect(surface, base_col, body, border_radius=2)
+    pygame.draw.rect(surface, dark, body, width=iz, border_radius=2)
+
+    # Roof (triangle)
+    roof_pts = [
+        (isx - bw // 2 - max(1, int(r * 0.1)), isy - bh),
+        (isx + bw // 2 + max(1, int(r * 0.1)), isy - bh),
+        (isx, isy - bh - max(3, int(r * 0.5))),
+    ]
+    pygame.draw.polygon(surface, light, roof_pts)
+    pygame.draw.polygon(surface, dark, roof_pts, iz)
+
+    # Anvil symbol (gear/cog)
+    gear_r = max(2, int(r * 0.18))
+    gear_cx = isx
+    gear_cy = isy - bh // 2
+    pygame.draw.circle(surface, dark, (gear_cx, gear_cy), gear_r, iz)
+    pygame.draw.circle(surface, light, (gear_cx, gear_cy), max(1, gear_r // 2))

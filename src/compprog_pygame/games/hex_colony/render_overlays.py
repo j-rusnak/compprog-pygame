@@ -175,7 +175,7 @@ def draw_crystal(
     """Draw a faceted crystal shard poking out of the ground."""
     # Pick sprite based on crystal colour (iron vs copper)
     key = "overlays/crystal_iron" if item.color[0] > item.color[2] else "overlays/crystal_copper"
-    if _try_overlay_sprite(surface, key, sx, sy, z, item.w * 3, item.h * 2):
+    if _try_overlay_sprite(surface, key, sx, sy, z, item.w * 6, item.h * 4):
         return
     h = max(3, int(item.h * z))
     w = max(2, int(item.w * z))

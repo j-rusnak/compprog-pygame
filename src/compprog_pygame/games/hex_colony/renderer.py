@@ -80,6 +80,7 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_farm,
     draw_well,
     draw_wall,
+    draw_workshop,
 )
 from compprog_pygame.games.hex_colony.render_terrain import (
     DIR_EDGE,
@@ -859,6 +860,8 @@ class Renderer:
                 draw_farm(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.WELL:
                 draw_well(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.WORKSHOP:
+                draw_workshop(surface, sx, sy, r, zoom)
 
             # Overcrowding indicator: red ! above dwelling
             if (building.housing_capacity > 0
@@ -1093,6 +1096,8 @@ class Renderer:
                 draw_storage(bld_surf, cx_local, cy_local, r, zoom)
             elif btype == BuildingType.PATH:
                 draw_path(bld_surf, cx_local, cy_local, r, zoom, [], coord.q, coord.r)
+            elif btype == BuildingType.WORKSHOP:
+                draw_workshop(bld_surf, cx_local, cy_local, r, zoom)
 
             if not self.ghost_valid:
                 red_tint = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)

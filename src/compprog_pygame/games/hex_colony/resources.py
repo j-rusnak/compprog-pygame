@@ -53,3 +53,29 @@ class Inventory:
 
     def items(self):
         return self._stock.items()
+
+
+class BuildingInventory:
+    """Tracks how many pre-crafted buildings the player can place."""
+
+    def __init__(self) -> None:
+        self._stock: dict = {}  # BuildingType -> int (lazy to avoid circular import)
+
+    def __getitem__(self, btype) -> int:
+        return self._stock.get(btype, 0)
+
+    def __setitem__(self, btype, value: int) -> None:
+        self._stock[btype] = max(0, value)
+
+    def add(self, btype, amount: int = 1) -> None:
+        self._stock[btype] = self._stock.get(btype, 0) + amount
+
+    def spend(self, btype) -> bool:
+        """Consume one building from inventory. Returns True if successful."""
+        if self._stock.get(btype, 0) >= 1:
+            self._stock[btype] -= 1
+            return True
+        return False
+
+    def items(self):
+        return self._stock.items()

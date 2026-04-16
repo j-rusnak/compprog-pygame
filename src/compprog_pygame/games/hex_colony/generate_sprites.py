@@ -50,7 +50,7 @@ from compprog_pygame.games.hex_colony.overlay import (
     OverlayRuin,
     OverlayTree,
 )
-from compprog_pygame.games.hex_colony.sprites import SPRITE_DIR
+from compprog_pygame.games.hex_colony.sprites import SPRITE_DIR, sprites
 
 
 # Sprite canvas size (pixels). Buildings are drawn at hex_radius=24, zoom=1.0
@@ -132,6 +132,11 @@ def _generate_buildings() -> None:
 def _generate_overlays() -> None:
     print("Generating overlay sprites...")
 
+    # Clear sprite manager so draw_* functions use procedural fallback
+    # instead of blitting existing (possibly empty) sprites
+    sprites._sprites.clear()
+    sprites._loaded = False
+
     # Tree — canopy style
     tree_canopy = OverlayTree(
         wx=0, wy=0,
@@ -206,25 +211,25 @@ def _generate_overlays() -> None:
     # Crystal — iron
     crystal_iron = OverlayCrystal(
         wx=0, wy=0,
-        h=8, w=3,
+        h=16, w=7,
         color=(160, 100, 70),
         highlight_color=(200, 140, 100),
         angle=0.2,
     )
     s = _make_surface()
-    draw_crystal(s, crystal_iron, _HALF, _HALF + 4, _Z, 1)
+    draw_crystal(s, crystal_iron, _HALF, _HALF + 8, _Z, 1)
     _save(s, "overlays", "crystal_iron.png")
 
     # Crystal — copper
     crystal_copper = OverlayCrystal(
         wx=0, wy=0,
-        h=8, w=3,
+        h=16, w=7,
         color=(70, 160, 110),
         highlight_color=(110, 200, 150),
         angle=-0.15,
     )
     s = _make_surface()
-    draw_crystal(s, crystal_copper, _HALF, _HALF + 4, _Z, 1)
+    draw_crystal(s, crystal_copper, _HALF, _HALF + 8, _Z, 1)
     _save(s, "overlays", "crystal_copper.png")
 
     # Ruins — three variants

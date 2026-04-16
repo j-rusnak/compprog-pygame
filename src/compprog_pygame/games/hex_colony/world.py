@@ -12,7 +12,7 @@ from compprog_pygame.games.hex_colony.buildings import Building, BuildingManager
 from compprog_pygame.games.hex_colony.hex_grid import HexCoord, HexGrid
 from compprog_pygame.games.hex_colony.people import PopulationManager, Task
 from compprog_pygame.games.hex_colony.procgen import generate_terrain
-from compprog_pygame.games.hex_colony.resources import Inventory, Resource
+from compprog_pygame.games.hex_colony.resources import BuildingInventory, Inventory, Resource
 from compprog_pygame.games.hex_colony.settings import HexColonySettings
 from compprog_pygame.games.hex_colony import params
 
@@ -26,6 +26,7 @@ class World:
         self.buildings = BuildingManager()
         self.population = PopulationManager()
         self.inventory = Inventory()
+        self.building_inventory = BuildingInventory()
         self.time_elapsed: float = 0.0
         self._housing_dirty: bool = True  # needs recalc on first frame
 
@@ -42,6 +43,7 @@ class World:
         world.grid = generate_terrain(seed, settings)
         world._place_starting_camp()
         world._init_resources()
+        world._init_building_inventory()
         world._spawn_people()
         return world
 
@@ -74,6 +76,12 @@ class World:
         self.inventory[Resource.IRON] = params.START_IRON
         self.inventory[Resource.COPPER] = params.START_COPPER
 
+    def _init_building_inventory(self) -> None:
+        """Give the player their starting buildings."""
+        for name, count in params.START_BUILDINGS.items():
+            btype = BuildingType[name]
+            self.building_inventory.add(btype, count)
+
     def _spawn_people(self) -> None:
         origin = HexCoord(0, 0)
         camp = self.buildings.at(origin)
@@ -97,6 +105,9 @@ class World:
 
         # Farm & Refinery production
         self._update_production(dt)
+
+        # Workshop crafting
+        self._update_workshops(dt)
 
         # Move people
         self.population.update(dt, self, self.settings.hex_size)
@@ -275,3 +286,32 @@ class World:
                     self.inventory.add(Resource.IRON, amount)
                 elif tile.terrain == Terrain.COPPER_VEIN:
                     self.inventory.add(Resource.COPPER, amount)
+
+    # ── Workshop crafting ────────────────────────────────────────
+
+    def _update_workshops(self, dt: float) -> None:
+        """Advance workshop crafting; finished items go to building inventory."""
+        from compprog_pygame.games.hex_colony.buildings import BUILDING_COSTS
+
+        for ws in self.buildings.by_type(BuildingType.WORKSHOP):
+            if ws.recipe is None or ws.workers <= 0:
+                continue
+
+            # Check if resources are available for the recipe
+            cost = BUILDING_COSTS[ws.recipe]
+            can_afford = all(
+                self.inventory[res] >= amount
+                for res, amount in cost.costs.items()
+            )
+            if not can_afford:
+                continue
+
+            # Advance crafting progress (more workers = faster)
+            ws.craft_progress += dt * ws.workers
+            if ws.craft_progress >= params.WORKSHOP_CRAFT_TIME:
+                # Consume resources
+                for res, amount in cost.costs.items():
+                    self.inventory.spend(res, amount)
+                # Produce the building into inventory
+                self.building_inventory.add(ws.recipe)
+                ws.craft_progress = 0.0

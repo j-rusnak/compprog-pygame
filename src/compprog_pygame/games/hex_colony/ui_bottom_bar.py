@@ -26,14 +26,12 @@ from typing import TYPE_CHECKING
 import pygame
 
 from compprog_pygame.games.hex_colony.buildings import (
-    BUILDING_COSTS,
     BuildingType,
 )
+from compprog_pygame.games.hex_colony.resources import BuildingInventory
 
 from compprog_pygame.games.hex_colony.ui import (
     Panel,
-    RESOURCE_COLORS,
-    RESOURCE_ICONS,
     TabContent,
     UI_ACCENT,
     UI_BG,
@@ -70,25 +68,24 @@ class _Tab:
 # ── Placeholder tab contents ─────────────────────────────────────
 
 class BuildingsTabContent(TabContent):
-    """Grid of available buildings with costs.
+    """Grid of available buildings organized by category.
 
-    Selecting a building here activates build mode.  The actual placement
-    is handled by ``Game._on_left_click``.
+    Shows building inventory counts and allows placement when stock > 0.
     """
 
-    BUILDABLE = [
-        BuildingType.HABITAT,
-        BuildingType.PATH,
-        BuildingType.BRIDGE,
-        BuildingType.WALL,
-        BuildingType.WOODCUTTER,
-        BuildingType.QUARRY,
-        BuildingType.GATHERER,
-        BuildingType.STORAGE,
-        BuildingType.REFINERY,
-        BuildingType.FARM,
-        BuildingType.WELL,
+    # Category definitions
+    _CATEGORIES: list[tuple[str, list[BuildingType]]] = [
+        ("Housing", [BuildingType.HABITAT]),
+        ("Resource", [BuildingType.WOODCUTTER, BuildingType.QUARRY,
+                      BuildingType.GATHERER, BuildingType.FARM, BuildingType.WELL]),
+        ("Processing", [BuildingType.WORKSHOP, BuildingType.REFINERY, BuildingType.STORAGE]),
+        ("Logistics", [BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL]),
     ]
+
+    # Flat list of all buildable types (for index mapping)
+    BUILDABLE: list[BuildingType] = []
+    for _cat_name, _cat_types in _CATEGORIES:
+        BUILDABLE.extend(_cat_types)
 
     _ICON: dict[BuildingType, str] = {
         BuildingType.HABITAT: "\u2b22",     # ⬢
@@ -99,9 +96,10 @@ class BuildingsTabContent(TabContent):
         BuildingType.GATHERER: "\u2618",    # ☘
         BuildingType.STORAGE: "\u2302",     # ⌂
         BuildingType.REFINERY: "\u2697",    # ⚗
-        BuildingType.FARM: "\u2668",        # ♨ (field-like)
+        BuildingType.FARM: "\u2668",        # ♨
         BuildingType.WELL: "\u25ce",        # ◎
-        BuildingType.WALL: "\u2588",        # █ (block)
+        BuildingType.WALL: "\u2588",        # █
+        BuildingType.WORKSHOP: "\u2699",    # ⚙
     }
 
     _COLOR: dict[BuildingType, tuple[int, int, int]] = {
@@ -116,6 +114,7 @@ class BuildingsTabContent(TabContent):
         BuildingType.FARM: (100, 160, 50),
         BuildingType.WELL: (60, 100, 180),
         BuildingType.WALL: (160, 155, 145),
+        BuildingType.WORKSHOP: (180, 140, 60),
     }
 
     _DESC: dict[BuildingType, str] = {
@@ -130,40 +129,69 @@ class BuildingsTabContent(TabContent):
         BuildingType.FARM: "Grows food steadily",
         BuildingType.WELL: "Boosts adjacent farms",
         BuildingType.WALL: "Defensive stone wall",
+        BuildingType.WORKSHOP: "Crafts buildings",
     }
 
     def __init__(self) -> None:
         self._font = pygame.font.Font(None, 24)
         self._small = pygame.font.Font(None, 20)
+        self._cat_font = pygame.font.Font(None, 22)
         self.hovered: int = -1
         self.selected_building: BuildingType | None = None
         self.delete_active = False
         self._on_select: "_BuildingSelectCallback | None" = None
         self._on_delete_toggle: "callable | None" = None
+        self.building_inventory: BuildingInventory | None = None
+        self._active_cat: int = 0  # which category tab is active
 
     def set_on_select(self, callback: "_BuildingSelectCallback") -> None:
-        """Register a callback: ``callback(building_type | None)``."""
         self._on_select = callback
 
     def set_on_delete_toggle(self, callback) -> None:
-        """Register a callback: ``callback(active: bool)``."""
         self._on_delete_toggle = callback
 
     def draw_content(
         self, surface: pygame.Surface, rect: pygame.Rect, world: World,
     ) -> None:
+        # Draw category tabs at top of content area
+        cat_tab_h = 22
+        cat_tab_y = rect.y + 2
+        cat_x = rect.x + 6
+        cat_tab_rects: list[pygame.Rect] = []
+        for ci, (cat_name, _) in enumerate(self._CATEGORIES):
+            tw = self._cat_font.size(cat_name)[0] + 16
+            tr = pygame.Rect(cat_x, cat_tab_y, tw, cat_tab_h)
+            cat_tab_rects.append(tr)
+            is_active = ci == self._active_cat
+            bg = UI_TAB_ACTIVE if is_active else UI_TAB_INACTIVE
+            tab_bg = pygame.Surface((tw, cat_tab_h), pygame.SRCALPHA)
+            tab_bg.fill(bg)
+            surface.blit(tab_bg, tr.topleft)
+            border = UI_ACCENT if is_active else UI_BORDER
+            pygame.draw.rect(surface, border, tr, width=1, border_radius=3)
+            label = self._cat_font.render(cat_name, True, UI_TEXT)
+            surface.blit(label, (cat_x + 8, cat_tab_y + 2))
+            cat_x += tw + 4
+        self._cat_tab_rects = cat_tab_rects
+
+        # Draw building cards for active category
+        _, cat_types = self._CATEGORIES[self._active_cat]
         card_w = 120
-        card_h = rect.h - 20
+        card_h = rect.h - cat_tab_h - 16
         gap = 12
         x = rect.x + 10
-        y = rect.y + 10
+        y = rect.y + cat_tab_h + 8
 
-        for idx, btype in enumerate(self.BUILDABLE):
+        inv = self.building_inventory
+        for idx, btype in enumerate(cat_types):
             card_rect = pygame.Rect(x, y, card_w, card_h)
+            global_idx = self.BUILDABLE.index(btype)
 
-            # Background
             is_sel = self.selected_building == btype
-            is_hov = self.hovered == idx
+            is_hov = self.hovered == global_idx
+            stock = inv[btype] if inv else 0
+            has_stock = stock > 0
+
             if is_sel:
                 bg_col = UI_TAB_ACTIVE
             elif is_hov:
@@ -182,21 +210,13 @@ class BuildingsTabContent(TabContent):
             color = self._COLOR.get(btype, (200, 200, 200))
             icon_surf = self._font.render(icon, True, color)
             name_surf = self._font.render(btype.name.capitalize(), True, UI_TEXT)
-            surface.blit(icon_surf, (x + 6, y + 6))
-            surface.blit(name_surf, (x + 6 + icon_surf.get_width() + 4, y + 6))
+            surface.blit(icon_surf, (x + 6, y + 4))
+            surface.blit(name_surf, (x + 6 + icon_surf.get_width() + 4, y + 4))
 
-            # Cost
-            cost = BUILDING_COSTS[btype]
-            cy = y + 6 + name_surf.get_height() + 4
-            for res, amount in cost.costs.items():
-                ri = self._small.render(RESOURCE_ICONS[res], True, RESOURCE_COLORS[res])
-                rv = self._small.render(str(amount), True, UI_MUTED)
-                can_afford = world.inventory[res] >= amount
-                if not can_afford:
-                    rv = self._small.render(str(amount), True, (200, 60, 60))
-                surface.blit(ri, (x + 8, cy))
-                surface.blit(rv, (x + 8 + ri.get_width() + 2, cy))
-                cy += rv.get_height() + 1
+            # Stock count
+            stock_color = UI_TEXT if has_stock else (200, 60, 60)
+            stock_surf = self._small.render(f"x{stock}", True, stock_color)
+            surface.blit(stock_surf, (x + 8, y + 4 + name_surf.get_height() + 2))
 
             # Description
             desc = self._DESC.get(btype)
@@ -207,10 +227,10 @@ class BuildingsTabContent(TabContent):
             x += card_w + gap
 
         # Delete tool card
-        del_idx = len(self.BUILDABLE)
         card_rect = pygame.Rect(x, y, card_w, card_h)
         is_sel = self.delete_active
-        is_hov = self.hovered == del_idx
+        del_global = len(self.BUILDABLE)
+        is_hov = self.hovered == del_global
         if is_sel:
             bg_col = (60, 20, 20, 220)
         elif is_hov:
@@ -222,12 +242,12 @@ class BuildingsTabContent(TabContent):
         surface.blit(card_bg, card_rect.topleft)
         border_col = (200, 60, 60) if is_sel else UI_BORDER
         pygame.draw.rect(surface, border_col, card_rect, width=2, border_radius=4)
-        icon_surf = self._font.render("\u2716", True, (200, 60, 60))  # ✖
+        icon_surf = self._font.render("\u2716", True, (200, 60, 60))
         name_surf = self._font.render("Delete", True, UI_TEXT)
-        surface.blit(icon_surf, (x + 6, y + 6))
-        surface.blit(name_surf, (x + 6 + icon_surf.get_width() + 4, y + 6))
-        hint_surf = self._small.render("50% refund", True, UI_MUTED)
-        surface.blit(hint_surf, (x + 8, y + 6 + name_surf.get_height() + 4))
+        surface.blit(icon_surf, (x + 6, y + 4))
+        surface.blit(name_surf, (x + 6 + icon_surf.get_width() + 4, y + 4))
+        hint_surf = self._small.render("Returns to inventory", True, UI_MUTED)
+        surface.blit(hint_surf, (x + 8, y + 4 + name_surf.get_height() + 2))
 
     def handle_event(
         self, event: pygame.event.Event, rect: pygame.Rect,
@@ -236,10 +256,18 @@ class BuildingsTabContent(TabContent):
             self._update_hover(event.pos, rect)
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             if rect.collidepoint(event.pos):
-                idx = self._card_index_at(event.pos, rect)
-                del_idx = len(self.BUILDABLE)
+                # Check category tab clicks
+                for ci, tr in enumerate(getattr(self, '_cat_tab_rects', [])):
+                    if tr.collidepoint(event.pos):
+                        self._active_cat = ci
+                        self.hovered = -1
+                        return True
+                # Check building card clicks
+                _, cat_types = self._CATEGORIES[self._active_cat]
+                cat_tab_h = 22
+                idx = self._card_index_at(event.pos, rect, len(cat_types), cat_tab_h)
+                del_idx = len(cat_types)
                 if idx == del_idx:
-                    # Toggle delete mode
                     self.delete_active = not self.delete_active
                     if self.delete_active:
                         self.selected_building = None
@@ -248,8 +276,8 @@ class BuildingsTabContent(TabContent):
                     if self._on_delete_toggle:
                         self._on_delete_toggle(self.delete_active)
                     return True
-                elif 0 <= idx < len(self.BUILDABLE):
-                    btype = self.BUILDABLE[idx]
+                elif 0 <= idx < len(cat_types):
+                    btype = cat_types[idx]
                     if self.selected_building == btype:
                         self.selected_building = None
                     else:
@@ -266,12 +294,23 @@ class BuildingsTabContent(TabContent):
         if not rect.collidepoint(pos):
             self.hovered = -1
             return
-        self.hovered = self._card_index_at(pos, rect)
+        _, cat_types = self._CATEGORIES[self._active_cat]
+        cat_tab_h = 22
+        local_idx = self._card_index_at(pos, rect, len(cat_types), cat_tab_h)
+        if local_idx < 0:
+            self.hovered = -1
+        elif local_idx >= len(cat_types):
+            # Delete card
+            self.hovered = len(self.BUILDABLE)
+        else:
+            self.hovered = self.BUILDABLE.index(cat_types[local_idx])
 
-    def _card_index_at(self, pos: tuple[int, int], rect: pygame.Rect) -> int:
+    def _card_index_at(self, pos: tuple[int, int], rect: pygame.Rect,
+                       num_cards: int, cat_tab_h: int) -> int:
         card_w, gap = 120, 12
         local_x = pos[0] - rect.x - 10
-        if local_x < 0:
+        local_y = pos[1] - rect.y - cat_tab_h - 8
+        if local_x < 0 or local_y < 0:
             return -1
         idx = int(local_x // (card_w + gap))
         if local_x % (card_w + gap) > card_w:
