@@ -86,6 +86,11 @@ class NoiseMap:
 # ── Impassable terrain helpers ────────────────────────────────────
 
 IMPASSABLE = frozenset({Terrain.WATER, Terrain.MOUNTAIN, Terrain.STONE_DEPOSIT})
+
+# Terrain where buildings cannot be placed (subset of IMPASSABLE).
+# Stone deposits are impassable for people but players can build on them.
+UNBUILDABLE = frozenset({Terrain.WATER, Terrain.MOUNTAIN})
+
 SAFE_RADIUS = params.SAFE_ZONE_RADIUS
 
 

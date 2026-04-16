@@ -26,7 +26,7 @@ from compprog_pygame.games.hex_colony import params
 
 # Build-mode palette order
 BUILDABLE = [
-    BuildingType.HOUSE,
+    BuildingType.HABITAT,
     BuildingType.PATH,
     BuildingType.WOODCUTTER,
     BuildingType.QUARRY,
@@ -109,6 +109,7 @@ class Game:
                 self._update_alt_overlay()
                 self._update_ghost_building()
                 self.world.update(dt * self._sim_speed)
+            self.camera.update(dt)
             self._resource_bar.delete_mode = self.delete_mode
             self._resource_bar.sim_speed = self._sim_speed
             self.renderer.draw(screen, self.world, self.camera, dt=dt)
@@ -288,9 +289,9 @@ class Game:
 
     def _try_place_building(self, coord) -> None:
         tile = self.world.grid[coord]
-        # Can't build on impassable terrain
-        from compprog_pygame.games.hex_colony.procgen import IMPASSABLE
-        if tile.terrain in IMPASSABLE:
+        # Can't build on unbuildable terrain (water, mountain)
+        from compprog_pygame.games.hex_colony.procgen import UNBUILDABLE
+        if tile.terrain in UNBUILDABLE:
             return
         # Check existing building
         existing = tile.building
@@ -426,6 +427,7 @@ class Game:
         if self.build_mode is None:
             self.renderer.ghost_building = None
             self.renderer.ghost_coord = None
+            self.renderer.ghost_valid = False
             return
 
         self.renderer.ghost_building = self.build_mode
@@ -433,19 +435,21 @@ class Game:
         wx, wy = self.camera.screen_to_world(mx, my)
         coord = pixel_to_hex(wx, wy, self.settings.hex_size)
 
-        # Only snap if the tile is in range and placeable
-        if coord in self.world.grid and self._can_place_at(coord):
+        # Show ghost on any valid grid tile; mark red if not placeable
+        if coord in self.world.grid:
             self.renderer.ghost_coord = coord
+            self.renderer.ghost_valid = self._can_place_at(coord)
         else:
             self.renderer.ghost_coord = None
+            self.renderer.ghost_valid = False
 
     def _can_place_at(self, coord) -> bool:
         """Check if the current build_mode can be placed at coord."""
-        from compprog_pygame.games.hex_colony.procgen import IMPASSABLE
+        from compprog_pygame.games.hex_colony.procgen import UNBUILDABLE
         tile = self.world.grid.get(coord)
         if tile is None:
             return False
-        if tile.terrain in IMPASSABLE:
+        if tile.terrain in UNBUILDABLE:
             return False
         existing = tile.building
         if existing is not None:

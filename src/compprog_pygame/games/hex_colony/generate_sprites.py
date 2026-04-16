@@ -22,6 +22,7 @@ import pygame
 from compprog_pygame.games.hex_colony.render_buildings import (
     draw_camp,
     draw_gatherer,
+    draw_habitat,
     draw_house,
     draw_overcrowded,
     draw_quarry,
@@ -73,6 +74,10 @@ def _generate_buildings() -> None:
     s = _make_surface()
     draw_house(s, _HALF, _HALF, _R, _Z)
     _save(s, "buildings", "house.png")
+
+    s = _make_surface()
+    draw_habitat(s, _HALF, _HALF, _R, _Z)
+    _save(s, "buildings", "habitat.png")
 
     s = _make_surface()
     draw_woodcutter(s, _HALF, _HALF, _R, _Z)

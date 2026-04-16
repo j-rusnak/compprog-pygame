@@ -55,6 +55,7 @@ _TERRAIN_CAT: dict[Terrain, int] = {
 BUILDING_COLORS: dict[BuildingType, tuple[int, int, int]] = {
     BuildingType.CAMP: (120, 140, 170),   # spaceship hull — blue-grey metallic
     BuildingType.HOUSE: (170, 140, 90),
+    BuildingType.HABITAT: (140, 155, 175),  # futuristic pod — blue-grey metal
     BuildingType.PATH: (185, 165, 120),
     BuildingType.WOODCUTTER: (160, 100, 50),
     BuildingType.QUARRY: (170, 170, 160),

@@ -66,6 +66,7 @@ from compprog_pygame.games.hex_colony.render_overlays import (
 from compprog_pygame.games.hex_colony.render_buildings import (
     draw_overcrowded,
     draw_camp,
+    draw_habitat,
     draw_house,
     draw_woodcutter,
     draw_quarry,
@@ -119,6 +120,11 @@ class Renderer:
         # Ghost building preview
         self.ghost_building: BuildingType | None = None
         self.ghost_coord: HexCoord | None = None  # snapped hex coord
+        self.ghost_valid: bool = False  # whether placement is valid
+
+        # Reusable overlay surface for per-hex alpha blits
+        self._hex_overlay: pygame.Surface | None = None
+        self._hex_overlay_size: tuple[int, int] = (0, 0)
 
     @property
     def graphics_quality(self) -> str:
@@ -131,6 +137,16 @@ class Renderer:
             self._tile_layer = None  # force rebuild
 
     # ── Cache helpers ────────────────────────────────────────────
+
+    def _get_hex_overlay(self, w: int, h: int) -> pygame.Surface:
+        """Return a reusable SRCALPHA surface, growing it if needed."""
+        if self._hex_overlay is None or w > self._hex_overlay_size[0] or h > self._hex_overlay_size[1]:
+            nw = max(w, self._hex_overlay_size[0]) + 16
+            nh = max(h, self._hex_overlay_size[1]) + 16
+            self._hex_overlay = pygame.Surface((nw, nh), pygame.SRCALPHA)
+            self._hex_overlay_size = (nw, nh)
+        self._hex_overlay.fill((0, 0, 0, 0), (0, 0, w, h))
+        return self._hex_overlay
 
     def _get_pixel(self, coord: HexCoord, size: int) -> tuple[float, float]:
         cached = self._pixel_cache.get(coord)
@@ -752,6 +768,8 @@ class Renderer:
                 draw_camp(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.HOUSE:
                 draw_house(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.HABITAT:
+                draw_habitat(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.WOODCUTTER:
                 draw_woodcutter(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.QUARRY:
@@ -858,10 +876,10 @@ class Renderer:
         w = max_x - min_x
         h = max_y - min_y
         if w > 0 and h > 0:
-            overlay = pygame.Surface((w, h), pygame.SRCALPHA)
+            overlay = self._get_hex_overlay(w, h)
             shifted = [(px - min_x, py - min_y) for px, py in corners_screen]
             pygame.draw.polygon(overlay, (255, 255, 100, 30), shifted)
-            surface.blit(overlay, (min_x, min_y))
+            surface.blit(overlay, (min_x, min_y), area=(0, 0, w, h))
 
     # ── Alt resource overlay ─────────────────────────────────────
 
@@ -892,7 +910,7 @@ class Renderer:
             "housing":  (100, 160, 220, 70),
         }
         _RESOURCE_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER}
-        _HOUSING_BUILDINGS = {BuildingType.CAMP, BuildingType.HOUSE}
+        _HOUSING_BUILDINGS = {BuildingType.CAMP, BuildingType.HOUSE, BuildingType.HABITAT}
 
         # Spatial culling bounds
         half_world_w = (sw * 0.5) / zoom + size * 2
@@ -941,10 +959,10 @@ class Renderer:
                 w = max_x - min_x
                 h = max_y - min_y
                 if w > 0 and h > 0:
-                    ov = pygame.Surface((w, h), pygame.SRCALPHA)
+                    ov = self._get_hex_overlay(w, h)
                     shifted = [(px - min_x, py - min_y) for px, py in corners_screen]
                     pygame.draw.polygon(ov, overlay_col, shifted)
-                    surface.blit(ov, (min_x, min_y))
+                    surface.blit(ov, (min_x, min_y), area=(0, 0, w, h))
 
     # ── Ghost building preview ───────────────────────────────────
 
@@ -980,6 +998,8 @@ class Renderer:
             draw_camp(bld_surf, cx_local, cy_local, r, zoom)
         elif btype == BuildingType.HOUSE:
             draw_house(bld_surf, cx_local, cy_local, r, zoom)
+        elif btype == BuildingType.HABITAT:
+            draw_habitat(bld_surf, cx_local, cy_local, r, zoom)
         elif btype == BuildingType.WOODCUTTER:
             draw_woodcutter(bld_surf, cx_local, cy_local, r, zoom)
         elif btype == BuildingType.QUARRY:
@@ -990,11 +1010,22 @@ class Renderer:
             draw_storage(bld_surf, cx_local, cy_local, r, zoom)
         elif btype == BuildingType.PATH:
             draw_path(bld_surf, cx_local, cy_local, r, zoom, [], coord.q, coord.r)
-        bld_surf.set_alpha(140)
+
+        # Tint red when placement is invalid
+        if not self.ghost_valid:
+            red_tint = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)
+            red_tint.fill((255, 60, 60, 100))
+            bld_surf.blit(red_tint, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+            # Re-apply red cast so the ghost looks distinctly invalid
+            red_overlay = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)
+            red_overlay.fill((255, 50, 50, 80))
+            bld_surf.blit(red_overlay, (0, 0))
+
+        bld_surf.set_alpha(140 if self.ghost_valid else 100)
         surface.blit(bld_surf, (int(sx) - cx_local, int(sy) - cy_local))
 
-        # Range ring for collection buildings
-        if btype in _COLLECTION_BUILDINGS:
+        # Range ring for collection buildings (only when valid)
+        if self.ghost_valid and btype in _COLLECTION_BUILDINGS:
             self._draw_range_ring(surface, coord, camera, size)
 
     # ── Resource collection range ring ───────────────────────────

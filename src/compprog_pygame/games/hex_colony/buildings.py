@@ -15,7 +15,8 @@ from compprog_pygame.games.hex_colony import params
 
 class BuildingType(Enum):
     CAMP = auto()           # crashed spaceship — starting base, stores resources, shelters survivors
-    HOUSE = auto()          # houses up to 5 people
+    HOUSE = auto()          # primitive hut — used by AI enemies (not player-buildable)
+    HABITAT = auto()        # futuristic modular pod — player housing
     PATH = auto()           # dirt path — connects visually to adjacent paths
     WOODCUTTER = auto()     # harvests wood from adjacent forest hexes
     QUARRY = auto()         # harvests stone from adjacent stone deposits
@@ -38,6 +39,7 @@ def _costs_from_dict(d: dict[str, int]) -> dict[Resource, int]:
 BUILDING_COSTS: dict[BuildingType, BuildingCost] = {
     BuildingType.CAMP: BuildingCost(_costs_from_dict(params.BUILDING_COST_CAMP)),
     BuildingType.HOUSE: BuildingCost(_costs_from_dict(params.BUILDING_COST_HOUSE)),
+    BuildingType.HABITAT: BuildingCost(_costs_from_dict(params.BUILDING_COST_HABITAT)),
     BuildingType.PATH: BuildingCost(_costs_from_dict(params.BUILDING_COST_PATH)),
     BuildingType.WOODCUTTER: BuildingCost(_costs_from_dict(params.BUILDING_COST_WOODCUTTER)),
     BuildingType.QUARRY: BuildingCost(_costs_from_dict(params.BUILDING_COST_QUARRY)),
@@ -49,6 +51,7 @@ BUILDING_COSTS: dict[BuildingType, BuildingCost] = {
 BUILDING_MAX_WORKERS: dict[BuildingType, int] = {
     BuildingType.CAMP: params.BUILDING_MAX_WORKERS_CAMP,
     BuildingType.HOUSE: params.BUILDING_MAX_WORKERS_HOUSE,
+    BuildingType.HABITAT: params.BUILDING_MAX_WORKERS_HABITAT,
     BuildingType.PATH: params.BUILDING_MAX_WORKERS_PATH,
     BuildingType.WOODCUTTER: params.BUILDING_MAX_WORKERS_WOODCUTTER,
     BuildingType.QUARRY: params.BUILDING_MAX_WORKERS_QUARRY,
@@ -60,6 +63,7 @@ BUILDING_MAX_WORKERS: dict[BuildingType, int] = {
 BUILDING_HOUSING: dict[BuildingType, int] = {
     BuildingType.CAMP: params.BUILDING_HOUSING_CAMP,
     BuildingType.HOUSE: params.BUILDING_HOUSING_HOUSE,
+    BuildingType.HABITAT: params.BUILDING_HOUSING_HABITAT,
     BuildingType.PATH: params.BUILDING_HOUSING_PATH,
     BuildingType.WOODCUTTER: params.BUILDING_HOUSING_WOODCUTTER,
     BuildingType.QUARRY: params.BUILDING_HOUSING_QUARRY,
@@ -74,6 +78,7 @@ BUILDING_HOUSING: dict[BuildingType, int] = {
 BUILDING_STORAGE_CAPACITY: dict[BuildingType, int] = {
     BuildingType.CAMP: params.BUILDING_STORAGE_CAMP,
     BuildingType.HOUSE: params.BUILDING_STORAGE_HOUSE,
+    BuildingType.HABITAT: params.BUILDING_STORAGE_HABITAT,
     BuildingType.PATH: params.BUILDING_STORAGE_PATH,
     BuildingType.WOODCUTTER: params.BUILDING_STORAGE_WOODCUTTER,
     BuildingType.QUARRY: params.BUILDING_STORAGE_QUARRY,
@@ -87,6 +92,7 @@ class Building:
     """A placed building on the map."""
     type: BuildingType
     coord: HexCoord
+    faction: str = "SURVIVOR"  # "SURVIVOR" or "PRIMITIVE" — avoids circular import
     workers: int = 0
     residents: int = 0  # people living here (for dwellings)
     storage: dict[Resource, float] = field(default_factory=dict)

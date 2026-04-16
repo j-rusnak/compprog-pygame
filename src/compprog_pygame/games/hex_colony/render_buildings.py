@@ -124,6 +124,76 @@ def draw_camp(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -
     pygame.draw.circle(surface, (255, 220, 100), (spark_x, spark_y), spark_r)
 
 
+def draw_habitat(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Futuristic modular habitat pod — cubical with metal panels and glowing window."""
+    if _try_sprite(surface, "buildings/habitat", sx, sy, r, z):
+        return
+    iz = max(1, int(z))
+
+    # --- Main body: boxy pod ---
+    body_w = int(r * 1.1)
+    body_h = int(r * 0.8)
+
+    hull_col = (140, 155, 175)   # blue-grey metal
+    hull_dark = _darken(hull_col, 0.7)
+    hull_light = _lighten(hull_col, 1.15)
+
+    # Right face (darker — isometric shading)
+    right_pts = [
+        (int(sx), int(sy - body_h * 0.55)),
+        (int(sx + body_w * 0.5), int(sy - body_h * 0.4)),
+        (int(sx + body_w * 0.5), int(sy + body_h * 0.45)),
+        (int(sx), int(sy + body_h * 0.3)),
+    ]
+    pygame.draw.polygon(surface, hull_dark, right_pts)
+
+    # Left face (lighter)
+    left_pts = [
+        (int(sx), int(sy - body_h * 0.55)),
+        (int(sx - body_w * 0.5), int(sy - body_h * 0.4)),
+        (int(sx - body_w * 0.5), int(sy + body_h * 0.45)),
+        (int(sx), int(sy + body_h * 0.3)),
+    ]
+    pygame.draw.polygon(surface, hull_col, left_pts)
+
+    # Top face
+    top_pts = [
+        (int(sx), int(sy - body_h * 0.85)),
+        (int(sx + body_w * 0.5), int(sy - body_h * 0.55)),
+        (int(sx), int(sy - body_h * 0.4)),
+        (int(sx - body_w * 0.5), int(sy - body_h * 0.55)),
+    ]
+    pygame.draw.polygon(surface, hull_light, top_pts)
+
+    # Outline
+    for pts in (right_pts, left_pts, top_pts):
+        pygame.draw.polygon(surface, _darken(hull_col, 0.45), pts, iz)
+
+    # Panel seam on left face
+    seam_col = _darken(hull_col, 0.55)
+    seam_y = int(sy)
+    pygame.draw.line(surface, seam_col,
+                     (int(sx - body_w * 0.45), seam_y), (int(sx - iz), int(seam_y - body_h * 0.07)), iz)
+
+    # --- Glowing window on right face ---
+    win_w = max(2, int(body_w * 0.22))
+    win_h = max(2, int(body_h * 0.3))
+    win_x = int(sx + body_w * 0.1)
+    win_y = int(sy - body_h * 0.15)
+    glow = (100, 200, 255)
+    glow_dim = (60, 140, 200)
+    pygame.draw.rect(surface, glow_dim, (win_x, win_y, win_w, win_h))
+    pygame.draw.rect(surface, glow, (win_x + iz, win_y + iz, max(1, win_w - iz * 2), max(1, win_h - iz * 2)))
+    pygame.draw.rect(surface, _darken(hull_col, 0.45), (win_x, win_y, win_w, win_h), iz)
+
+    # --- Small antenna on top ---
+    ant_x = int(sx + body_w * 0.15)
+    ant_base_y = int(sy - body_h * 0.7)
+    ant_top_y = ant_base_y - max(2, int(r * 0.3))
+    pygame.draw.line(surface, (100, 110, 120), (ant_x, ant_base_y), (ant_x, ant_top_y), iz)
+    pygame.draw.circle(surface, (80, 200, 240), (ant_x, ant_top_y), max(1, iz))
+
+
 def draw_house(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
     """Teepee / hut — conical tent with hide covering and smoke hole."""
     if _try_sprite(surface, "buildings/house", sx, sy, r, z):
