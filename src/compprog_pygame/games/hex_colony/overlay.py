@@ -59,9 +59,19 @@ class OverlayCrystal:
     highlight_color: tuple[int, int, int]
     angle: float  # tilt angle in radians
 
+@dataclass(slots=True)
+class OverlayRuin:
+    """Remnant of old human civilization — pillars, walls, arches."""
+    wx: float; wy: float
+    variant: int  # 0=pillar, 1=broken wall, 2=arch
+    color: tuple[int, int, int]
+    highlight_color: tuple[int, int, int]
+    coord: tuple[int, int]  # (q, r) for the hex this ruin sits on
+
 OverlayItem = (
     OverlayTree | OverlayRock
     | OverlayBush | OverlayGrassTuft | OverlayRipple | OverlayCrystal
+    | OverlayRuin
 )
 
 # ── Cluster analysis ────────────────────────────────────────────
@@ -180,7 +190,12 @@ def build_overlays(
                 items.extend(_gen_ore_tile(wx, wy, hex_size, terrain, tile, rng))
 
     items.sort(key=lambda pair: pair[0])
-    return [item for _, item in items], mountain_depths
+    sorted_items = [item for _, item in items]
+
+    # ── Ruins: rare remnants of old human civilization ─────────
+    sorted_items.extend(_gen_ruins(grid, hex_size))
+
+    return sorted_items, mountain_depths
 
 
 # ── Forest ───────────────────────────────────────────────────────
@@ -441,3 +456,44 @@ def _gen_ore_tile(
             angle=angle,
         )))
     return items
+
+
+# ── Ruins (rare old human society remnants) ──────────────────────
+
+_RUIN_COLORS = [
+    ((120, 110, 95), (160, 150, 130)),   # sandstone
+    ((90, 85, 80), (130, 125, 115)),     # grey stone
+    ((100, 90, 75), (145, 135, 115)),    # weathered brick
+]
+
+def _gen_ruins(grid: HexGrid, hex_size: int) -> list[OverlayRuin]:
+    """Scatter rare old human ruins across non-water, non-mountain tiles."""
+    from compprog_pygame.games.hex_colony import params
+    from compprog_pygame.games.hex_colony.procgen import UNBUILDABLE
+
+    origin = HexCoord(0, 0)
+    candidates = [
+        tile.coord for tile in grid.tiles()
+        if tile.terrain not in UNBUILDABLE
+        and tile.coord.distance(origin) >= params.RUINS_MIN_DISTANCE
+    ]
+    if not candidates:
+        return []
+
+    rng = _random.Random(42)
+    rng.shuffle(candidates)
+    count = rng.randint(params.RUINS_COUNT_MIN, params.RUINS_COUNT_MAX)
+    count = min(count, len(candidates))
+
+    ruins: list[OverlayRuin] = []
+    for coord in candidates[:count]:
+        wx, wy = hex_to_pixel(coord, hex_size)
+        variant = rng.randint(0, 2)
+        color, highlight = rng.choice(_RUIN_COLORS)
+        ruins.append(OverlayRuin(
+            wx=wx, wy=wy,
+            variant=variant,
+            color=color, highlight_color=highlight,
+            coord=(coord.q, coord.r),
+        ))
+    return ruins

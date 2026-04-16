@@ -10,7 +10,7 @@ class Camera:
 
     MIN_ZOOM = params.CAMERA_ZOOM_MIN
     MAX_ZOOM = params.CAMERA_ZOOM_MAX
-    _ZOOM_SMOOTH = 12.0  # lerp speed for zoom smoothing (higher = snappier)
+    _ZOOM_SMOOTH = 50.0  # lerp speed for zoom smoothing (higher = snappier)
 
     def __init__(self, screen_w: int, screen_h: int) -> None:
         self.screen_w = screen_w

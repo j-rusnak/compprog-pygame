@@ -65,13 +65,20 @@ class SpriteSheet:
         return self._base
 
     def get(self, width: int, height: int) -> pygame.Surface:
-        """Return the sprite scaled to (width, height), cached."""
+        """Return the sprite scaled to (width, height), cached.
+
+        Sizes are quantized to multiples of 4 to improve cache hit rates
+        during smooth-zoom animation.
+        """
+        # Quantize to multiples of 4 to avoid cache thrashing
+        width = max(4, (width + 3) & ~3)
+        height = max(4, (height + 3) & ~3)
         key = (width, height)
         cached = self._cache.get(key)
         if cached is not None:
             return cached
         base = self._load()
-        scaled = pygame.transform.smoothscale(base, (max(1, width), max(1, height)))
+        scaled = pygame.transform.smoothscale(base, (width, height))
         self._cache[key] = scaled
         return scaled
 

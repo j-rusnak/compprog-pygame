@@ -31,6 +31,7 @@ from compprog_pygame.games.hex_colony.overlay import (
     OverlayItem,
     OverlayRipple,
     OverlayRock,
+    OverlayRuin,
     OverlayTree,
     build_overlays,
 )
@@ -62,6 +63,7 @@ from compprog_pygame.games.hex_colony.render_overlays import (
     draw_bush,
     draw_grass,
     draw_crystal,
+    draw_ruin,
 )
 from compprog_pygame.games.hex_colony.render_buildings import (
     draw_overcrowded,
@@ -73,6 +75,11 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_gatherer,
     draw_storage,
     draw_path,
+    draw_bridge,
+    draw_refinery,
+    draw_farm,
+    draw_well,
+    draw_wall,
 )
 from compprog_pygame.games.hex_colony.render_terrain import (
     DIR_EDGE,
@@ -85,7 +92,7 @@ from compprog_pygame.games.hex_colony.sprites import sprites
 sprites.load_all()
 
 # Building types that collect resources (show range ring)
-_COLLECTION_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER}
+_COLLECTION_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER, BuildingType.REFINERY}
 
 class Renderer:
     """Draws the entire game scene."""
@@ -125,6 +132,10 @@ class Renderer:
         # Reusable overlay surface for per-hex alpha blits
         self._hex_overlay: pygame.Surface | None = None
         self._hex_overlay_size: tuple[int, int] = (0, 0)
+
+        # Ghost building surface cache (avoid per-frame allocation)
+        self._ghost_cache: pygame.Surface | None = None
+        self._ghost_cache_key: tuple | None = None
 
     @property
     def graphics_quality(self) -> str:
@@ -382,7 +393,12 @@ class Renderer:
     def _blit_tile_layer(
         self, surface: pygame.Surface, world: World, camera: Camera,
     ) -> None:
-        """Blit the cached tile+overlay surface; rebuild when stale."""
+        """Blit the cached tile+overlay surface; rebuild when stale.
+
+        Uses zoom tolerance so the tile layer is NOT rebuilt for every
+        tiny zoom change during smooth-zoom animation.  Between rebuilds
+        the cached surface is scaled to approximate the current zoom.
+        """
         sw, sh = surface.get_size()
         zoom = camera.zoom
         cam_x, cam_y = camera.x, camera.y
@@ -390,14 +406,26 @@ class Renderer:
         need_rebuild = (
             self._tile_layer is None
             or self._tl_screen != (sw, sh)
-            or self._tl_zoom != zoom
         )
+
+        if not need_rebuild and self._tl_zoom > 0:
+            # Only rebuild when zoom changes by more than 8 %
+            zoom_ratio = zoom / self._tl_zoom
+            if abs(zoom_ratio - 1.0) > 0.08:
+                need_rebuild = True
+
         if not need_rebuild:
-            dx = abs(cam_x - self._tl_cam[0]) * zoom
-            dy = abs(cam_y - self._tl_cam[1]) * zoom
-            pad_x = sw * (_TILE_LAYER_PAD - 1) * 0.5
-            pad_y = sh * (_TILE_LAYER_PAD - 1) * 0.5
-            if dx > pad_x or dy > pad_y:
+            # Check whether the source rect still fits inside the cache
+            cw, ch = self._tile_layer.get_size()
+            tl_z = self._tl_zoom
+            ratio = tl_z / zoom
+            src_w = sw * ratio
+            src_h = sh * ratio
+            src_cx = (cam_x - self._tl_cam[0]) * tl_z + cw * 0.5
+            src_cy = (cam_y - self._tl_cam[1]) * tl_z + ch * 0.5
+            src_x = src_cx - src_w * 0.5
+            src_y = src_cy - src_h * 0.5
+            if src_x < 0 or src_y < 0 or src_x + src_w > cw or src_y + src_h > ch:
                 need_rebuild = True
 
         if need_rebuild:
@@ -407,12 +435,26 @@ class Renderer:
         if self._dirty_tiles:
             self._patch_dirty_tiles(world, world.settings.hex_size)
 
+        # Compute source rect on the cached surface
         cw, ch = self._tile_layer.get_size()
-        src_x = int((cam_x - self._tl_cam[0]) * zoom + cw * 0.5 - sw * 0.5)
-        src_y = int((cam_y - self._tl_cam[1]) * zoom + ch * 0.5 - sh * 0.5)
-        src_x = max(0, min(src_x, cw - sw))
-        src_y = max(0, min(src_y, ch - sh))
-        surface.blit(self._tile_layer, (0, 0), (src_x, src_y, sw, sh))
+        tl_z = self._tl_zoom
+        ratio = tl_z / zoom
+        isrc_w = max(1, int(sw * ratio))
+        isrc_h = max(1, int(sh * ratio))
+        src_cx = (cam_x - self._tl_cam[0]) * tl_z + cw * 0.5
+        src_cy = (cam_y - self._tl_cam[1]) * tl_z + ch * 0.5
+        isrc_x = int(src_cx - isrc_w * 0.5)
+        isrc_y = int(src_cy - isrc_h * 0.5)
+        isrc_x = max(0, min(isrc_x, cw - isrc_w))
+        isrc_y = max(0, min(isrc_y, ch - isrc_h))
+
+        if isrc_w == sw and isrc_h == sh:
+            # Exact zoom match — fast direct blit
+            surface.blit(self._tile_layer, (0, 0), (isrc_x, isrc_y, sw, sh))
+        else:
+            # Zoom mismatch — scale the relevant portion to the screen
+            sub = self._tile_layer.subsurface((isrc_x, isrc_y, isrc_w, isrc_h))
+            surface.blit(pygame.transform.scale(sub, (sw, sh)), (0, 0))
 
     def _rebuild_tile_layer(
         self, world: World, camera: Camera, sw: int, sh: int,
@@ -552,8 +594,8 @@ class Renderer:
                     draw_grass(cache, item, sx, sy, zoom, iz)
                 elif isinstance(item, OverlayCrystal):
                     draw_crystal(cache, item, sx, sy, zoom, iz)
-
-    # ── Targeted tile patching ───────────────────────────────────
+                elif isinstance(item, OverlayRuin):
+                    draw_ruin(cache, item, sx, sy, zoom, iz)
 
     def _patch_dirty_tiles(self, world: World, hex_size: int) -> None:
         """Redraw only the dirty tiles on the existing tile layer cache.
@@ -655,7 +697,10 @@ class Renderer:
                         draw_grass(cache, item, isx, isy, zoom, iz)
                     elif isinstance(item, OverlayCrystal):
                         draw_crystal(cache, item, isx, isy, zoom, iz)
+                    elif isinstance(item, OverlayRuin):
+                        draw_ruin(cache, item, isx, isy, zoom, iz)
 
+        # Clear after patching so we don't redo these every frame
         self._dirty_tiles.clear()
 
     # ── Animated overlays (ripples) ──────────────────────────────
@@ -693,11 +738,12 @@ class Renderer:
         half_sw, half_sh = sw * 0.5, sh * 0.5
         margin = size * 2 * zoom
 
-        # First pass: paths (ground-level, drawn beneath other buildings)
+        # First pass: paths and bridges (ground-level, drawn beneath other buildings)
         # Also track non-path buildings that need a path disc underneath
         buildings_needing_path: set[HexCoord] = set()
+        _PATH_TYPES = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL}
         for building in world.buildings.buildings:
-            if building.type != BuildingType.PATH:
+            if building.type not in _PATH_TYPES:
                 continue
             wx, wy = self._get_pixel(building.coord, size)
             sx = (wx - cam_x) * zoom + half_sw
@@ -717,10 +763,17 @@ class Renderer:
                     nsx = (nwx - cam_x) * zoom + half_sw
                     nsy = (nwy - cam_y) * zoom + half_sh
                     nb_positions.append((nsx, nsy))
-                    if nb_building.type != BuildingType.PATH:
+                    if nb_building.type not in _PATH_TYPES:
                         buildings_needing_path.add(nb_coord)
-            draw_path(surface, sx, sy, r, zoom, nb_positions,
-                      building.coord.q, building.coord.r)
+            if building.type == BuildingType.BRIDGE:
+                draw_bridge(surface, sx, sy, r, zoom, nb_positions,
+                            building.coord.q, building.coord.r)
+            elif building.type == BuildingType.WALL:
+                draw_wall(surface, sx, sy, r, zoom, nb_positions,
+                          building.coord.q, building.coord.r)
+            else:
+                draw_path(surface, sx, sy, r, zoom, nb_positions,
+                          building.coord.q, building.coord.r)
 
         # Draw path discs under non-path buildings adjacent to paths
         for coord in buildings_needing_path:
@@ -750,7 +803,7 @@ class Renderer:
 
         # Second pass: non-path buildings
         for building in world.buildings.buildings:
-            if building.type == BuildingType.PATH:
+            if building.type in _PATH_TYPES:
                 continue
             wx, wy = self._get_pixel(building.coord, size)
             sx = (wx - cam_x) * zoom + half_sw
@@ -778,6 +831,12 @@ class Renderer:
                 draw_gatherer(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.STORAGE:
                 draw_storage(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.REFINERY:
+                draw_refinery(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.FARM:
+                draw_farm(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.WELL:
+                draw_well(surface, sx, sy, r, zoom)
 
             # Overcrowding indicator: red ! above dwelling
             if (building.housing_capacity > 0
@@ -988,41 +1047,47 @@ class Renderer:
         if r < 2:
             return
 
-        # Draw building at half alpha using a temp surface
+        # Cache the ghost surface by (type, radius, valid) to avoid
+        # creating new SRCALPHA surfaces every frame.
+        cache_key = (btype, r, self.ghost_valid)
+        if self._ghost_cache_key != cache_key:
+            bld_size = r * 4
+            bld_surf = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)
+            cx_local = bld_size // 2
+            cy_local = bld_size // 2
+            if btype == BuildingType.CAMP:
+                draw_camp(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.HOUSE:
+                draw_house(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.HABITAT:
+                draw_habitat(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.WOODCUTTER:
+                draw_woodcutter(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.QUARRY:
+                draw_quarry(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.GATHERER:
+                draw_gatherer(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.STORAGE:
+                draw_storage(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.PATH:
+                draw_path(bld_surf, cx_local, cy_local, r, zoom, [], coord.q, coord.r)
+
+            if not self.ghost_valid:
+                red_tint = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)
+                red_tint.fill((255, 60, 60, 100))
+                bld_surf.blit(red_tint, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+                red_overlay = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)
+                red_overlay.fill((255, 50, 50, 80))
+                bld_surf.blit(red_overlay, (0, 0))
+
+            bld_surf.set_alpha(140 if self.ghost_valid else 100)
+            self._ghost_cache = bld_surf
+            self._ghost_cache_key = cache_key
+
         bld_size = r * 4
-        bld_surf = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)
         cx_local = bld_size // 2
         cy_local = bld_size // 2
-        # Draw the building shape onto the temp surface
-        if btype == BuildingType.CAMP:
-            draw_camp(bld_surf, cx_local, cy_local, r, zoom)
-        elif btype == BuildingType.HOUSE:
-            draw_house(bld_surf, cx_local, cy_local, r, zoom)
-        elif btype == BuildingType.HABITAT:
-            draw_habitat(bld_surf, cx_local, cy_local, r, zoom)
-        elif btype == BuildingType.WOODCUTTER:
-            draw_woodcutter(bld_surf, cx_local, cy_local, r, zoom)
-        elif btype == BuildingType.QUARRY:
-            draw_quarry(bld_surf, cx_local, cy_local, r, zoom)
-        elif btype == BuildingType.GATHERER:
-            draw_gatherer(bld_surf, cx_local, cy_local, r, zoom)
-        elif btype == BuildingType.STORAGE:
-            draw_storage(bld_surf, cx_local, cy_local, r, zoom)
-        elif btype == BuildingType.PATH:
-            draw_path(bld_surf, cx_local, cy_local, r, zoom, [], coord.q, coord.r)
-
-        # Tint red when placement is invalid
-        if not self.ghost_valid:
-            red_tint = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)
-            red_tint.fill((255, 60, 60, 100))
-            bld_surf.blit(red_tint, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-            # Re-apply red cast so the ghost looks distinctly invalid
-            red_overlay = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)
-            red_overlay.fill((255, 50, 50, 80))
-            bld_surf.blit(red_overlay, (0, 0))
-
-        bld_surf.set_alpha(140 if self.ghost_valid else 100)
-        surface.blit(bld_surf, (int(sx) - cx_local, int(sy) - cy_local))
+        surface.blit(self._ghost_cache, (int(sx) - cx_local, int(sy) - cy_local))
 
         # Range ring for collection buildings (only when valid)
         if self.ghost_valid and btype in _COLLECTION_BUILDINGS:

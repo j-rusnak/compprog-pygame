@@ -55,10 +55,15 @@ BUILDING_COST_CAMP: dict[str, int] = {}
 BUILDING_COST_HOUSE: dict[str, int] = {"WOOD": 12, "FIBER": 4}
 BUILDING_COST_HABITAT: dict[str, int] = {"IRON": 4, "WOOD": 8, "STONE": 6}
 BUILDING_COST_PATH: dict[str, int] = {"STONE": 2}
+BUILDING_COST_BRIDGE: dict[str, int] = {"WOOD": 6}
 BUILDING_COST_WOODCUTTER: dict[str, int] = {"WOOD": 10, "STONE": 5}
 BUILDING_COST_QUARRY: dict[str, int] = {"WOOD": 15, "FIBER": 5}
 BUILDING_COST_GATHERER: dict[str, int] = {"WOOD": 8, "STONE": 3}
 BUILDING_COST_STORAGE: dict[str, int] = {"WOOD": 20, "STONE": 10}
+BUILDING_COST_REFINERY: dict[str, int] = {"IRON": 8, "STONE": 15, "WOOD": 10}
+BUILDING_COST_FARM: dict[str, int] = {"WOOD": 12, "FIBER": 8, "STONE": 4}
+BUILDING_COST_WELL: dict[str, int] = {"STONE": 10, "WOOD": 6}
+BUILDING_COST_WALL: dict[str, int] = {"STONE": 8, "WOOD": 4}
 
 # ═══════════════════════════════════════════════════════════════════
 #  BUILDING CAPACITY
@@ -69,20 +74,30 @@ BUILDING_MAX_WORKERS_CAMP: int = 0
 BUILDING_MAX_WORKERS_HOUSE: int = 0
 BUILDING_MAX_WORKERS_HABITAT: int = 0
 BUILDING_MAX_WORKERS_PATH: int = 0
+BUILDING_MAX_WORKERS_BRIDGE: int = 0
 BUILDING_MAX_WORKERS_WOODCUTTER: int = 2
 BUILDING_MAX_WORKERS_QUARRY: int = 2
 BUILDING_MAX_WORKERS_GATHERER: int = 3
 BUILDING_MAX_WORKERS_STORAGE: int = 0
+BUILDING_MAX_WORKERS_REFINERY: int = 2
+BUILDING_MAX_WORKERS_FARM: int = 3
+BUILDING_MAX_WORKERS_WELL: int = 0
+BUILDING_MAX_WORKERS_WALL: int = 0
 
 # Housing capacity (number of people that can live here; 0 = not a dwelling)
 BUILDING_HOUSING_CAMP: int = 10
 BUILDING_HOUSING_HOUSE: int = 5
 BUILDING_HOUSING_HABITAT: int = 6
 BUILDING_HOUSING_PATH: int = 0
+BUILDING_HOUSING_BRIDGE: int = 0
 BUILDING_HOUSING_WOODCUTTER: int = 0
 BUILDING_HOUSING_QUARRY: int = 0
 BUILDING_HOUSING_GATHERER: int = 0
 BUILDING_HOUSING_STORAGE: int = 0
+BUILDING_HOUSING_REFINERY: int = 0
+BUILDING_HOUSING_FARM: int = 0
+BUILDING_HOUSING_WELL: int = 0
+BUILDING_HOUSING_WALL: int = 0
 
 # Storage capacity (max total resources stored; 0 = none)
 # Camp capacity is set dynamically at placement time.
@@ -90,10 +105,15 @@ BUILDING_STORAGE_CAMP: int = 0
 BUILDING_STORAGE_HOUSE: int = 0
 BUILDING_STORAGE_HABITAT: int = 0
 BUILDING_STORAGE_PATH: int = 0
+BUILDING_STORAGE_BRIDGE: int = 0
 BUILDING_STORAGE_WOODCUTTER: int = 10
 BUILDING_STORAGE_QUARRY: int = 10
 BUILDING_STORAGE_GATHERER: int = 20
 BUILDING_STORAGE_STORAGE: int = 100
+BUILDING_STORAGE_REFINERY: int = 15
+BUILDING_STORAGE_FARM: int = 25
+BUILDING_STORAGE_WELL: int = 0
+BUILDING_STORAGE_WALL: int = 0
 
 # ═══════════════════════════════════════════════════════════════════
 #  BUILDING DELETE REFUND
@@ -101,6 +121,29 @@ BUILDING_STORAGE_STORAGE: int = 100
 
 # Fraction of original cost refunded when deleting (0.0–1.0)
 DELETE_REFUND_FRACTION: float = 0.5
+
+# ═══════════════════════════════════════════════════════════════════
+#  REFINERY / FARM / WELL
+# ═══════════════════════════════════════════════════════════════════
+
+# Refinery: consumes iron/copper ore, produces alloy (counted as same resource)
+REFINERY_RATE: float = 0.3  # units per second per worker (faster than raw gathering)
+
+# Farm: produces food per second per worker (no terrain requirement)
+FARM_FOOD_RATE: float = 0.8
+
+# Well: bonus food multiplier for adjacent farms (1.0 = +100%)
+WELL_FARM_BONUS: float = 1.0
+
+# ═══════════════════════════════════════════════════════════════════
+#  RUINS
+# ═══════════════════════════════════════════════════════════════════
+
+# Number of ruin sites scattered across the map
+RUINS_COUNT_MIN: int = 2
+RUINS_COUNT_MAX: int = 5
+# Min distance from camp (in hex tiles) for ruins
+RUINS_MIN_DISTANCE: int = 8
 
 # ═══════════════════════════════════════════════════════════════════
 #  RESOURCE AMOUNTS PER TILE (min, max) — set during terrain generation

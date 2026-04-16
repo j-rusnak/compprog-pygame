@@ -27,6 +27,7 @@ class World:
         self.population = PopulationManager()
         self.inventory = Inventory()
         self.time_elapsed: float = 0.0
+        self._housing_dirty: bool = True  # needs recalc on first frame
 
     @property
     def game_over(self) -> bool:
@@ -89,11 +90,20 @@ class World:
         """Advance the simulation by *dt* seconds."""
         self.time_elapsed += dt
 
-        # Recompute connected housing and assign homeless
-        self._update_housing()
+        # Recompute connected housing only when buildings/population changed
+        if self._housing_dirty:
+            self._update_housing()
+            self._housing_dirty = False
+
+        # Farm & Refinery production
+        self._update_production(dt)
 
         # Move people
         self.population.update(dt, self, self.settings.hex_size)
+
+    def mark_housing_dirty(self) -> None:
+        """Flag that housing assignments need recalculation."""
+        self._housing_dirty = True
 
     # ── Housing connectivity ─────────────────────────────────────
 
@@ -228,3 +238,40 @@ class World:
                     return new_path
                 queue.append((nb, new_path))
         return []
+
+    # ── Production update (Farms, Refineries, Wells) ─────────────
+
+    def _update_production(self, dt: float) -> None:
+        """Per-frame resource production from farms and refineries."""
+        # Pre-compute well locations for farm bonus
+        well_coords: set[HexCoord] = set()
+        for b in self.buildings.by_type(BuildingType.WELL):
+            well_coords.add(b.coord)
+
+        # Farm: produces food per worker, boosted by adjacent wells
+        for farm in self.buildings.by_type(BuildingType.FARM):
+            if farm.workers <= 0:
+                continue
+            bonus = 1.0
+            for nb in farm.coord.neighbors():
+                if nb in well_coords:
+                    bonus += params.WELL_FARM_BONUS
+                    break  # only one well bonus
+            amount = params.FARM_FOOD_RATE * farm.workers * bonus * dt
+            self.inventory.add(Resource.FOOD, amount)
+
+        # Refinery: produces from adjacent iron/copper veins
+        for refinery in self.buildings.by_type(BuildingType.REFINERY):
+            if refinery.workers <= 0:
+                continue
+            amount = params.REFINERY_RATE * refinery.workers * dt
+            # Check adjacent ore tiles and produce
+            for nb in refinery.coord.neighbors():
+                tile = self.grid.get(nb)
+                if tile is None:
+                    continue
+                from compprog_pygame.games.hex_colony.hex_grid import Terrain
+                if tile.terrain == Terrain.IRON_VEIN:
+                    self.inventory.add(Resource.IRON, amount)
+                elif tile.terrain == Terrain.COPPER_VEIN:
+                    self.inventory.add(Resource.COPPER, amount)

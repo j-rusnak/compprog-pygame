@@ -389,3 +389,219 @@ def draw_path(
     if not nb_positions:
         pygame.draw.circle(surface, _PATH_DARK, (isx, isy),
                            band_hw + max(1, int(r * 0.10)), iz)
+
+
+def draw_bridge(
+    surface: pygame.Surface,
+    sx: float, sy: float,
+    r: int, z: float,
+    nb_positions: list[tuple[float, float]],
+    q: int, rr: int,
+) -> None:
+    """Wooden bridge — planks over water."""
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    plank_col = (140, 100, 55)
+    rail_col = (100, 70, 40)
+    band_hw = max(2, int(r * 0.38))
+
+    # Connecting bands to neighbours (same logic as path)
+    for nsx, nsy in nb_positions:
+        dx = nsx - sx
+        dy = nsy - sy
+        length = math.hypot(dx, dy)
+        if length < 1:
+            continue
+        px = -dy / length * band_hw
+        py = dx / length * band_hw
+        mx = sx + dx * 0.5
+        my = sy + dy * 0.5
+        pts = [
+            (sx + px, sy + py), (sx - px, sy - py),
+            (mx - px, my - py), (mx + px, my + py),
+        ]
+        pygame.draw.polygon(surface, plank_col, pts)
+        pygame.draw.line(surface, _darken(plank_col, 0.6),
+                         (int(pts[0][0]), int(pts[0][1])),
+                         (int(pts[3][0]), int(pts[3][1])), iz)
+        pygame.draw.line(surface, _darken(plank_col, 0.6),
+                         (int(pts[1][0]), int(pts[1][1])),
+                         (int(pts[2][0]), int(pts[2][1])), iz)
+
+    # Center platform
+    pygame.draw.circle(surface, plank_col, (isx, isy), band_hw + max(1, int(r * 0.08)))
+
+    # Plank lines across
+    plank_count = max(2, int(r * 0.3))
+    for i in range(plank_count):
+        oy = int(-band_hw + i * (2 * band_hw) / max(1, plank_count - 1))
+        pygame.draw.line(surface, _darken(plank_col, 0.7),
+                         (isx - band_hw, isy + oy), (isx + band_hw, isy + oy), iz)
+
+    # Railing posts
+    for sign in (-1, 1):
+        px = isx + sign * band_hw
+        pygame.draw.line(surface, rail_col, (px, isy - max(2, int(r * 0.2))),
+                         (px, isy + max(2, int(r * 0.2))), max(1, int(z * 1.5)))
+
+
+def draw_refinery(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    if _try_sprite(surface, "buildings/refinery", sx, sy, r, z):
+        return
+    iz = max(1, int(z))
+    base_col = (90, 80, 100)
+    # Main structure
+    rect = pygame.Rect(int(sx - r * 0.5), int(sy - r * 0.2), int(r * 1.0), int(r * 0.6))
+    pygame.draw.rect(surface, base_col, rect)
+    pygame.draw.rect(surface, _lighten(base_col, 1.2),
+                     pygame.Rect(rect.x, rect.y, rect.w, max(1, int(2 * z))))
+    pygame.draw.rect(surface, _darken(base_col, 0.6), rect, iz)
+    # Chimney/smokestack
+    ch_w = max(2, int(r * 0.15))
+    ch_h = max(4, int(r * 0.5))
+    ch_x = int(sx + r * 0.2)
+    ch_y = int(sy - r * 0.2 - ch_h)
+    pygame.draw.rect(surface, (70, 65, 80), (ch_x, ch_y, ch_w, ch_h))
+    pygame.draw.rect(surface, (50, 45, 60), (ch_x, ch_y, ch_w, ch_h), iz)
+    # Smoke puffs
+    for i in range(3):
+        smoke_y = ch_y - max(2, int(r * 0.1)) * (i + 1)
+        smoke_r = max(1, int(r * 0.08 * (i + 1)))
+        pygame.draw.circle(surface, (140, 140, 150, 120), (ch_x + ch_w // 2, smoke_y), smoke_r)
+    # Furnace glow
+    glow_r = max(2, int(r * 0.12))
+    pygame.draw.circle(surface, (220, 120, 40), (int(sx - r * 0.15), int(sy + r * 0.1)), glow_r)
+
+
+def draw_farm(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    if _try_sprite(surface, "buildings/farm", sx, sy, r, z):
+        return
+    iz = max(1, int(z))
+    soil_col = (100, 70, 40)
+    crop_col = (80, 160, 50)
+    # Tilled field
+    field_r = max(4, int(r * 0.6))
+    pygame.draw.circle(surface, soil_col, (int(sx), int(sy)), field_r)
+    pygame.draw.circle(surface, _darken(soil_col, 0.7), (int(sx), int(sy)), field_r, iz)
+    # Crop rows
+    row_count = max(2, int(r * 0.25))
+    for i in range(row_count):
+        ry = int(sy - field_r * 0.6 + i * (field_r * 1.2) / max(1, row_count - 1))
+        row_w = max(2, int(field_r * 0.7))
+        pygame.draw.line(surface, crop_col, (int(sx) - row_w, ry), (int(sx) + row_w, ry), max(1, int(z * 2)))
+    # Small hut/barn
+    barn_w = max(3, int(r * 0.3))
+    barn_h = max(3, int(r * 0.25))
+    bx = int(sx + r * 0.35)
+    by = int(sy - r * 0.35)
+    pygame.draw.rect(surface, (140, 100, 55), (bx, by, barn_w, barn_h))
+    pygame.draw.rect(surface, _darken((140, 100, 55), 0.6), (bx, by, barn_w, barn_h), iz)
+    # Barn roof
+    pygame.draw.polygon(surface, (120, 80, 40),
+                        [(bx - iz, by), (bx + barn_w // 2, by - max(2, int(r * 0.15))),
+                         (bx + barn_w + iz, by)])
+
+
+def draw_well(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    if _try_sprite(surface, "buildings/well", sx, sy, r, z):
+        return
+    iz = max(1, int(z))
+    stone_col = (140, 135, 125)
+    water_col = (60, 100, 180)
+    # Stone ring
+    well_r = max(3, int(r * 0.35))
+    pygame.draw.circle(surface, stone_col, (int(sx), int(sy)), well_r)
+    pygame.draw.circle(surface, _darken(stone_col, 0.6), (int(sx), int(sy)), well_r, max(1, int(z * 1.5)))
+    # Water inside
+    inner_r = max(2, well_r - max(2, int(r * 0.1)))
+    pygame.draw.circle(surface, water_col, (int(sx), int(sy)), inner_r)
+    pygame.draw.circle(surface, _lighten(water_col, 1.3), (int(sx), int(sy)), inner_r, iz)
+    # Roof support posts
+    post_h = max(3, int(r * 0.4))
+    for sign in (-1, 1):
+        px = int(sx + sign * well_r * 0.8)
+        pygame.draw.line(surface, (100, 70, 40), (px, int(sy) - post_h), (px, int(sy)), max(1, int(z * 1.5)))
+    # Cross beam
+    pygame.draw.line(surface, (100, 70, 40),
+                     (int(sx - well_r * 0.8), int(sy) - post_h),
+                     (int(sx + well_r * 0.8), int(sy) - post_h), max(1, int(z * 2)))
+    # Bucket
+    pygame.draw.circle(surface, (120, 90, 50), (int(sx), int(sy) - post_h + iz), max(1, int(r * 0.08)))
+
+
+def draw_wall(
+    surface: pygame.Surface,
+    sx: float, sy: float,
+    r: int, z: float,
+    nb_positions: list[tuple[float, float]],
+    q: int, rr: int,
+) -> None:
+    """Stone wall — connects to adjacent walls like paths."""
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    wall_col = (160, 155, 145)
+    wall_dark = _darken(wall_col, 0.6)
+    wall_light = _lighten(wall_col, 1.15)
+    band_hw = max(2, int(r * 0.28))
+    wall_h = max(2, int(r * 0.35))  # wall height (visual)
+
+    # Connecting segments to neighbours
+    for nsx, nsy in nb_positions:
+        dx = nsx - sx
+        dy = nsy - sy
+        length = math.hypot(dx, dy)
+        if length < 1:
+            continue
+        px = -dy / length * band_hw
+        py = dx / length * band_hw
+        mx = sx + dx * 0.5
+        my = sy + dy * 0.5
+        # Wall top face
+        top_pts = [
+            (sx + px, sy + py - wall_h),
+            (sx - px, sy - py - wall_h),
+            (mx - px, my - py - wall_h),
+            (mx + px, my + py - wall_h),
+        ]
+        pygame.draw.polygon(surface, wall_light, top_pts)
+        # Wall front face
+        front_pts = [
+            (sx + px, sy + py - wall_h),
+            (mx + px, my + py - wall_h),
+            (mx + px, my + py),
+            (sx + px, sy + py),
+        ]
+        pygame.draw.polygon(surface, wall_col, front_pts)
+        # Wall back face (darker)
+        back_pts = [
+            (sx - px, sy - py - wall_h),
+            (mx - px, my - py - wall_h),
+            (mx - px, my - py),
+            (sx - px, sy - py),
+        ]
+        pygame.draw.polygon(surface, wall_dark, back_pts)
+        # Edges
+        for pts in (top_pts, front_pts, back_pts):
+            pygame.draw.polygon(surface, _darken(wall_col, 0.4), pts, iz)
+
+    # Center tower / post
+    tower_r = band_hw + max(1, int(r * 0.08))
+    # Tower base
+    pygame.draw.circle(surface, wall_col, (isx, isy), tower_r)
+    # Tower top (raised)
+    pygame.draw.circle(surface, wall_light, (isx, isy - wall_h), tower_r)
+    # Tower side (vertical pillars to show height)
+    pygame.draw.line(surface, wall_dark, (isx - tower_r, isy),
+                     (isx - tower_r, isy - wall_h), iz)
+    pygame.draw.line(surface, wall_dark, (isx + tower_r, isy),
+                     (isx + tower_r, isy - wall_h), iz)
+    pygame.draw.circle(surface, _darken(wall_col, 0.4), (isx, isy - wall_h), tower_r, iz)
+
+    # Battlement notches on top
+    notch_count = max(2, int(r * 0.15))
+    notch_w = max(1, int(tower_r * 2 / (notch_count * 2)))
+    for i in range(notch_count):
+        nx = isx - tower_r + i * (tower_r * 2) // notch_count + notch_w
+        pygame.draw.rect(surface, _darken(wall_col, 0.5),
+                         (nx, isy - wall_h - max(1, int(r * 0.08)),
+                          notch_w, max(1, int(r * 0.08))))

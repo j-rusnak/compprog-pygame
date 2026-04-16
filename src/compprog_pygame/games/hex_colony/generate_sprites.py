@@ -28,6 +28,11 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_quarry,
     draw_storage,
     draw_woodcutter,
+    draw_refinery,
+    draw_farm,
+    draw_well,
+    draw_bridge,
+    draw_wall,
 )
 from compprog_pygame.games.hex_colony.render_overlays import (
     draw_bush,
@@ -35,12 +40,14 @@ from compprog_pygame.games.hex_colony.render_overlays import (
     draw_grass,
     draw_rock,
     draw_tree,
+    draw_ruin,
 )
 from compprog_pygame.games.hex_colony.overlay import (
     OverlayBush,
     OverlayCrystal,
     OverlayGrassTuft,
     OverlayRock,
+    OverlayRuin,
     OverlayTree,
 )
 from compprog_pygame.games.hex_colony.sprites import SPRITE_DIR
@@ -98,6 +105,28 @@ def _generate_buildings() -> None:
     s = _make_surface()
     draw_overcrowded(s, _HALF, _HALF, _R, _Z)
     _save(s, "buildings", "overcrowded.png")
+
+    s = _make_surface()
+    draw_refinery(s, _HALF, _HALF, _R, _Z)
+    _save(s, "buildings", "refinery.png")
+
+    s = _make_surface()
+    draw_farm(s, _HALF, _HALF, _R, _Z)
+    _save(s, "buildings", "farm.png")
+
+    s = _make_surface()
+    draw_well(s, _HALF, _HALF, _R, _Z)
+    _save(s, "buildings", "well.png")
+
+    # Bridge uses the path-like interface but we render a standalone tile
+    s = _make_surface()
+    draw_bridge(s, _HALF, _HALF, _R, _Z, [], 0, 0)
+    _save(s, "buildings", "bridge.png")
+
+    # Wall uses the path-like interface
+    s = _make_surface()
+    draw_wall(s, _HALF, _HALF, _R, _Z, [], 0, 0)
+    _save(s, "buildings", "wall.png")
 
 
 def _generate_overlays() -> None:
@@ -197,6 +226,19 @@ def _generate_overlays() -> None:
     s = _make_surface()
     draw_crystal(s, crystal_copper, _HALF, _HALF + 4, _Z, 1)
     _save(s, "overlays", "crystal_copper.png")
+
+    # Ruins — three variants
+    for variant in range(3):
+        ruin = OverlayRuin(
+            wx=0, wy=0,
+            variant=variant,
+            color=(120, 110, 95),
+            highlight_color=(160, 150, 130),
+            coord=(0, 0),
+        )
+        s = _make_surface()
+        draw_ruin(s, ruin, _HALF, _HALF, _Z, 1)
+        _save(s, "overlays", f"ruin_{variant}.png")
 
 
 def _generate_people() -> None:

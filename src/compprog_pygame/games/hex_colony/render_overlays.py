@@ -17,6 +17,7 @@ from compprog_pygame.games.hex_colony.overlay import (
     OverlayGrassTuft,
     OverlayRipple,
     OverlayRock,
+    OverlayRuin,
     OverlayTree,
 )
 from compprog_pygame.games.hex_colony.render_utils import _darken
@@ -198,3 +199,58 @@ def draw_crystal(
     pygame.draw.polygon(surface, item.highlight_color, hl_pts)
     # Outline
     pygame.draw.polygon(surface, _darken(item.color, 0.6), pts, max(1, iz))
+
+
+def draw_ruin(
+    surface: pygame.Surface, item: OverlayRuin,
+    sx: float, sy: float, z: float, iz: int,
+) -> None:
+    """Draw remnants of old human civilization."""
+    if _try_overlay_sprite(surface, f"overlays/ruin_{item.variant}", sx, sy, z, 32, 32):
+        return
+    col = item.color
+    hi = item.highlight_color
+    dk = _darken(col, 0.6)
+    if item.variant == 0:
+        # Broken pillar
+        pw = max(2, int(6 * z))
+        ph = max(4, int(18 * z))
+        px = int(sx) - pw // 2
+        py = int(sy) - ph // 2
+        pygame.draw.rect(surface, col, (px, py, pw, ph))
+        pygame.draw.rect(surface, dk, (px, py, pw, ph), iz)
+        # Broken top — jagged
+        pygame.draw.line(surface, hi, (px, py), (px + pw, py + max(1, int(3 * z))), iz)
+        # Base block
+        bw = max(3, int(8 * z))
+        bh = max(2, int(4 * z))
+        pygame.draw.rect(surface, dk, (int(sx) - bw // 2, py + ph, bw, bh))
+    elif item.variant == 1:
+        # Broken wall section
+        ww = max(4, int(20 * z))
+        wh = max(3, int(10 * z))
+        wx = int(sx) - ww // 2
+        wy = int(sy) - wh // 2
+        pygame.draw.rect(surface, col, (wx, wy, ww, wh))
+        pygame.draw.rect(surface, dk, (wx, wy, ww, wh), iz)
+        # Missing chunks
+        gap_w = max(1, int(4 * z))
+        gap_h = max(1, int(3 * z))
+        pygame.draw.rect(surface, dk, (wx + ww // 3, wy, gap_w, gap_h))
+        pygame.draw.line(surface, hi, (wx, wy), (wx + ww // 4, wy), iz)
+    else:
+        # Crumbled arch
+        arch_r = max(3, int(10 * z))
+        pygame.draw.arc(surface, col,
+                        (int(sx) - arch_r, int(sy) - arch_r, arch_r * 2, arch_r * 2),
+                        0, math.pi, max(1, int(2 * z)))
+        # Support pillars
+        for sign in (-1, 1):
+            px = int(sx + sign * arch_r * 0.8)
+            ph = max(2, int(6 * z))
+            pygame.draw.line(surface, col, (px, int(sy)), (px, int(sy) + ph), max(1, int(z * 1.5)))
+        # Rubble
+        for i in range(3):
+            rx = int(sx + (i - 1) * 3 * z)
+            ry = int(sy + arch_r * 0.5 + i * z)
+            pygame.draw.circle(surface, dk, (rx, ry), max(1, int(z * 1.5)))

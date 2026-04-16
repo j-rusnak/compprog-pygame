@@ -79,37 +79,57 @@ class BuildingsTabContent(TabContent):
     BUILDABLE = [
         BuildingType.HABITAT,
         BuildingType.PATH,
+        BuildingType.BRIDGE,
+        BuildingType.WALL,
         BuildingType.WOODCUTTER,
         BuildingType.QUARRY,
         BuildingType.GATHERER,
         BuildingType.STORAGE,
+        BuildingType.REFINERY,
+        BuildingType.FARM,
+        BuildingType.WELL,
     ]
 
     _ICON: dict[BuildingType, str] = {
         BuildingType.HABITAT: "\u2b22",     # ⬢
         BuildingType.PATH: "\u2505",        # ┅
+        BuildingType.BRIDGE: "\u2550",      # ═
         BuildingType.WOODCUTTER: "\u2692",  # ⚒
         BuildingType.QUARRY: "\u26cf",      # ⛏
         BuildingType.GATHERER: "\u2618",    # ☘
         BuildingType.STORAGE: "\u2302",     # ⌂
+        BuildingType.REFINERY: "\u2697",    # ⚗
+        BuildingType.FARM: "\u2668",        # ♨ (field-like)
+        BuildingType.WELL: "\u25ce",        # ◎
+        BuildingType.WALL: "\u2588",        # █ (block)
     }
 
     _COLOR: dict[BuildingType, tuple[int, int, int]] = {
         BuildingType.HABITAT: (140, 155, 175),
         BuildingType.PATH: (185, 165, 120),
+        BuildingType.BRIDGE: (140, 100, 55),
         BuildingType.WOODCUTTER: (160, 100, 50),
         BuildingType.QUARRY: (170, 170, 160),
         BuildingType.GATHERER: (100, 180, 80),
         BuildingType.STORAGE: (140, 120, 100),
+        BuildingType.REFINERY: (90, 80, 100),
+        BuildingType.FARM: (100, 160, 50),
+        BuildingType.WELL: (60, 100, 180),
+        BuildingType.WALL: (160, 155, 145),
     }
 
     _DESC: dict[BuildingType, str] = {
         BuildingType.HABITAT: "Houses 6 survivors",
         BuildingType.PATH: "Connects buildings",
+        BuildingType.BRIDGE: "Path over water",
         BuildingType.WOODCUTTER: "Harvests nearby wood",
         BuildingType.QUARRY: "Harvests nearby stone",
         BuildingType.GATHERER: "Gathers fiber & food",
         BuildingType.STORAGE: "Stores 100 resources",
+        BuildingType.REFINERY: "Processes iron/copper",
+        BuildingType.FARM: "Grows food steadily",
+        BuildingType.WELL: "Boosts adjacent farms",
+        BuildingType.WALL: "Defensive stone wall",
     }
 
     def __init__(self) -> None:

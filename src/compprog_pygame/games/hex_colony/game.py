@@ -10,7 +10,7 @@ from compprog_pygame.games.hex_colony.buildings import (
 )
 from compprog_pygame.games.hex_colony.camera import Camera
 from compprog_pygame.games.hex_colony.people import Task
-from compprog_pygame.games.hex_colony.hex_grid import pixel_to_hex
+from compprog_pygame.games.hex_colony.hex_grid import pixel_to_hex, Terrain
 from compprog_pygame.games.hex_colony.renderer import Renderer
 from compprog_pygame.games.hex_colony.settings import HexColonySettings
 from compprog_pygame.games.hex_colony.ui import UIManager
@@ -22,16 +22,27 @@ from compprog_pygame.games.hex_colony.ui_pause_menu import PauseOverlay
 from compprog_pygame.games.hex_colony.ui_resource_bar import ResourceBar
 from compprog_pygame.games.hex_colony.ui_tile_info import TileInfoPanel
 from compprog_pygame.games.hex_colony.world import World
+from compprog_pygame.games.hex_colony.notifications import NotificationManager
+from compprog_pygame.games.hex_colony.tech_tree import TechTree, TECH_REQUIREMENTS, TECH_DATA
+from compprog_pygame.games.hex_colony.blueprints import BlueprintManager
+from compprog_pygame.games.hex_colony.supply_chain import draw_supply_lines
+from compprog_pygame.games.hex_colony.ui_minimap import MinimapPanel
+from compprog_pygame.games.hex_colony.ui_stats import StatsTabContent
 from compprog_pygame.games.hex_colony import params
 
 # Build-mode palette order
 BUILDABLE = [
     BuildingType.HABITAT,
     BuildingType.PATH,
+    BuildingType.BRIDGE,
+    BuildingType.WALL,
     BuildingType.WOODCUTTER,
     BuildingType.QUARRY,
     BuildingType.GATHERER,
     BuildingType.STORAGE,
+    BuildingType.REFINERY,
+    BuildingType.FARM,
+    BuildingType.WELL,
 ]
 
 
@@ -54,6 +65,11 @@ class Game:
         self._sim_speed: float = 1.0  # 1x, 2x, or 3x
         self._drag_button: int = 0  # which mouse button started camera drag
 
+        # Tech tree & notifications
+        self.tech_tree = TechTree()
+        self.notifications = NotificationManager()
+        self.blueprints = BlueprintManager()
+
         # UI
         self.ui = UIManager()
         self._resource_bar = ResourceBar()
@@ -63,13 +79,19 @@ class Game:
         self._pause_overlay = PauseOverlay()
         self._game_over_overlay = GameOverOverlay()
         self._help_overlay = HelpOverlay()
+        self._minimap = MinimapPanel()
         self.ui.add_panel(self._resource_bar)
         self.ui.add_panel(self._bottom_bar)
         self.ui.add_panel(self._building_info)
         self.ui.add_panel(self._tile_info)
+        self.ui.add_panel(self._minimap)
         self.ui.add_panel(self._help_overlay)
         self.ui.add_panel(self._pause_overlay)
         self.ui.add_panel(self._game_over_overlay)
+
+        # Add Stats tab to bottom bar
+        self._stats_tab = StatsTabContent()
+        self._bottom_bar.add_tab("Stats", self._stats_tab)
 
         # Wire building tab -> build mode
         buildings_tab = self._bottom_bar.buildings_tab
@@ -95,6 +117,7 @@ class Game:
     def run(self, screen: pygame.Surface, clock: pygame.time.Clock) -> None:
         w, h = screen.get_size()
         self.camera = Camera(w, h)
+        self._minimap.camera = self.camera
         self.ui.layout(w, h)
 
         while self.running:
@@ -109,11 +132,19 @@ class Game:
                 self._update_alt_overlay()
                 self._update_ghost_building()
                 self.world.update(dt * self._sim_speed)
+                self.notifications.update(dt)
             self.camera.update(dt)
             self._resource_bar.delete_mode = self.delete_mode
             self._resource_bar.sim_speed = self._sim_speed
             self.renderer.draw(screen, self.world, self.camera, dt=dt)
+            # Supply chain lines for selected building
+            draw_supply_lines(
+                screen, self.world, self.camera,
+                self.renderer.selected_hex, self.renderer._water_tick,
+                self.settings.hex_size,
+            )
             self.ui.draw(screen, self.world)
+            self.notifications.draw(screen)
 
             pygame.display.flip()
 
@@ -289,18 +320,29 @@ class Game:
 
     def _try_place_building(self, coord) -> None:
         tile = self.world.grid[coord]
-        # Can't build on unbuildable terrain (water, mountain)
+        # Can't build on unbuildable terrain (water, mountain) — except bridges on water
         from compprog_pygame.games.hex_colony.procgen import UNBUILDABLE
         if tile.terrain in UNBUILDABLE:
+            if not (self.build_mode == BuildingType.BRIDGE and tile.terrain == Terrain.WATER):
+                return
+        # Tech tree gate
+        if not self.tech_tree.is_building_unlocked(self.build_mode):
+            req = TECH_REQUIREMENTS.get(self.build_mode)
+            if req is not None:
+                info = TECH_DATA[req]
+                self.notifications.push(
+                    f"Requires {info.name} research", (255, 150, 80),
+                )
             return
         # Check existing building
         existing = tile.building
+        _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL}
         if existing is not None:
-            # Can only build on top of a path (not camp, not other buildings)
-            if existing.type != BuildingType.PATH:
+            # Can only build on top of a path/bridge (not camp, not other buildings)
+            if existing.type not in _PATH_LIKE:
                 return
-            # Can't place another path on a path
-            if self.build_mode == BuildingType.PATH:
+            # Can't place another path-like on a path-like
+            if self.build_mode in _PATH_LIKE:
                 return
         # Check cost (skip in sandbox mode)
         if not self.sandbox:
@@ -310,11 +352,11 @@ class Game:
                     return  # can't afford
             for res, amount in cost.costs.items():
                 self.world.inventory.spend(res, amount)
-        # If building on top of a path, refund path cost and remove it
-        if existing is not None and existing.type == BuildingType.PATH:
+        # If building on top of a path/bridge, refund its cost and remove it
+        if existing is not None and existing.type in _PATH_LIKE:
             if not self.sandbox:
-                path_cost = BUILDING_COSTS[BuildingType.PATH]
-                for res, amount in path_cost.costs.items():
+                old_cost = BUILDING_COSTS[existing.type]
+                for res, amount in old_cost.costs.items():
                     self.world.inventory[res] += amount
             self.world.buildings.remove(existing)
             tile.building = None
@@ -323,6 +365,13 @@ class Game:
         tile.building = building
         # Clear overlays on the tile so building is visible
         self.renderer.remove_overlays_at(coord, self.settings.hex_size)
+        self._minimap.invalidate()
+        # Record to blueprint if recording
+        if self.blueprints.is_recording:
+            self.blueprints.record_building(coord, self.build_mode)
+        # Notification
+        self.notifications.push(f"Built {self.build_mode.name.replace('_', ' ').title()}")
+        self.world.mark_housing_dirty()
 
     def _try_delete_building(self, coord) -> None:
         """Delete a building at the given coordinate, refunding half its cost."""
@@ -354,6 +403,8 @@ class Game:
         tile.building = None
         # Targeted tile layer redraw so cleared tile shows terrain
         self.renderer.invalidate_tile(coord)
+        self._minimap.invalidate()
+        self.world.mark_housing_dirty()
 
     def _on_building_selected(self, btype: BuildingType | None) -> None:
         """Callback from the Buildings tab when a building card is clicked."""
@@ -411,6 +462,7 @@ class Game:
             if target.workplace is not None:
                 target.workplace.workers = max(0, target.workplace.workers - 1)
             pop.people.remove(target)
+        self.world.mark_housing_dirty()
 
     # ── Alt overlay toggle ───────────────────────────────────────
 
@@ -450,11 +502,16 @@ class Game:
         if tile is None:
             return False
         if tile.terrain in UNBUILDABLE:
+            if not (self.build_mode == BuildingType.BRIDGE and tile.terrain == Terrain.WATER):
+                return False
+        # Tech tree gate
+        if not self.tech_tree.is_building_unlocked(self.build_mode):
             return False
+        _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL}
         existing = tile.building
         if existing is not None:
-            if existing.type != BuildingType.PATH:
+            if existing.type not in _PATH_LIKE:
                 return False
-            if self.build_mode == BuildingType.PATH:
+            if self.build_mode in _PATH_LIKE:
                 return False
         return True

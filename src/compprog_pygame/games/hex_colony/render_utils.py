@@ -57,10 +57,15 @@ BUILDING_COLORS: dict[BuildingType, tuple[int, int, int]] = {
     BuildingType.HOUSE: (170, 140, 90),
     BuildingType.HABITAT: (140, 155, 175),  # futuristic pod — blue-grey metal
     BuildingType.PATH: (185, 165, 120),
+    BuildingType.BRIDGE: (140, 100, 55),
     BuildingType.WOODCUTTER: (160, 100, 50),
     BuildingType.QUARRY: (170, 170, 160),
     BuildingType.GATHERER: (100, 180, 80),
     BuildingType.STORAGE: (140, 120, 100),
+    BuildingType.REFINERY: (90, 80, 100),
+    BuildingType.FARM: (100, 70, 40),
+    BuildingType.WELL: (140, 135, 125),
+    BuildingType.WALL: (160, 155, 145),
 }
 
 _PATH_BASE = (185, 165, 120)
