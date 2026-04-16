@@ -6,7 +6,6 @@ from functools import lru_cache
 
 from compprog_pygame.games.hex_colony.buildings import BuildingType
 from compprog_pygame.games.hex_colony.hex_grid import Terrain
-from compprog_pygame.games.hex_colony.resources import Resource
 
 # ── Colour palette ───────────────────────────────────────────────
 
@@ -69,28 +68,6 @@ PERSON_COLOR = (230, 210, 170)
 PERSON_GATHER_COLOR = (180, 220, 120)
 PERSON_SKIN = (220, 185, 140)
 PERSON_HAIR = (80, 55, 30)
-
-# ── HUD colours (legacy — kept for _draw_hud) ───────────────────
-
-HUD_BG = (16, 24, 45, 220)
-HUD_TEXT = (242, 244, 255)
-MUTED_TEXT = (140, 150, 175)
-HUD_ACCENT = (200, 160, 60)
-HUD_BORDER = (60, 70, 100)
-
-RESOURCE_ICONS: dict[Resource, str] = {
-    Resource.WOOD: "\u25b2",
-    Resource.FIBER: "\u2022",
-    Resource.STONE: "\u25a0",
-    Resource.FOOD: "\u2665",
-}
-
-RESOURCE_COLORS: dict[Resource, tuple[int, int, int]] = {
-    Resource.WOOD: (160, 100, 50),
-    Resource.FIBER: (120, 200, 80),
-    Resource.STONE: (170, 170, 160),
-    Resource.FOOD: (220, 100, 80),
-}
 
 
 # ── Colour utilities ────────────────────────────────────────────

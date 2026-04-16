@@ -13,10 +13,10 @@ import pygame
 from compprog_pygame.games.hex_colony.resources import Resource
 from compprog_pygame.games.hex_colony.ui import (
     Panel,
+    RESOURCE_COLORS,
+    RESOURCE_ICONS,
     UI_ACCENT,
-    UI_BG,
     UI_BORDER,
-    UI_MUTED,
     UI_TEXT,
     draw_panel_bg,
 )
@@ -26,20 +26,6 @@ if TYPE_CHECKING:
 
 
 # ── Resource display config ──────────────────────────────────────
-
-_RESOURCE_ICONS: dict[Resource, str] = {
-    Resource.WOOD: "\u25b2",   # ▲
-    Resource.FIBER: "\u2022",  # •
-    Resource.STONE: "\u25a0",  # ■
-    Resource.FOOD: "\u2665",   # ♥
-}
-
-_RESOURCE_COLORS: dict[Resource, tuple[int, int, int]] = {
-    Resource.WOOD: (160, 100, 50),
-    Resource.FIBER: (120, 200, 80),
-    Resource.STONE: (170, 170, 160),
-    Resource.FOOD: (220, 100, 80),
-}
 
 _PERSON_COLOR = (230, 210, 170)
 
@@ -92,7 +78,7 @@ class ResourceBar(Panel):
             self._rendered = []
             for res in Resource:
                 icon_surf = self._icon_font.render(
-                    _RESOURCE_ICONS[res], True, _RESOURCE_COLORS[res],
+                    RESOURCE_ICONS[res], True, RESOURCE_COLORS[res],
                 )
                 val_surf = self._val_font.render(
                     f"{inv[res]:.1f}", True, UI_TEXT,
@@ -148,21 +134,6 @@ class ResourceBar(Panel):
             x += icon_surf.get_width() + 4
             surface.blit(val_surf, (x, cy - val_surf.get_height() // 2))
             x += val_surf.get_width() + _ITEM_GAP
-
-        # Starvation warning (pulsing when food is at 0)
-        if world.starvation_timer > 0:
-            import math
-            pulse = int(180 + 75 * math.sin(world.time_elapsed * 6))
-            warn_col = (pulse, 40, 40)
-            secs_left = max(0, 10.0 - world.starvation_timer)
-            warn_text = f"\u26a0 STARVING ({secs_left:.0f}s)"
-            warn_surf = self._val_font.render(warn_text, True, warn_col)
-            surface.blit(warn_surf, (x, cy - warn_surf.get_height() // 2))
-            x += warn_surf.get_width() + _ITEM_GAP
-        elif inv[Resource.FOOD] < 10:
-            warn_surf = self._val_font.render("\u26a0 Food low!", True, (200, 140, 40))
-            surface.blit(warn_surf, (x, cy - warn_surf.get_height() // 2))
-            x += warn_surf.get_width() + _ITEM_GAP
 
         # Right-aligned indicators
         rx = self.rect.right - _PADDING_X

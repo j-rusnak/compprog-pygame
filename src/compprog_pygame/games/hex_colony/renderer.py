@@ -23,7 +23,6 @@ from compprog_pygame.games.hex_colony.hex_grid import (
     Terrain,
     hex_corners,
     hex_to_pixel,
-    pixel_to_hex,
 )
 from compprog_pygame.games.hex_colony.overlay import (
     OverlayBush,
@@ -35,7 +34,6 @@ from compprog_pygame.games.hex_colony.overlay import (
     build_overlays,
 )
 from compprog_pygame.games.hex_colony.people import Task
-from compprog_pygame.games.hex_colony.resources import Resource, TERRAIN_RESOURCE
 from compprog_pygame.games.hex_colony.world import World
 
 from compprog_pygame.games.hex_colony.render_utils import (
@@ -54,7 +52,6 @@ from compprog_pygame.games.hex_colony.render_utils import (
     PERSON_SKIN,
     PERSON_HAIR,
     _darken,
-    _lighten,
     _tile_hash,
 )
 from compprog_pygame.games.hex_colony.render_overlays import (
@@ -88,7 +85,6 @@ class Renderer:
 
     def __init__(self) -> None:
         self.font = pygame.font.Font(None, 22)
-        self.small_font = pygame.font.Font(None, 18)
         self.selected_hex: HexCoord | None = None
         self._water_tick: float = 0.0
         self._graphics_quality: str = "high"  # "high", "medium", "low"
@@ -540,23 +536,6 @@ class Renderer:
         half_sw, half_sh = sw * 0.5, sh * 0.5
         margin = size * 2 * zoom
 
-        # Compute reachable buildings from camp (for disconnected indicator)
-        from collections import deque as _deque
-        camp = world.buildings.at(HexCoord(0, 0))
-        reachable: set[HexCoord] = set()
-        if camp is not None:
-            reachable.add(camp.coord)
-            bq: _deque[HexCoord] = _deque([camp.coord])
-            while bq:
-                c = bq.popleft()
-                for nb in c.neighbors():
-                    if nb in reachable:
-                        continue
-                    if world.buildings.at(nb) is None:
-                        continue
-                    reachable.add(nb)
-                    bq.append(nb)
-
         # First pass: paths (ground-level, drawn beneath other buildings)
         # Also track non-path buildings that need a path disc underneath
         buildings_needing_path: set[HexCoord] = set()
@@ -646,19 +625,6 @@ class Renderer:
                     and building.residents > building.housing_capacity
                     and r >= 3):
                 draw_overcrowded(surface, sx, sy, r, zoom)
-
-            # Disconnected indicator: red ✕ for buildings not reachable from camp
-            if (building.coord not in reachable
-                    and building.type != BuildingType.CAMP
-                    and r >= 3):
-                x_off = int(r * 0.6)
-                y_off = -int(r * 0.9)
-                col = (220, 50, 50)
-                lw = max(1, int(1.5 * zoom))
-                cx, cy = int(sx) + x_off, int(sy) + y_off
-                d = max(2, int(3 * zoom))
-                pygame.draw.line(surface, col, (cx - d, cy - d), (cx + d, cy + d), lw)
-                pygame.draw.line(surface, col, (cx - d, cy + d), (cx + d, cy - d), lw)
 
     # ── People ───────────────────────────────────────────────────
 
@@ -883,7 +849,7 @@ class Renderer:
         self, surface: pygame.Surface, center: HexCoord,
         camera: Camera, size: int,
     ) -> None:
-        """Draw a white pulsing outline around all hexes within 1-tile radius."""
+        """Draw a white pulsing outline around all hexes within 2-tile radius."""
         zoom = camera.zoom
         cam_x, cam_y = camera.x, camera.y
         sw, sh = surface.get_size()
@@ -893,8 +859,13 @@ class Renderer:
         ring_color = (int(255 * pulse), int(255 * pulse), int(255 * pulse))
 
 
-        # Collect all hex coords within radius 1 (center + neighbors)
-        ring_coords: list[HexCoord] = [center] + center.neighbors()
+        # Collect all hex coords within radius 2
+        ring_coords: list[HexCoord] = []
+        for dq in range(-2, 3):
+            for dr in range(-2, 3):
+                ds = -dq - dr
+                if abs(dq) + abs(dr) + abs(ds) <= 4:  # hex distance <= 2
+                    ring_coords.append(HexCoord(center.q + dq, center.r + dr))
 
         # Find outer edges: edges of ring hexes that don't border another ring hex
         ring_set = set(ring_coords)
@@ -917,4 +888,6 @@ class Renderer:
                         (int(corners_screen[i2][0]), int(corners_screen[i2][1])),
                         line_w,
                     )
+
+
 

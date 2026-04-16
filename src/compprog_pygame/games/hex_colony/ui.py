@@ -44,6 +44,8 @@ import pygame
 if TYPE_CHECKING:
     from compprog_pygame.games.hex_colony.world import World
 
+from compprog_pygame.games.hex_colony.resources import Resource
+
 
 # ── Shared colour palette ────────────────────────────────────────
 
@@ -56,6 +58,22 @@ UI_BORDER = (60, 70, 100)
 UI_TAB_ACTIVE = (35, 50, 85, 240)
 UI_TAB_HOVER = (30, 42, 72, 200)
 UI_TAB_INACTIVE = (16, 24, 45, 200)
+
+# ── Resource display constants (shared across all panels) ────────
+
+RESOURCE_ICONS: dict[Resource, str] = {
+    Resource.WOOD: "\u25b2",   # ▲
+    Resource.FIBER: "\u2022",  # •
+    Resource.STONE: "\u25a0",  # ■
+    Resource.FOOD: "\u2665",   # ♥
+}
+
+RESOURCE_COLORS: dict[Resource, tuple[int, int, int]] = {
+    Resource.WOOD: (160, 100, 50),
+    Resource.FIBER: (120, 200, 80),
+    Resource.STONE: (170, 170, 160),
+    Resource.FOOD: (220, 100, 80),
+}
 
 
 # ── Panel base class ─────────────────────────────────────────────

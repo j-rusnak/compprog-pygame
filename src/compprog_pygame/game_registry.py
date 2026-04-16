@@ -8,7 +8,7 @@ when the player exits back to the menu.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Protocol
 
 import pygame
 

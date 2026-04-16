@@ -6,7 +6,7 @@ import time
 import pygame
 
 from compprog_pygame.games.physics_tetris.board import Board
-from compprog_pygame.settings import DEFAULT_SETTINGS, GameSettings
+from compprog_pygame.settings import GameSettings
 
 
 BACKGROUND = (9, 12, 25)

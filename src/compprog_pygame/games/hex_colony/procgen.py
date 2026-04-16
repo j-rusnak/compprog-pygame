@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import math
 import random as _random
-from typing import Sequence
 
 from compprog_pygame.games.hex_colony.hex_grid import HexCoord, HexGrid, HexTile, Terrain, hex_to_pixel
 from compprog_pygame.games.hex_colony.settings import HexColonySettings

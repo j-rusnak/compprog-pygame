@@ -9,8 +9,8 @@ from __future__ import annotations
 from collections import deque
 
 from compprog_pygame.games.hex_colony.buildings import Building, BuildingManager, BuildingType
-from compprog_pygame.games.hex_colony.hex_grid import HexCoord, HexGrid, HexTile, Terrain
-from compprog_pygame.games.hex_colony.people import Person, PopulationManager, Task
+from compprog_pygame.games.hex_colony.hex_grid import HexCoord, HexGrid
+from compprog_pygame.games.hex_colony.people import PopulationManager, Task
 from compprog_pygame.games.hex_colony.procgen import generate_terrain
 from compprog_pygame.games.hex_colony.resources import Inventory, Resource
 from compprog_pygame.games.hex_colony.settings import HexColonySettings
@@ -26,6 +26,11 @@ class World:
         self.population = PopulationManager()
         self.inventory = Inventory()
         self.time_elapsed: float = 0.0
+
+    @property
+    def game_over(self) -> bool:
+        """The colony is lost when all people are dead."""
+        return self.population.count == 0 and self.time_elapsed > 0
 
     # ── Generation ───────────────────────────────────────────────
 
@@ -86,19 +91,14 @@ class World:
 
     # ── Housing connectivity ─────────────────────────────────────
 
-    def connected_housing(self) -> int:
-        """Total housing = camp capacity + capacity of houses reachable
-        from the camp via adjacent buildings/paths.
-
-        Every building counts as traversable (acts like a path)."""
+    def _connected_houses(self) -> list[Building]:
+        """BFS from camp through all buildings; return non-camp houses."""
         camp = self.buildings.at(HexCoord(0, 0))
         if camp is None:
-            return 0
-
-        total = camp.housing_capacity  # 10
+            return []
+        houses: list[Building] = []
         visited: set[HexCoord] = {camp.coord}
         queue: deque[HexCoord] = deque([camp.coord])
-
         while queue:
             coord = queue.popleft()
             for nb in coord.neighbors():
@@ -108,11 +108,18 @@ class World:
                 nb_building = self.buildings.at(nb)
                 if nb_building is None:
                     continue
-                # Every building is traversable
-                if nb_building.housing_capacity > 0 and nb_building.type != BuildingType.CAMP:
-                    total += nb_building.housing_capacity
+                if (nb_building.housing_capacity > 0
+                        and nb_building.type != BuildingType.CAMP):
+                    houses.append(nb_building)
                 queue.append(nb)
-        return total
+        return houses
+
+    def connected_housing(self) -> int:
+        """Total housing = camp capacity + capacity of houses reachable
+        from the camp via adjacent buildings/paths."""
+        camp = self.buildings.at(HexCoord(0, 0))
+        cap = camp.housing_capacity if camp else 0
+        return cap + sum(h.housing_capacity for h in self._connected_houses())
 
     def _update_housing(self) -> None:
         """Assign every person a home.  Homeless overflow goes to camp.
@@ -127,23 +134,8 @@ class World:
         # Reset camp residents count; we'll recount below
         camp.residents = 0
 
-        # Connected houses (BFS, same logic as connected_housing)
-        connected_houses: list[Building] = []
-        visited: set[HexCoord] = {camp.coord}
-        queue: deque[HexCoord] = deque([camp.coord])
-        while queue:
-            coord = queue.popleft()
-            for nb in coord.neighbors():
-                if nb in visited:
-                    continue
-                visited.add(nb)
-                nb_building = self.buildings.at(nb)
-                if nb_building is None:
-                    continue
-                if (nb_building.housing_capacity > 0
-                        and nb_building.type != BuildingType.CAMP):
-                    connected_houses.append(nb_building)
-                queue.append(nb)
+        # Connected houses via shared BFS
+        connected_houses = self._connected_houses()
 
         # Reset all house resident counts
         for house in connected_houses:

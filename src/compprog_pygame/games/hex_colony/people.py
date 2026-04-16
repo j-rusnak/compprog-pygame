@@ -40,6 +40,7 @@ class Person:
     work_timer: float = 0.0     # time spent on current work action
     carry_resource: object | None = None  # (Resource, amount) tuple when hauling
     home: object | None = None  # Building reference (dwelling)
+    workplace: object | None = None  # Building reference (work assignment)
 
     def snap_to_hex(self, size: int) -> None:
         """Set pixel position to centre of current hex."""

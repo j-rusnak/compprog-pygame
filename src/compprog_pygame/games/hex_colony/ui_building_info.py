@@ -19,12 +19,13 @@ import pygame
 
 from compprog_pygame.games.hex_colony.buildings import (
     BUILDING_HOUSING,
-    BUILDING_STORAGE_CAPACITY,
     BuildingType,
 )
 from compprog_pygame.games.hex_colony.resources import Resource
 from compprog_pygame.games.hex_colony.ui import (
     Panel,
+    RESOURCE_COLORS,
+    RESOURCE_ICONS,
     UI_ACCENT,
     UI_BG,
     UI_BORDER,
@@ -41,20 +42,6 @@ if TYPE_CHECKING:
 _PANEL_W = 240
 _PADDING = 10
 _LINE_H = 24
-
-_RES_ICON: dict[Resource, str] = {
-    Resource.WOOD: "\u25b2",
-    Resource.FIBER: "\u2022",
-    Resource.STONE: "\u25a0",
-    Resource.FOOD: "\u2665",
-}
-
-_RES_COL: dict[Resource, tuple[int, int, int]] = {
-    Resource.WOOD: (160, 100, 50),
-    Resource.FIBER: (120, 200, 80),
-    Resource.STONE: (170, 170, 160),
-    Resource.FOOD: (220, 100, 80),
-}
 
 _BUILDING_LABEL: dict[BuildingType, str] = {
     BuildingType.CAMP: "Camp",
@@ -117,9 +104,9 @@ class BuildingInfoPanel(Panel):
             lines.append(("", UI_TEXT, self._small))  # spacer
             lines.append(("Resources:", UI_MUTED, self._small))
             for res in Resource:
-                icon = _RES_ICON[res]
+                icon = RESOURCE_ICONS[res]
                 val = int(world.inventory[res])
-                lines.append((f"  {icon} {res.name.capitalize()}: {val}", _RES_COL[res], self._font))
+                lines.append((f"  {icon} {res.name.capitalize()}: {val}", RESOURCE_COLORS[res], self._font))
 
         # Workers for production buildings
         if b.max_workers > 0:
@@ -132,8 +119,8 @@ class BuildingInfoPanel(Panel):
             lines.append((f"Storage: {stored}/{b.storage_capacity}", UI_TEXT, self._font))
             for res, amount in b.storage.items():
                 if amount > 0:
-                    icon = _RES_ICON[res]
-                    lines.append((f"  {icon} {res.name.capitalize()}: {int(amount)}", _RES_COL[res], self._font))
+                    icon = RESOURCE_ICONS[res]
+                    lines.append((f"  {icon} {res.name.capitalize()}: {int(amount)}", RESOURCE_COLORS[res], self._font))
 
         # Compute panel height
         panel_h = _PADDING * 2

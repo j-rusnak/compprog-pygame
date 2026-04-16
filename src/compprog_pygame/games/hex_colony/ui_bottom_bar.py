@@ -29,10 +29,11 @@ from compprog_pygame.games.hex_colony.buildings import (
     BUILDING_COSTS,
     BuildingType,
 )
-from compprog_pygame.games.hex_colony.resources import Resource
 
 from compprog_pygame.games.hex_colony.ui import (
     Panel,
+    RESOURCE_COLORS,
+    RESOURCE_ICONS,
     TabContent,
     UI_ACCENT,
     UI_BG,
@@ -102,20 +103,6 @@ class BuildingsTabContent(TabContent):
         BuildingType.STORAGE: (140, 120, 100),
     }
 
-    _RES_ICON: dict[Resource, str] = {
-        Resource.WOOD: "\u25b2",
-        Resource.FIBER: "\u2022",
-        Resource.STONE: "\u25a0",
-        Resource.FOOD: "\u2665",
-    }
-
-    _RES_COL: dict[Resource, tuple[int, int, int]] = {
-        Resource.WOOD: (160, 100, 50),
-        Resource.FIBER: (120, 200, 80),
-        Resource.STONE: (170, 170, 160),
-        Resource.FOOD: (220, 100, 80),
-    }
-
     _DESC: dict[BuildingType, str] = {
         BuildingType.HOUSE: "Houses 5 colonists",
         BuildingType.PATH: "Connects buildings",
@@ -182,7 +169,7 @@ class BuildingsTabContent(TabContent):
             cost = BUILDING_COSTS[btype]
             cy = y + 6 + name_surf.get_height() + 4
             for res, amount in cost.costs.items():
-                ri = self._small.render(self._RES_ICON[res], True, self._RES_COL[res])
+                ri = self._small.render(RESOURCE_ICONS[res], True, RESOURCE_COLORS[res])
                 rv = self._small.render(str(amount), True, UI_MUTED)
                 can_afford = world.inventory[res] >= amount
                 if not can_afford:
