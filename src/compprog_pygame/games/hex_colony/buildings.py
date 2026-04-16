@@ -10,6 +10,7 @@ from enum import Enum, auto
 
 from compprog_pygame.games.hex_colony.hex_grid import HexCoord
 from compprog_pygame.games.hex_colony.resources import Resource
+from compprog_pygame.games.hex_colony import params
 
 
 class BuildingType(Enum):
@@ -28,51 +29,56 @@ class BuildingCost:
     costs: dict[Resource, int]
 
 
+def _costs_from_dict(d: dict[str, int]) -> dict[Resource, int]:
+    """Convert a {resource_name: amount} dict from params into {Resource: amount}."""
+    return {Resource[k]: v for k, v in d.items()}
+
+
 # What each building costs to place
 BUILDING_COSTS: dict[BuildingType, BuildingCost] = {
-    BuildingType.CAMP: BuildingCost({}),  # free (starting building)
-    BuildingType.HOUSE: BuildingCost({Resource.WOOD: 12, Resource.FIBER: 4}),
-    BuildingType.PATH: BuildingCost({Resource.STONE: 2}),
-    BuildingType.WOODCUTTER: BuildingCost({Resource.WOOD: 10, Resource.STONE: 5}),
-    BuildingType.QUARRY: BuildingCost({Resource.WOOD: 15, Resource.FIBER: 5}),
-    BuildingType.GATHERER: BuildingCost({Resource.WOOD: 8, Resource.STONE: 3}),
-    BuildingType.STORAGE: BuildingCost({Resource.WOOD: 20, Resource.STONE: 10}),
+    BuildingType.CAMP: BuildingCost(_costs_from_dict(params.BUILDING_COST_CAMP)),
+    BuildingType.HOUSE: BuildingCost(_costs_from_dict(params.BUILDING_COST_HOUSE)),
+    BuildingType.PATH: BuildingCost(_costs_from_dict(params.BUILDING_COST_PATH)),
+    BuildingType.WOODCUTTER: BuildingCost(_costs_from_dict(params.BUILDING_COST_WOODCUTTER)),
+    BuildingType.QUARRY: BuildingCost(_costs_from_dict(params.BUILDING_COST_QUARRY)),
+    BuildingType.GATHERER: BuildingCost(_costs_from_dict(params.BUILDING_COST_GATHERER)),
+    BuildingType.STORAGE: BuildingCost(_costs_from_dict(params.BUILDING_COST_STORAGE)),
 }
 
 # Max workers each building supports
 BUILDING_MAX_WORKERS: dict[BuildingType, int] = {
-    BuildingType.CAMP: 0,
-    BuildingType.HOUSE: 0,
-    BuildingType.PATH: 0,
-    BuildingType.WOODCUTTER: 2,
-    BuildingType.QUARRY: 2,
-    BuildingType.GATHERER: 3,
-    BuildingType.STORAGE: 0,
+    BuildingType.CAMP: params.BUILDING_MAX_WORKERS_CAMP,
+    BuildingType.HOUSE: params.BUILDING_MAX_WORKERS_HOUSE,
+    BuildingType.PATH: params.BUILDING_MAX_WORKERS_PATH,
+    BuildingType.WOODCUTTER: params.BUILDING_MAX_WORKERS_WOODCUTTER,
+    BuildingType.QUARRY: params.BUILDING_MAX_WORKERS_QUARRY,
+    BuildingType.GATHERER: params.BUILDING_MAX_WORKERS_GATHERER,
+    BuildingType.STORAGE: params.BUILDING_MAX_WORKERS_STORAGE,
 }
 
 # Housing capacity per building type (0 = not a dwelling)
 BUILDING_HOUSING: dict[BuildingType, int] = {
-    BuildingType.CAMP: 10,
-    BuildingType.HOUSE: 5,
-    BuildingType.PATH: 0,
-    BuildingType.WOODCUTTER: 0,
-    BuildingType.QUARRY: 0,
-    BuildingType.GATHERER: 0,
-    BuildingType.STORAGE: 0,
+    BuildingType.CAMP: params.BUILDING_HOUSING_CAMP,
+    BuildingType.HOUSE: params.BUILDING_HOUSING_HOUSE,
+    BuildingType.PATH: params.BUILDING_HOUSING_PATH,
+    BuildingType.WOODCUTTER: params.BUILDING_HOUSING_WOODCUTTER,
+    BuildingType.QUARRY: params.BUILDING_HOUSING_QUARRY,
+    BuildingType.GATHERER: params.BUILDING_HOUSING_GATHERER,
+    BuildingType.STORAGE: params.BUILDING_HOUSING_STORAGE,
 }
 
 # Storage capacity per building type.
-# Harvesting buildings store up to 10 of their resource type.
-# Storage building stores up to 100 total (mixed).
-# Camp capacity is set at placement time (2× starting resources).
+# Harvesting buildings store up to their capacity of their resource type.
+# Storage building stores up to its capacity (mixed).
+# Camp capacity is set at placement time.
 BUILDING_STORAGE_CAPACITY: dict[BuildingType, int] = {
-    BuildingType.CAMP: 0,        # set dynamically at placement
-    BuildingType.HOUSE: 0,
-    BuildingType.PATH: 0,
-    BuildingType.WOODCUTTER: 10,
-    BuildingType.QUARRY: 10,
-    BuildingType.GATHERER: 20,   # 10 fiber + 10 food
-    BuildingType.STORAGE: 100,
+    BuildingType.CAMP: params.BUILDING_STORAGE_CAMP,
+    BuildingType.HOUSE: params.BUILDING_STORAGE_HOUSE,
+    BuildingType.PATH: params.BUILDING_STORAGE_PATH,
+    BuildingType.WOODCUTTER: params.BUILDING_STORAGE_WOODCUTTER,
+    BuildingType.QUARRY: params.BUILDING_STORAGE_QUARRY,
+    BuildingType.GATHERER: params.BUILDING_STORAGE_GATHERER,
+    BuildingType.STORAGE: params.BUILDING_STORAGE_STORAGE,
 }
 
 

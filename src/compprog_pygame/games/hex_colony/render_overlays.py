@@ -1,4 +1,9 @@
-"""Overlay drawing functions — trees, rocks, ripples, bushes, grass."""
+"""Overlay drawing functions — trees, rocks, ripples, bushes, grass, crystals.
+
+Each function first checks for a matching sprite in the sprite manager.
+If a sprite PNG is available it is drawn scaled to the current zoom;
+otherwise the original procedural drawing code is used as a fallback.
+"""
 
 from __future__ import annotations
 
@@ -15,12 +20,32 @@ from compprog_pygame.games.hex_colony.overlay import (
     OverlayTree,
 )
 from compprog_pygame.games.hex_colony.render_utils import _darken
+from compprog_pygame.games.hex_colony.sprites import sprites
+
+
+def _try_overlay_sprite(
+    surface: pygame.Surface, key: str,
+    sx: float, sy: float, z: float, base_w: int, base_h: int,
+) -> bool:
+    """Attempt to blit an overlay sprite.  Returns True if successful."""
+    sheet = sprites.get(key)
+    if sheet is None:
+        return False
+    w = max(1, int(base_w * z))
+    h = max(1, int(base_h * z))
+    img = sheet.get(w, h)
+    surface.blit(img, (int(sx) - w // 2, int(sy) - h // 2))
+    return True
 
 
 def draw_tree(
     surface: pygame.Surface, item: OverlayTree,
     sx: float, sy: float, z: float, iz: int,
 ) -> None:
+    key = f"overlays/tree_{item.style}"
+    total_h = item.trunk_h + item.crown_ry * 2
+    if _try_overlay_sprite(surface, key, sx, sy - total_h * z * 0.3, z, item.crown_rx * 3, int(total_h * 1.2)):
+        return
     if item.style == "canopy":
         crx = max(3, int(item.crown_rx * z))
         cry = max(2, int(item.crown_ry * z))
@@ -78,6 +103,8 @@ def draw_rock(
     surface: pygame.Surface, item: OverlayRock,
     sx: float, sy: float, z: float, iz: int,
 ) -> None:
+    if _try_overlay_sprite(surface, "overlays/rock", sx, sy, z, item.w * 3, item.h * 3):
+        return
     rw = max(2, int(item.w * z))
     rh = max(2, int(item.h * z))
     pts = [
@@ -114,6 +141,8 @@ def draw_bush(
     surface: pygame.Surface, item: OverlayBush,
     sx: float, sy: float, z: float, iz: int,
 ) -> None:
+    if _try_overlay_sprite(surface, "overlays/bush", sx, sy, z, item.radius * 3, item.radius * 3):
+        return
     br = max(2, int(item.radius * z))
     # Dark outline for contrast against grass
     pygame.draw.circle(surface, _darken(item.color, 0.7), (int(sx), int(sy)), br + max(1, iz))
@@ -127,6 +156,8 @@ def draw_grass(
     surface: pygame.Surface, item: OverlayGrassTuft,
     sx: float, sy: float, z: float, iz: int,
 ) -> None:
+    if _try_overlay_sprite(surface, "overlays/grass", sx, sy, z, 8, item.h * 2):
+        return
     h = max(1, int(item.h * z))
     px, py = int(sx), int(sy)
     # Two blades at slight angles for a more natural look
@@ -141,6 +172,10 @@ def draw_crystal(
     sx: float, sy: float, z: float, iz: int,
 ) -> None:
     """Draw a faceted crystal shard poking out of the ground."""
+    # Pick sprite based on crystal colour (iron vs copper)
+    key = "overlays/crystal_iron" if item.color[0] > item.color[2] else "overlays/crystal_copper"
+    if _try_overlay_sprite(surface, key, sx, sy, z, item.w * 3, item.h * 2):
+        return
     h = max(3, int(item.h * z))
     w = max(2, int(item.w * z))
     # Crystal is a tall narrow polygon — a pointed shard

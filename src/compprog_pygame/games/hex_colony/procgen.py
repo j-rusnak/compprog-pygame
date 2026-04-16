@@ -14,6 +14,7 @@ import random as _random
 
 from compprog_pygame.games.hex_colony.hex_grid import HexCoord, HexGrid, HexTile, Terrain, hex_to_pixel
 from compprog_pygame.games.hex_colony.settings import HexColonySettings
+from compprog_pygame.games.hex_colony import params
 
 
 # ── Seed → integer ───────────────────────────────────────────────
@@ -85,7 +86,7 @@ class NoiseMap:
 # ── Impassable terrain helpers ────────────────────────────────────
 
 IMPASSABLE = frozenset({Terrain.WATER, Terrain.MOUNTAIN, Terrain.STONE_DEPOSIT})
-SAFE_RADIUS = 2  # fixed 2-tile exclusion zone around the camp
+SAFE_RADIUS = params.SAFE_ZONE_RADIUS
 
 
 def _is_passable(terrain: Terrain) -> bool:
@@ -423,7 +424,11 @@ def _generate_ore_veins(
             # Place ore on this tile
             tile.underlying_terrain = tile.terrain
             tile.terrain = ore_terrain
-            tile.resource_amount = rng.uniform(40, 100)
+            if ore_terrain == Terrain.IRON_VEIN:
+                lo, hi = params.TILE_RESOURCE_IRON_VEIN
+            else:
+                lo, hi = params.TILE_RESOURCE_COPPER_VEIN
+            tile.resource_amount = rng.uniform(lo, hi)
             vein_tiles.append(cur)
             placed.add(cur)
 
@@ -431,7 +436,7 @@ def _generate_ore_veins(
             for nb in cur.neighbors():
                 if nb not in visited:
                     visited.add(nb)
-                    if rng.random() < 0.55:
+                    if rng.random() < params.ORE_VEIN_NEIGHBOR_EXPAND_CHANCE:
                         frontier.append(nb)
 
         # Remove used tiles from eligible pool
@@ -525,12 +530,18 @@ def generate_terrain(seed: str, settings: HexColonySettings) -> HexGrid:
     _ring_mountains_with_stone(grid, rng)
 
     # --- Pass 5b: generate iron and copper ore veins -----------------
-    iron_veins = max(3, 2 + radius // 15)
-    copper_veins = max(3, 2 + radius // 15)
+    iron_veins = max(params.ORE_IRON_VEIN_COUNT_MIN,
+                     params.ORE_IRON_VEIN_COUNT_BASE + radius // params.ORE_IRON_VEIN_COUNT_RADIUS_DIVISOR)
+    copper_veins = max(params.ORE_COPPER_VEIN_COUNT_MIN,
+                       params.ORE_COPPER_VEIN_COUNT_BASE + radius // params.ORE_COPPER_VEIN_COUNT_RADIUS_DIVISOR)
     _generate_ore_veins(grid, rng, settings, Terrain.IRON_VEIN,
-                        num_veins=iron_veins, vein_min=4, vein_max=12)
+                        num_veins=iron_veins,
+                        vein_min=params.ORE_IRON_VEIN_SIZE_MIN,
+                        vein_max=params.ORE_IRON_VEIN_SIZE_MAX)
     _generate_ore_veins(grid, rng, settings, Terrain.COPPER_VEIN,
-                        num_veins=copper_veins, vein_min=3, vein_max=10)
+                        num_veins=copper_veins,
+                        vein_min=params.ORE_COPPER_VEIN_SIZE_MIN,
+                        vein_max=params.ORE_COPPER_VEIN_SIZE_MAX)
 
     # --- Pass 6: clear safe zone + soften fringe (rendered last) ----
     for q2 in range(-SAFE_RADIUS, SAFE_RADIUS + 1):
@@ -603,13 +614,17 @@ def _classify(elev: float, moist: float, detail: float, edge_t: float,
 
 def _resource_amount(terrain: Terrain, rng: _random.Random) -> float:
     if terrain in (Terrain.FOREST, Terrain.DENSE_FOREST):
-        return rng.uniform(20, 60)
+        lo, hi = params.TILE_RESOURCE_FOREST
+        return rng.uniform(lo, hi)
     if terrain == Terrain.STONE_DEPOSIT:
-        return rng.uniform(30, 80)
+        lo, hi = params.TILE_RESOURCE_STONE_DEPOSIT
+        return rng.uniform(lo, hi)
     if terrain == Terrain.FIBER_PATCH:
-        return rng.uniform(15, 40)
+        lo, hi = params.TILE_RESOURCE_FIBER_PATCH
+        return rng.uniform(lo, hi)
     if terrain == Terrain.MOUNTAIN:
-        return rng.uniform(50, 120)
+        lo, hi = params.TILE_RESOURCE_MOUNTAIN
+        return rng.uniform(lo, hi)
     return 0.0
 
 

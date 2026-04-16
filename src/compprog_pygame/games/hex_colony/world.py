@@ -14,6 +14,7 @@ from compprog_pygame.games.hex_colony.people import PopulationManager, Task
 from compprog_pygame.games.hex_colony.procgen import generate_terrain
 from compprog_pygame.games.hex_colony.resources import Inventory, Resource
 from compprog_pygame.games.hex_colony.settings import HexColonySettings
+from compprog_pygame.games.hex_colony import params
 
 
 class World:
@@ -48,19 +49,20 @@ class World:
         camp = self.buildings.place(BuildingType.CAMP, origin)
         tile = self.grid[origin]
         tile.building = camp
-        # Crashed spaceship stores 2× starting resources
+        # Crashed spaceship stores multiplied starting resources
         s = self.settings
+        m = params.CAMP_STORAGE_MULTIPLIER
         camp.storage = {
-            Resource.WOOD: float(s.start_wood * 2),
-            Resource.FIBER: float(s.start_fiber * 2),
-            Resource.STONE: float(s.start_stone * 2),
-            Resource.FOOD: float(s.start_food * 2),
-            Resource.IRON: 0.0,
-            Resource.COPPER: 0.0,
+            Resource.WOOD: float(s.start_wood * m),
+            Resource.FIBER: float(s.start_fiber * m),
+            Resource.STONE: float(s.start_stone * m),
+            Resource.FOOD: float(s.start_food * m),
+            Resource.IRON: float(params.START_IRON),
+            Resource.COPPER: float(params.START_COPPER),
         }
         camp.storage_capacity = sum(
-            v * 2 for v in (s.start_wood, s.start_fiber, s.start_stone, s.start_food)
-        )
+            v * m for v in (s.start_wood, s.start_fiber, s.start_stone, s.start_food)
+        ) + params.START_IRON + params.START_COPPER
 
     def _init_resources(self) -> None:
         s = self.settings
@@ -68,6 +70,8 @@ class World:
         self.inventory[Resource.FIBER] = s.start_fiber
         self.inventory[Resource.STONE] = s.start_stone
         self.inventory[Resource.FOOD] = s.start_food
+        self.inventory[Resource.IRON] = params.START_IRON
+        self.inventory[Resource.COPPER] = params.START_COPPER
 
     def _spawn_people(self) -> None:
         origin = HexCoord(0, 0)

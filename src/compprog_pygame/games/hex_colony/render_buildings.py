@@ -1,4 +1,9 @@
-"""Building drawing functions — camp, house, woodcutter, quarry, gatherer, storage, path, overcrowded."""
+"""Building drawing functions — camp, house, woodcutter, quarry, gatherer, storage, path, overcrowded.
+
+Each function first checks for a matching sprite in the sprite manager.
+If a sprite PNG is available it is drawn scaled to the current zoom;
+otherwise the original procedural drawing code is used as a fallback.
+"""
 
 from __future__ import annotations
 
@@ -14,10 +19,31 @@ from compprog_pygame.games.hex_colony.render_utils import (
     _lighten,
     _tile_hash,
 )
+from compprog_pygame.games.hex_colony.sprites import sprites
+
+
+def _try_sprite(
+    surface: pygame.Surface, key: str,
+    sx: float, sy: float, r: int, z: float,
+) -> bool:
+    """Attempt to blit a sprite.  Returns True if successful."""
+    sheet = sprites.get(key)
+    if sheet is None:
+        return False
+    # Scale sprite so its width ≈ 2.2 * r (covers the hex footprint)
+    target_w = max(4, int(r * 2.8))
+    bw, bh = sheet.base_size
+    aspect = bh / bw if bw else 1.0
+    target_h = max(4, int(target_w * aspect))
+    img = sheet.get(target_w, target_h)
+    surface.blit(img, (int(sx) - target_w // 2, int(sy) - target_h // 2))
+    return True
 
 
 def draw_overcrowded(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
     """Red pulsing exclamation mark above a building to show overcrowding."""
+    if _try_sprite(surface, "buildings/overcrowded", sx, sy - r * 0.8, r, z):
+        return
     iz = max(1, int(z))
     # Position above the building
     ex = int(sx)
@@ -36,6 +62,8 @@ def draw_overcrowded(surface: pygame.Surface, sx: float, sy: float, r: int, z: f
 
 def draw_camp(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
     """Crashed spaceship — tilted fuselage with broken wing and sparking engine."""
+    if _try_sprite(surface, "buildings/camp", sx, sy, r, z):
+        return
     iz = max(1, int(z))
     hull_col = (120, 140, 170)
     hull_dark = _darken(hull_col, 0.7)
@@ -98,6 +126,8 @@ def draw_camp(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -
 
 def draw_house(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
     """Teepee / hut — conical tent with hide covering and smoke hole."""
+    if _try_sprite(surface, "buildings/house", sx, sy, r, z):
+        return
     iz = max(1, int(z))
     hide_col = (155, 130, 85)
     hide_dark = _darken(hide_col, 0.75)
@@ -142,6 +172,8 @@ def draw_house(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) 
 
 
 def draw_woodcutter(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    if _try_sprite(surface, "buildings/woodcutter", sx, sy, r, z):
+        return
     iz = max(1, int(z))
     cabin = (140, 90, 45)
     rect = pygame.Rect(int(sx - r * 0.55), int(sy - r * 0.3), int(r * 1.1), int(r * 0.7))
@@ -163,6 +195,8 @@ def draw_woodcutter(surface: pygame.Surface, sx: float, sy: float, r: int, z: fl
 
 
 def draw_quarry(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    if _try_sprite(surface, "buildings/quarry", sx, sy, r, z):
+        return
     iz = max(1, int(z))
     arch_col = (150, 145, 135)
     pw = max(2, int(r * 0.2))
@@ -184,6 +218,8 @@ def draw_quarry(surface: pygame.Surface, sx: float, sy: float, r: int, z: float)
 
 
 def draw_gatherer(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    if _try_sprite(surface, "buildings/gatherer", sx, sy, r, z):
+        return
     iz = max(1, int(z))
     hut_col = (85, 150, 65)
     rect = pygame.Rect(int(sx - r * 0.4), int(sy - r * 0.15), int(r * 0.8), int(r * 0.55))
@@ -202,6 +238,8 @@ def draw_gatherer(surface: pygame.Surface, sx: float, sy: float, r: int, z: floa
 
 
 def draw_storage(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    if _try_sprite(surface, "buildings/storage", sx, sy, r, z):
+        return
     iz = max(1, int(z))
     ware_col = (130, 110, 85)
     rect = pygame.Rect(int(sx - r * 0.6), int(sy - r * 0.25), int(r * 1.2), int(r * 0.65))

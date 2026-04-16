@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections import deque
-
 import pygame
 
 from compprog_pygame.games.hex_colony.buildings import (
@@ -22,7 +20,9 @@ from compprog_pygame.games.hex_colony.ui_game_over import GameOverOverlay
 from compprog_pygame.games.hex_colony.ui_help import HelpOverlay
 from compprog_pygame.games.hex_colony.ui_pause_menu import PauseOverlay
 from compprog_pygame.games.hex_colony.ui_resource_bar import ResourceBar
+from compprog_pygame.games.hex_colony.ui_tile_info import TileInfoPanel
 from compprog_pygame.games.hex_colony.world import World
+from compprog_pygame.games.hex_colony import params
 
 # Build-mode palette order
 BUILDABLE = [
@@ -59,12 +59,14 @@ class Game:
         self._resource_bar = ResourceBar()
         self._bottom_bar = BottomBar()
         self._building_info = BuildingInfoPanel()
+        self._tile_info = TileInfoPanel()
         self._pause_overlay = PauseOverlay()
         self._game_over_overlay = GameOverOverlay()
         self._help_overlay = HelpOverlay()
         self.ui.add_panel(self._resource_bar)
         self.ui.add_panel(self._bottom_bar)
         self.ui.add_panel(self._building_info)
+        self.ui.add_panel(self._tile_info)
         self.ui.add_panel(self._help_overlay)
         self.ui.add_panel(self._pause_overlay)
         self.ui.add_panel(self._game_over_overlay)
@@ -204,6 +206,7 @@ class Game:
                 elif self.renderer.selected_hex is not None:
                     self.renderer.selected_hex = None
                     self._building_info.building = None
+                    self._tile_info.tile = None
                 else:
                     self.camera.start_drag(event.pos)
                     self._drag_button = 3
@@ -272,15 +275,22 @@ class Game:
         else:
             # Select tile
             self.renderer.selected_hex = coord
-            # Show building info if there's a building
+            # Show building info if there's a building, otherwise show tile info
             building = self.world.buildings.at(coord)
-            self._building_info.building = building
+            if building is not None:
+                self._building_info.building = building
+                self._tile_info.tile = None
+            else:
+                self._building_info.building = None
+                tile = self.world.grid.get(coord)
+                self._tile_info.tile = tile
+                self._tile_info.coord = coord
 
     def _try_place_building(self, coord) -> None:
         tile = self.world.grid[coord]
-        # Can't build on water
-        from compprog_pygame.games.hex_colony.hex_grid import Terrain
-        if tile.terrain == Terrain.WATER:
+        # Can't build on impassable terrain
+        from compprog_pygame.games.hex_colony.procgen import IMPASSABLE
+        if tile.terrain in IMPASSABLE:
             return
         # Check existing building
         existing = tile.building
@@ -327,21 +337,22 @@ class Game:
             if person.workplace is building:
                 person.workplace = None
                 person.carry_resource = None
+                person.target_hex = None
                 person.task = Task.IDLE
-                person.path = deque()
+                person.path = []
                 building.workers = max(0, building.workers - 1)
             if person.home is building:
                 person.home = None
-        # Refund half the cost (rounded down)
+        # Refund a fraction of the cost
         if not self.sandbox:
             cost = BUILDING_COSTS[building.type]
             for res, amount in cost.costs.items():
-                self.world.inventory[res] += amount // 2
+                self.world.inventory[res] += int(amount * params.DELETE_REFUND_FRACTION)
         # Remove building
         self.world.buildings.remove(building)
         tile.building = None
-        # Invalidate tile layer cache so cleared tile redraws
-        self.renderer._tile_layer = None
+        # Targeted tile layer redraw so cleared tile shows terrain
+        self.renderer.invalidate_tile(coord)
 
     def _on_building_selected(self, btype: BuildingType | None) -> None:
         """Callback from the Buildings tab when a building card is clicked."""
@@ -430,11 +441,11 @@ class Game:
 
     def _can_place_at(self, coord) -> bool:
         """Check if the current build_mode can be placed at coord."""
-        from compprog_pygame.games.hex_colony.hex_grid import Terrain
+        from compprog_pygame.games.hex_colony.procgen import IMPASSABLE
         tile = self.world.grid.get(coord)
         if tile is None:
             return False
-        if tile.terrain == Terrain.WATER:
+        if tile.terrain in IMPASSABLE:
             return False
         existing = tile.building
         if existing is not None:

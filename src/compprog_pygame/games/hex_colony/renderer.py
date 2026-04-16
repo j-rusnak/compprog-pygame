@@ -78,6 +78,10 @@ from compprog_pygame.games.hex_colony.render_terrain import (
     mountain_tile_color,
     draw_contours,
 )
+from compprog_pygame.games.hex_colony.sprites import sprites
+
+# Load sprite assets at import time
+sprites.load_all()
 
 # Building types that collect resources (show range ring)
 _COLLECTION_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER}
@@ -107,6 +111,7 @@ class Renderer:
         self._static_overlays: list[OverlayItem] = []
         self._edge_colors: dict[HexCoord, list[tuple[int, int, int]]] = {}
         self._cross_cat: dict[HexCoord, list[int]] = {}  # 0=same category, 2=cross-category: use own colour
+        self._dirty_tiles: set[HexCoord] = set()  # tiles needing targeted redraw
 
         # Alt resource overlay
         self.show_resource_overlay: bool = False
@@ -200,8 +205,14 @@ class Renderer:
             item for item in self._ripples
             if (item.wx - cx) ** 2 + (item.wy - cy) ** 2 > r2
         ]
-        # Invalidate tile layer cache so cleared tile is redrawn
-        self._tile_layer = None
+        # Mark tile for targeted redraw instead of invalidating entire cache.
+        # The building drawn on top will cover stale overlay pixels until the
+        # next natural cache rebuild.
+        self._dirty_tiles.add(coord)
+
+    def invalidate_tile(self, coord: HexCoord) -> None:
+        """Mark a single hex as needing redraw on the tile layer."""
+        self._dirty_tiles.add(coord)
 
     # ── Blended tile colours (two-pass smoothing) ────────────────
 
@@ -376,6 +387,10 @@ class Renderer:
         if need_rebuild:
             self._rebuild_tile_layer(world, camera, sw, sh)
 
+        # Patch any tiles that were individually dirtied (building place/delete)
+        if self._dirty_tiles:
+            self._patch_dirty_tiles(world, world.settings.hex_size)
+
         cw, ch = self._tile_layer.get_size()
         src_x = int((cam_x - self._tl_cam[0]) * zoom + cw * 0.5 - sw * 0.5)
         src_y = int((cam_y - self._tl_cam[1]) * zoom + ch * 0.5 - sh * 0.5)
@@ -521,6 +536,111 @@ class Renderer:
                     draw_grass(cache, item, sx, sy, zoom, iz)
                 elif isinstance(item, OverlayCrystal):
                     draw_crystal(cache, item, sx, sy, zoom, iz)
+
+    # ── Targeted tile patching ───────────────────────────────────
+
+    def _patch_dirty_tiles(self, world: World, hex_size: int) -> None:
+        """Redraw only the dirty tiles on the existing tile layer cache.
+
+        This avoids a full rebuild when a building is placed or deleted,
+        preventing the visible "pop" on all surrounding tiles.
+        """
+        if not self._dirty_tiles or self._tile_layer is None:
+            return
+
+        cache = self._tile_layer
+        zoom = self._tl_zoom
+        cam_x, cam_y = self._tl_cam
+        cw, ch = cache.get_size()
+        half_cw = cw * 0.5
+        half_ch = ch * 0.5
+        blended = self._blended_colors
+        mtn = self._mountain_depths
+
+        lod_high = zoom > 0.45 and self._graphics_quality == "high"
+        lod_mid = not lod_high and zoom >= 0.25 and self._graphics_quality != "low"
+        lod_low = self._graphics_quality == "low"
+
+        for coord in self._dirty_tiles:
+            tile = world.grid.get(coord)
+            if tile is None:
+                continue
+
+            wx, wy = self._get_pixel(coord, hex_size)
+            corners_world = self._get_corners(coord, wx, wy, hex_size)
+            corners = [
+                ((cx - cam_x) * zoom + half_cw,
+                 (cy - cam_y) * zoom + half_ch)
+                for cx, cy in corners_world
+            ]
+            base = blended.get(coord, (80, 80, 80))
+
+            # Redraw terrain polygon (same LOD logic as _rebuild_tile_layer)
+            if lod_low:
+                flat = TERRAIN_BASE_COLOR.get(tile.terrain, (80, 80, 80))
+                pygame.draw.polygon(cache, flat, corners)
+            elif lod_high:
+                ecols = self._edge_colors.get(coord)
+                xcat = self._cross_cat.get(coord)
+                if ecols is not None and xcat is not None:
+                    cxs = sum(c[0] for c in corners) / 6.0
+                    cys = sum(c[1] for c in corners) / 6.0
+                    for d in range(6):
+                        i1 = DIR_EDGE[d][0]
+                        i2 = DIR_EDGE[d][1]
+                        ax, ay = corners[i1]
+                        bx, by = corners[i2]
+                        xf = xcat[d]
+                        if xf == 2:
+                            pygame.draw.polygon(cache, base,
+                                                [(cxs, cys), (ax, ay), (bx, by)])
+                        else:
+                            ec = ecols[d]
+                            mca = ((cxs + ax) * 0.5, (cys + ay) * 0.5)
+                            mcb = ((cxs + bx) * 0.5, (cys + by) * 0.5)
+                            mab = ((ax + bx) * 0.5, (ay + by) * 0.5)
+                            mc = ((base[0] + ec[0]) >> 1,
+                                  (base[1] + ec[1]) >> 1,
+                                  (base[2] + ec[2]) >> 1)
+                            pygame.draw.polygon(cache, base, [(cxs, cys), mca, mcb])
+                            pygame.draw.polygon(cache, ec, [mca, (ax, ay), mab])
+                            pygame.draw.polygon(cache, ec, [mcb, mab, (bx, by)])
+                            pygame.draw.polygon(cache, mc, [mca, mab, mcb])
+                else:
+                    pygame.draw.polygon(cache, base, corners)
+            else:
+                pygame.draw.polygon(cache, base, corners)
+
+            # Mountain contours
+            if (lod_high or lod_mid) and not lod_low:
+                mtn_info = mtn.get(coord)
+                if mtn_info is not None and mtn_info[0] > 0:
+                    draw_contours(
+                        cache, coord, mtn_info[0], corners,
+                        base, mtn, zoom,
+                    )
+
+            # Re-draw any remaining overlays that overlap this hex
+            if (lod_high or lod_mid) and not lod_low:
+                patch_r2 = (hex_size * 1.5) ** 2
+                iz = max(1, int(zoom))
+                for item in self._static_overlays:
+                    if (item.wx - wx) ** 2 + (item.wy - wy) ** 2 > patch_r2:
+                        continue
+                    isx = (item.wx - cam_x) * zoom + half_cw
+                    isy = (item.wy - cam_y) * zoom + half_ch
+                    if isinstance(item, OverlayTree):
+                        draw_tree(cache, item, isx, isy, zoom, iz)
+                    elif isinstance(item, OverlayRock):
+                        draw_rock(cache, item, isx, isy, zoom, iz)
+                    elif isinstance(item, OverlayBush):
+                        draw_bush(cache, item, isx, isy, zoom, iz)
+                    elif isinstance(item, OverlayGrassTuft):
+                        draw_grass(cache, item, isx, isy, zoom, iz)
+                    elif isinstance(item, OverlayCrystal):
+                        draw_crystal(cache, item, isx, isy, zoom, iz)
+
+        self._dirty_tiles.clear()
 
     # ── Animated overlays (ripples) ──────────────────────────────
 
@@ -673,6 +793,17 @@ class Renderer:
             if zoom < 0.4:
                 color = PERSON_GATHER_COLOR if person.task == Task.GATHER else PERSON_COLOR
                 pygame.draw.circle(surface, color, (isx, isy), max(1, int(3 * zoom)))
+                continue
+
+            # Try sprite first
+            person_key = "people/person_gather" if person.task == Task.GATHER else "people/person_idle"
+            person_sheet = sprites.get(person_key)
+            if person_sheet is not None:
+                bw, bh = person_sheet.base_size
+                tw = max(2, int(bw * zoom))
+                th = max(2, int(bh * zoom))
+                img = person_sheet.get(tw, th)
+                surface.blit(img, (isx - tw // 2, isy - th + 2))
                 continue
 
             head_r = max(2, int(2.5 * zoom))
