@@ -26,6 +26,7 @@ from compprog_pygame.games.hex_colony.hex_grid import (
 )
 from compprog_pygame.games.hex_colony.overlay import (
     OverlayBush,
+    OverlayCrystal,
     OverlayGrassTuft,
     OverlayItem,
     OverlayRipple,
@@ -60,6 +61,7 @@ from compprog_pygame.games.hex_colony.render_overlays import (
     draw_ripple,
     draw_bush,
     draw_grass,
+    draw_crystal,
 )
 from compprog_pygame.games.hex_colony.render_buildings import (
     draw_overcrowded,
@@ -87,7 +89,7 @@ class Renderer:
         self.font = pygame.font.Font(None, 22)
         self.selected_hex: HexCoord | None = None
         self._water_tick: float = 0.0
-        self._graphics_quality: str = "high"  # "high", "medium", "low"
+        self._graphics_quality: str = "medium"  # "high", "medium", "low"
 
         # Caches
         self._pixel_cache: dict[HexCoord, tuple[float, float]] = {}
@@ -217,6 +219,9 @@ class Renderer:
             mtn_info = mtn.get(coord)
             if mtn_info is not None:
                 base = mountain_tile_color(*mtn_info)
+            elif tile.underlying_terrain is not None:
+                # Ore veins: show the underlying terrain colour as the base
+                base = TERRAIN_BASE_COLOR.get(tile.underlying_terrain, (80, 80, 80))
             else:
                 base = TERRAIN_BASE_COLOR.get(tile.terrain, (80, 80, 80))
 
@@ -231,12 +236,16 @@ class Renderer:
             nb_r, nb_g, nb_b = 0, 0, 0
             nb_count = 0
             is_water_adjacent = False
-            my_cat = _TERRAIN_CAT[tile.terrain]
+            my_cat = _TERRAIN_CAT.get(
+                tile.underlying_terrain if tile.underlying_terrain is not None else tile.terrain, 0
+            )
             for nb_coord in coord.neighbors():
                 nb_tile = grid.get(nb_coord)
                 if nb_tile is None:
                     continue
-                nb_cat = _TERRAIN_CAT[nb_tile.terrain]
+                nb_cat = _TERRAIN_CAT.get(
+                    nb_tile.underlying_terrain if nb_tile.underlying_terrain is not None else nb_tile.terrain, 0
+                )
                 # Hard category border: only blend within same category
                 if my_cat != nb_cat:
                     if nb_cat == 1 and my_cat != 1:
@@ -245,6 +254,8 @@ class Renderer:
                 nb_mtn = mtn.get(nb_coord)
                 if nb_mtn is not None:
                     nc = mountain_tile_color(*nb_mtn)
+                elif nb_tile.underlying_terrain is not None:
+                    nc = TERRAIN_BASE_COLOR.get(nb_tile.underlying_terrain, (80, 80, 80))
                 else:
                     nc = TERRAIN_BASE_COLOR.get(nb_tile.terrain, (80, 80, 80))
                 nb_r += nc[0]; nb_g += nc[1]; nb_b += nc[2]
@@ -276,7 +287,9 @@ class Renderer:
         for tile in grid.tiles():
             coord = tile.coord
             base = first_pass[coord]
-            my_cat = _TERRAIN_CAT[tile.terrain]
+            my_cat = _TERRAIN_CAT.get(
+                tile.underlying_terrain if tile.underlying_terrain is not None else tile.terrain, 0
+            )
             nb_r, nb_g, nb_b = 0, 0, 0
             nb_count = 0
             for nb_coord in coord.neighbors():
@@ -285,7 +298,9 @@ class Renderer:
                     continue
                 # Hard category border in second pass too
                 nb_tile = grid.get(nb_coord)
-                if nb_tile is not None and _TERRAIN_CAT[nb_tile.terrain] != my_cat:
+                if nb_tile is not None and _TERRAIN_CAT.get(
+                    nb_tile.underlying_terrain if nb_tile.underlying_terrain is not None else nb_tile.terrain, 0
+                ) != my_cat:
                     continue
                 nb_r += nb_c[0]; nb_g += nb_c[1]; nb_b += nb_c[2]
                 nb_count += 1
@@ -306,14 +321,18 @@ class Renderer:
         for tile in grid.tiles():
             coord = tile.coord
             cc = bc[coord]
-            my_cat = _TERRAIN_CAT[tile.terrain]
+            my_cat = _TERRAIN_CAT.get(
+                tile.underlying_terrain if tile.underlying_terrain is not None else tile.terrain, 0
+            )
             edge_cols: list[tuple[int, int, int]] = []
             cross_flags: list[int] = []  # 0=same, 2=cross-cat (own colour)
             for nb_coord in coord.neighbors():
                 nc = bc.get(nb_coord)
                 if nc is not None:
                     nb_tile = grid.get(nb_coord)
-                    nb_cat = _TERRAIN_CAT[nb_tile.terrain] if nb_tile else my_cat
+                    nb_cat = _TERRAIN_CAT.get(
+                        (nb_tile.underlying_terrain if nb_tile.underlying_terrain is not None else nb_tile.terrain) if nb_tile else None, my_cat
+                    )
                     if my_cat != nb_cat:
                         edge_cols.append(cc)
                         cross_flags.append(2)
@@ -500,6 +519,8 @@ class Renderer:
                     draw_bush(cache, item, sx, sy, zoom, iz)
                 elif isinstance(item, OverlayGrassTuft):
                     draw_grass(cache, item, sx, sy, zoom, iz)
+                elif isinstance(item, OverlayCrystal):
+                    draw_crystal(cache, item, sx, sy, zoom, iz)
 
     # ── Animated overlays (ripples) ──────────────────────────────
 
@@ -730,6 +751,8 @@ class Renderer:
             Terrain.STONE_DEPOSIT: (180, 180, 170, 60),
             Terrain.FIBER_PATCH:   (140, 220, 90, 60),
             Terrain.WATER:         (50, 100, 200, 40),
+            Terrain.IRON_VEIN:     (180, 110, 75, 70),
+            Terrain.COPPER_VEIN:   (80, 180, 120, 70),
         }
         _BUILDING_OVERLAY: dict[str, tuple[int, int, int, int]] = {
             "resource": (220, 160, 50, 70),

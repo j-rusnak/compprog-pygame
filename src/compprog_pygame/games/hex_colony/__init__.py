@@ -1,4 +1,7 @@
-"""Hex Colony — a people-driven logistics game on a hexagonal grid.
+"""Hex Colony — a survival logistics game on a hexagonal grid.
+
+After crash-landing on a re-evolved Earth, survivors must scavenge
+resources and rebuild using advanced technology remnants.
 
 Importing this module auto-registers the game in the central registry.
 """
@@ -34,8 +37,8 @@ def _launch(screen: pygame.Surface, clock: pygame.time.Clock) -> None:
 register(
     GameInfo(
         name="Hex Colony",
-        description="Build a colony with people in a hex-grid wilderness",
-        color=(200, 160, 60),
+        description="Survive on a re-evolved Earth after your spaceship crash-lands",
+        color=(120, 140, 170),
         launch=_launch,
     )
 )

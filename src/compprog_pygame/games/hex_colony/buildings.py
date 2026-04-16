@@ -13,7 +13,7 @@ from compprog_pygame.games.hex_colony.resources import Resource
 
 
 class BuildingType(Enum):
-    CAMP = auto()           # starting base — stores resources, shelters people
+    CAMP = auto()           # crashed spaceship — starting base, stores resources, shelters survivors
     HOUSE = auto()          # houses up to 5 people
     PATH = auto()           # dirt path — connects visually to adjacent paths
     WOODCUTTER = auto()     # harvests wood from adjacent forest hexes

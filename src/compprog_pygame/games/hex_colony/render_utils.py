@@ -19,6 +19,8 @@ TERRAIN_BASE_COLOR: dict[Terrain, tuple[int, int, int]] = {
     Terrain.WATER:         (38, 85, 175),
     Terrain.FIBER_PATCH:   (105, 148, 48),
     Terrain.MOUNTAIN:      (110, 100, 90),
+    Terrain.IRON_VEIN:     (120, 90, 75),
+    Terrain.COPPER_VEIN:   (100, 130, 85),
 }
 
 # Blending weight for neighbor influence (0 = no blend, 1 = full average)
@@ -44,12 +46,14 @@ _TERRAIN_CAT: dict[Terrain, int] = {
     Terrain.WATER: 1,
     Terrain.MOUNTAIN: 2,
     Terrain.STONE_DEPOSIT: 2,
+    Terrain.IRON_VEIN: 4,
+    Terrain.COPPER_VEIN: 4,
 }
 
 # ── Building colours ────────────────────────────────────────────
 
 BUILDING_COLORS: dict[BuildingType, tuple[int, int, int]] = {
-    BuildingType.CAMP: (200, 160, 60),
+    BuildingType.CAMP: (120, 140, 170),   # spaceship hull — blue-grey metallic
     BuildingType.HOUSE: (170, 140, 90),
     BuildingType.PATH: (185, 165, 120),
     BuildingType.WOODCUTTER: (160, 100, 50),

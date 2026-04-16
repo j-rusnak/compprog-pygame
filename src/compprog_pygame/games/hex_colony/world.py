@@ -29,7 +29,7 @@ class World:
 
     @property
     def game_over(self) -> bool:
-        """The colony is lost when all people are dead."""
+        """The mission is lost when all survivors are dead."""
         return self.population.count == 0 and self.time_elapsed > 0
 
     # ── Generation ───────────────────────────────────────────────
@@ -48,13 +48,15 @@ class World:
         camp = self.buildings.place(BuildingType.CAMP, origin)
         tile = self.grid[origin]
         tile.building = camp
-        # Camp stores 2× starting resources
+        # Crashed spaceship stores 2× starting resources
         s = self.settings
         camp.storage = {
             Resource.WOOD: float(s.start_wood * 2),
             Resource.FIBER: float(s.start_fiber * 2),
             Resource.STONE: float(s.start_stone * 2),
             Resource.FOOD: float(s.start_food * 2),
+            Resource.IRON: 0.0,
+            Resource.COPPER: 0.0,
         }
         camp.storage_capacity = sum(
             v * 2 for v in (s.start_wood, s.start_fiber, s.start_stone, s.start_food)

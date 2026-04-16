@@ -63,7 +63,7 @@ class GameOverOverlay(Panel):
         surface.blit(overlay, (0, 0))
 
         # Title
-        title = self._title_font.render("Colony Lost", True, (220, 50, 50))
+        title = self._title_font.render("All Survivors Lost", True, (220, 50, 50))
         surface.blit(title, ((sw - title.get_width()) // 2, sh // 2 - 120))
 
         # Stats

@@ -35,26 +35,65 @@ def draw_overcrowded(surface: pygame.Surface, sx: float, sy: float, r: int, z: f
 
 
 def draw_camp(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Crashed spaceship — tilted fuselage with broken wing and sparking engine."""
     iz = max(1, int(z))
-    tent_col = (180, 150, 80)
-    pts = [(sx, sy - r * 0.9), (sx - r * 0.85, sy + r * 0.5), (sx + r * 0.85, sy + r * 0.5)]
-    pygame.draw.polygon(surface, tent_col, pts)
-    left_pts = [pts[0], pts[1], (sx, sy + r * 0.5)]
-    pygame.draw.polygon(surface, _lighten(tent_col, 1.2), left_pts)
-    pygame.draw.polygon(surface, _darken(tent_col, 0.6), pts, iz)
-    door_w = max(2, int(r * 0.3))
-    door_h = max(3, int(r * 0.4))
-    pygame.draw.rect(surface, (60, 40, 20),
-                     (int(sx - door_w // 2), int(sy + r * 0.5 - door_h), door_w, door_h))
-    fire_x, fire_y = int(sx + r * 0.6), int(sy + r * 0.3)
-    fr = max(1, int(2 * z))
-    pygame.draw.circle(surface, (220, 120, 20), (fire_x, fire_y), fr + iz)
-    pygame.draw.circle(surface, (255, 200, 50), (fire_x, fire_y - iz), fr)
-    fx, fy = int(sx), int(sy - r * 0.9)
-    pole_h = max(2, int(4 * z))
-    pygame.draw.line(surface, (120, 80, 40), (fx, fy), (fx, fy - pole_h), iz)
-    flag_pts = [(fx, fy - pole_h), (fx + pole_h, fy - max(1, int(2 * z))), (fx, fy - iz)]
-    pygame.draw.polygon(surface, (200, 50, 50), flag_pts)
+    hull_col = (120, 140, 170)
+    hull_dark = _darken(hull_col, 0.7)
+    hull_light = _lighten(hull_col, 1.2)
+
+    # Fuselage — elongated ellipse tilted slightly
+    body_w = max(4, int(r * 1.1))
+    body_h = max(3, int(r * 0.55))
+    # Draw tilted fuselage as a polygon (wider left=nose, narrower right=tail)
+    nose_x = int(sx - r * 0.85)
+    nose_y = int(sy + r * 0.1)
+    tail_x = int(sx + r * 0.75)
+    tail_y = int(sy - r * 0.15)
+    top_mid = int(sy - body_h * 0.7)
+    bot_mid = int(sy + body_h * 0.5)
+
+    # Main hull shape
+    hull_pts = [
+        (nose_x, nose_y),
+        (int(sx - r * 0.3), top_mid),
+        (int(sx + r * 0.2), int(top_mid - r * 0.1)),
+        (tail_x, tail_y),
+        (int(sx + r * 0.3), bot_mid),
+        (int(sx - r * 0.2), int(bot_mid + r * 0.05)),
+    ]
+    pygame.draw.polygon(surface, hull_col, hull_pts)
+    # Upper highlight
+    hl_pts = [hull_pts[0], hull_pts[1], hull_pts[2], hull_pts[3]]
+    pygame.draw.polygon(surface, hull_light, hl_pts)
+    # Outline
+    pygame.draw.polygon(surface, hull_dark, hull_pts, iz)
+
+    # Cockpit window — small blue-tinted dome near nose
+    cockpit_x = int(sx - r * 0.55)
+    cockpit_y = int(sy - r * 0.05)
+    cockpit_r = max(2, int(r * 0.18))
+    pygame.draw.circle(surface, (80, 140, 200), (cockpit_x, cockpit_y), cockpit_r)
+    pygame.draw.circle(surface, (120, 180, 230), (cockpit_x - iz, cockpit_y - iz),
+                       max(1, cockpit_r // 2))
+    pygame.draw.circle(surface, hull_dark, (cockpit_x, cockpit_y), cockpit_r, iz)
+
+    # Broken wing stub — jagged triangle on upper right
+    wing_pts = [
+        (int(sx + r * 0.1), int(sy - body_h * 0.6)),
+        (int(sx + r * 0.6), int(sy - r * 0.9)),
+        (int(sx + r * 0.35), int(sy - r * 0.5)),
+        (int(sx + r * 0.55), int(sy - r * 0.65)),
+        (int(sx + r * 0.3), int(sy - body_h * 0.4)),
+    ]
+    pygame.draw.polygon(surface, _darken(hull_col, 0.85), wing_pts)
+    pygame.draw.polygon(surface, hull_dark, wing_pts, iz)
+
+    # Engine glow / spark at tail
+    spark_x = int(tail_x + r * 0.05)
+    spark_y = int(tail_y + r * 0.05)
+    spark_r = max(1, int(r * 0.12))
+    pygame.draw.circle(surface, (255, 160, 40), (spark_x, spark_y), spark_r + iz)
+    pygame.draw.circle(surface, (255, 220, 100), (spark_x, spark_y), spark_r)
 
 
 def draw_house(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:

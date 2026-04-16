@@ -66,6 +66,8 @@ RESOURCE_ICONS: dict[Resource, str] = {
     Resource.FIBER: "\u2022",  # •
     Resource.STONE: "\u25a0",  # ■
     Resource.FOOD: "\u2665",   # ♥
+    Resource.IRON: "\u25c6",   # ◆
+    Resource.COPPER: "\u25c8", # ◈
 }
 
 RESOURCE_COLORS: dict[Resource, tuple[int, int, int]] = {
@@ -73,6 +75,8 @@ RESOURCE_COLORS: dict[Resource, tuple[int, int, int]] = {
     Resource.FIBER: (120, 200, 80),
     Resource.STONE: (170, 170, 160),
     Resource.FOOD: (220, 100, 80),
+    Resource.IRON: (180, 110, 75),
+    Resource.COPPER: (80, 180, 120),
 }
 
 

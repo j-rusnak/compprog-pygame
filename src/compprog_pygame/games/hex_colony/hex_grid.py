@@ -54,6 +54,8 @@ class Terrain(Enum):
     WATER = auto()
     FIBER_PATCH = auto()  # berry bushes / flax field
     MOUNTAIN = auto()
+    IRON_VEIN = auto()    # iron ore crystals on existing terrain
+    COPPER_VEIN = auto()  # copper ore crystals on existing terrain
 
 
 @dataclass(slots=True)
@@ -63,6 +65,7 @@ class HexTile:
     terrain: Terrain
     resource_amount: float = 0.0  # harvestable resource remaining
     building: object | None = None  # will hold Building reference
+    underlying_terrain: Terrain | None = None  # original terrain under ore veins
 
 
 class HexGrid:

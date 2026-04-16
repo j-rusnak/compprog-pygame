@@ -52,7 +52,7 @@ class PauseOverlay(Panel):
         self._hovered: int = -1
 
         # Graphics quality: "high", "medium", "low"
-        self.graphics_quality: str = "high"
+        self.graphics_quality: str = "medium"
 
         # Callbacks wired by Game
         self.on_resume: Callable[[], None] | None = None

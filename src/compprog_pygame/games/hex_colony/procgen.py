@@ -364,6 +364,80 @@ def _soften_clearing_fringe(grid: HexGrid, origin: HexCoord, safe_r: int) -> Non
                 tile.terrain = Terrain.FOREST
 
 
+# ── Ore vein generation ──────────────────────────────────────────
+
+def _generate_ore_veins(
+    grid: HexGrid,
+    rng: _random.Random,
+    settings: HexColonySettings,
+    ore_terrain: Terrain,
+    num_veins: int,
+    vein_min: int,
+    vein_max: int,
+) -> None:
+    """Generate clusters of ore veins on any non-water tile.
+
+    Each vein starts at a random seed tile and grows outward via BFS
+    with random chance, producing natural-looking irregular clusters.
+    The underlying terrain appearance is preserved in ``tile.underlying_terrain``.
+    """
+    origin = HexCoord(0, 0)
+    radius = settings.world_radius
+    # Eligible tiles: any land tile not in safe zone and not water
+    eligible = [
+        c for c in grid.coords()
+        if c.distance(origin) > SAFE_RADIUS + 2
+        and grid[c].terrain not in {Terrain.WATER, Terrain.MOUNTAIN,
+                                     Terrain.IRON_VEIN, Terrain.COPPER_VEIN}
+    ]
+    if not eligible:
+        return
+
+    placed: set[HexCoord] = set()
+
+    for _ in range(num_veins):
+        if not eligible:
+            break
+        seed = rng.choice(eligible)
+        vein_size = rng.randint(vein_min, vein_max)
+
+        # BFS growth from seed
+        frontier = [seed]
+        vein_tiles: list[HexCoord] = []
+        visited: set[HexCoord] = {seed}
+
+        while frontier and len(vein_tiles) < vein_size:
+            rng.shuffle(frontier)
+            cur = frontier.pop(0)
+            tile = grid.get(cur)
+            if tile is None:
+                continue
+            if cur in placed:
+                continue
+            if tile.terrain in {Terrain.WATER, Terrain.MOUNTAIN,
+                                Terrain.IRON_VEIN, Terrain.COPPER_VEIN}:
+                continue
+            if cur.distance(origin) <= SAFE_RADIUS:
+                continue
+
+            # Place ore on this tile
+            tile.underlying_terrain = tile.terrain
+            tile.terrain = ore_terrain
+            tile.resource_amount = rng.uniform(40, 100)
+            vein_tiles.append(cur)
+            placed.add(cur)
+
+            # Add neighbors as candidates with decreasing probability
+            for nb in cur.neighbors():
+                if nb not in visited:
+                    visited.add(nb)
+                    if rng.random() < 0.55:
+                        frontier.append(nb)
+
+        # Remove used tiles from eligible pool
+        eligible = [c for c in eligible if c not in placed]
+
+
 # ── Public API ───────────────────────────────────────────────────
 
 def generate_terrain(seed: str, settings: HexColonySettings) -> HexGrid:
@@ -449,6 +523,14 @@ def generate_terrain(seed: str, settings: HexColonySettings) -> HexGrid:
 
     # --- Pass 5: ring mountains with stone deposits ------------------
     _ring_mountains_with_stone(grid, rng)
+
+    # --- Pass 5b: generate iron and copper ore veins -----------------
+    iron_veins = max(3, 2 + radius // 15)
+    copper_veins = max(3, 2 + radius // 15)
+    _generate_ore_veins(grid, rng, settings, Terrain.IRON_VEIN,
+                        num_veins=iron_veins, vein_min=4, vein_max=12)
+    _generate_ore_veins(grid, rng, settings, Terrain.COPPER_VEIN,
+                        num_veins=copper_veins, vein_min=3, vein_max=10)
 
     # --- Pass 6: clear safe zone + soften fringe (rendered last) ----
     for q2 in range(-SAFE_RADIUS, SAFE_RADIUS + 1):

@@ -8,6 +8,7 @@ import pygame
 
 from compprog_pygame.games.hex_colony.overlay import (
     OverlayBush,
+    OverlayCrystal,
     OverlayGrassTuft,
     OverlayRipple,
     OverlayRock,
@@ -133,3 +134,32 @@ def draw_grass(
     if h > 1:
         darker = _darken(item.color, 0.85)
         pygame.draw.line(surface, darker, (px, py), (px - iz, py - max(1, h - 1)), iz)
+
+
+def draw_crystal(
+    surface: pygame.Surface, item: OverlayCrystal,
+    sx: float, sy: float, z: float, iz: int,
+) -> None:
+    """Draw a faceted crystal shard poking out of the ground."""
+    h = max(3, int(item.h * z))
+    w = max(2, int(item.w * z))
+    # Crystal is a tall narrow polygon — a pointed shard
+    sin_a = math.sin(item.angle)
+    cos_a = math.cos(item.angle)
+    # Tip (top), base-left, base-right, with slight tilt
+    tip_x = int(sx + sin_a * h)
+    tip_y = int(sy - cos_a * h)
+    bl_x = int(sx - w)
+    bl_y = int(sy)
+    br_x = int(sx + w)
+    br_y = int(sy)
+    # Main crystal body
+    pts = [(tip_x, tip_y), (bl_x, bl_y), (br_x, br_y)]
+    pygame.draw.polygon(surface, item.color, pts)
+    # Highlight facet on left side
+    mid_x = int(sx + sin_a * h * 0.4 - w * 0.3)
+    mid_y = int(sy - cos_a * h * 0.4)
+    hl_pts = [(tip_x, tip_y), (bl_x, bl_y), (mid_x, mid_y)]
+    pygame.draw.polygon(surface, item.highlight_color, hl_pts)
+    # Outline
+    pygame.draw.polygon(surface, _darken(item.color, 0.6), pts, max(1, iz))
