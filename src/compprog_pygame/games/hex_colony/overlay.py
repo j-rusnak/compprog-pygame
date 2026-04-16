@@ -14,7 +14,7 @@ from __future__ import annotations
 import random as _random
 from dataclasses import dataclass
 
-from compprog_pygame.games.hex_colony.hex_grid import HexCoord, HexGrid, Terrain, hex_to_pixel
+from compprog_pygame.games.hex_colony.hex_grid import HexCoord, HexGrid, HexTile, Terrain, hex_to_pixel
 
 # ── Overlay item data classes ────────────────────────────────────
 
@@ -51,9 +51,17 @@ class OverlayRipple:
     wx: float; wy: float
     w: float; phase_offset: float
 
+@dataclass(slots=True)
+class OverlayCrystal:
+    wx: float; wy: float
+    h: float; w: float
+    color: tuple[int, int, int]
+    highlight_color: tuple[int, int, int]
+    angle: float  # tilt angle in radians
+
 OverlayItem = (
     OverlayTree | OverlayRock
-    | OverlayBush | OverlayGrassTuft | OverlayRipple
+    | OverlayBush | OverlayGrassTuft | OverlayRipple | OverlayCrystal
 )
 
 # ── Cluster analysis ────────────────────────────────────────────
@@ -167,12 +175,35 @@ def build_overlays(
                 items.extend(_gen_fiber_tile(wx, wy, hex_size, d, rng))
             elif terrain == Terrain.GRASS:
                 items.extend(_gen_grass_tile(wx, wy, hex_size, rng))
+            elif terrain in (Terrain.IRON_VEIN, Terrain.COPPER_VEIN):
+                tile = grid[coord]
+                items.extend(_gen_ore_tile(wx, wy, hex_size, terrain, tile, rng))
 
     items.sort(key=lambda pair: pair[0])
     return [item for _, item in items], mountain_depths
 
 
 # ── Forest ───────────────────────────────────────────────────────
+
+def _make_canopy_tree(
+    wx: float, wy: float, s: int, is_dense: bool, rng: _random.Random,
+) -> tuple[float, OverlayItem]:
+    ox = rng.uniform(-s * 0.3, s * 0.3)
+    oy = rng.uniform(-s * 0.3, s * 0.3)
+    cr = s * rng.uniform(0.7, 1.2) * (1.2 if is_dense else 1.0)
+    return (wy + oy, OverlayTree(
+        wx=wx + ox, wy=wy + oy,
+        trunk_h=s * rng.uniform(0.4, 0.7),
+        crown_rx=cr, crown_ry=cr * rng.uniform(0.7, 0.9),
+        crown_color=rng.choice(
+            [(18, 68, 22), (22, 78, 28), (14, 58, 18)]
+            if is_dense else [(32, 95, 34), (42, 115, 42), (28, 85, 28)]
+        ),
+        trunk_color=rng.choice([(80, 55, 30), (70, 48, 25), (90, 62, 35)]),
+        highlight_color=rng.choice([(38, 98, 38), (28, 85, 28)]),
+        style="canopy",
+    ))
+
 
 def _gen_forest_tile(
     wx: float, wy: float, s: int, depth: int, terrain: Terrain, rng: _random.Random,
@@ -181,24 +212,13 @@ def _gen_forest_tile(
     items: list[tuple[float, OverlayItem]] = []
 
     if depth >= 4:
-        for _ in range(rng.randint(1, 2)):
-            ox = rng.uniform(-s * 0.3, s * 0.3)
-            oy = rng.uniform(-s * 0.3, s * 0.3)
-            cr = s * rng.uniform(0.7, 1.2) * (1.2 if is_dense else 1.0)
-            items.append((wy + oy, OverlayTree(
-                wx=wx + ox, wy=wy + oy,
-                trunk_h=s * rng.uniform(0.4, 0.7),
-                crown_rx=cr, crown_ry=cr * rng.uniform(0.7, 0.9),
-                crown_color=rng.choice(
-                    [(18, 68, 22), (22, 78, 28), (14, 58, 18)]
-                    if is_dense else [(32, 95, 34), (42, 115, 42), (28, 85, 28)]
-                ),
-                trunk_color=rng.choice([(80, 55, 30), (70, 48, 25), (90, 62, 35)]),
-                highlight_color=rng.choice([(38, 98, 38), (28, 85, 28)]),
-                style="canopy",
-            )))
+        # Deep interior: one large canopy tree (skip ~40% of dense-forest tiles)
+        if is_dense and rng.random() < 0.4:
+            pass  # skip for density reduction
+        else:
+            items.append(_make_canopy_tree(wx, wy, s, is_dense, rng))
     elif depth >= 2:
-        n = rng.randint(2, 3) if is_dense else rng.randint(1, 2)
+        n = rng.randint(1, 2) if is_dense else rng.randint(1, 1)
         for _ in range(n):
             ox = rng.uniform(-s * 0.4, s * 0.4)
             oy = rng.uniform(-s * 0.35, s * 0.35)
@@ -217,7 +237,7 @@ def _gen_forest_tile(
             )))
     else:
         # Edge tiles: sparse small trees + grass tufts for natural blending
-        for _ in range(rng.randint(1, 2)):
+        if rng.random() < 0.6:  # only ~60% of edge tiles get a tree
             ox = rng.uniform(-s * 0.42, s * 0.42)
             oy = rng.uniform(-s * 0.38, s * 0.38)
             cr = s * rng.uniform(0.12, 0.24) * (1.1 if is_dense else 1.0)
@@ -334,17 +354,17 @@ def _gen_fiber_tile(
     wx: float, wy: float, s: int, depth: int, rng: _random.Random,
 ) -> list[tuple[float, OverlayItem]]:
     items: list[tuple[float, OverlayItem]] = []
-    n = rng.randint(2, 4) if depth >= 1 else rng.randint(1, 3)
+    n = rng.randint(4, 7) if depth >= 1 else rng.randint(3, 5)
     for _ in range(n):
-        ox = rng.uniform(-s * 0.42, s * 0.42)
-        oy = rng.uniform(-s * 0.35, s * 0.35)
-        r = s * rng.uniform(0.08, 0.18) * (1.0 + depth * 0.12)
+        ox = rng.uniform(-s * 0.44, s * 0.44)
+        oy = rng.uniform(-s * 0.38, s * 0.38)
+        r = s * rng.uniform(0.14, 0.26) * (1.0 + depth * 0.15)
         berry: tuple[int, int, int] | None = None
-        if rng.random() > 0.3:
+        if rng.random() > 0.2:
             berry = rng.choice([(200, 60, 60), (180, 50, 120), (220, 180, 40)])
         items.append((wy + oy, OverlayBush(
             wx=wx + ox, wy=wy + oy, radius=r,
-            color=rng.choice([(100, 150, 50), (130, 170, 65)]),
+            color=rng.choice([(85, 140, 42), (110, 160, 55), (70, 130, 38)]),
             berry_color=berry,
         )))
     return items
@@ -363,5 +383,61 @@ def _gen_grass_tile(
             wx=wx + ox, wy=wy + oy,
             h=rng.uniform(2, 5),
             color=rng.choice([(90, 160, 70), (70, 130, 50), (100, 175, 85)]),
+        )))
+    return items
+
+
+# ── Ore veins (crystals on existing terrain) ─────────────────────
+
+_IRON_CRYSTAL_COLORS = [(160, 100, 70), (140, 85, 60), (180, 115, 80)]
+_IRON_HIGHLIGHT = [(200, 150, 120), (190, 140, 110)]
+_COPPER_CRYSTAL_COLORS = [(70, 160, 110), (55, 140, 95), (80, 175, 120)]
+_COPPER_HIGHLIGHT = [(120, 210, 160), (110, 200, 150)]
+
+_MATH_PI = 3.14159265
+
+
+def _gen_ore_tile(
+    wx: float, wy: float, s: int, terrain: Terrain, tile: HexTile,
+    rng: _random.Random,
+) -> list[tuple[float, OverlayItem]]:
+    """Generate crystal overlays for ore veins on top of underlying terrain overlays."""
+    items: list[tuple[float, OverlayItem]] = []
+
+    # First, generate the underlying terrain's overlays so the ground looks normal
+    underlying = tile.underlying_terrain
+    if underlying == Terrain.GRASS:
+        items.extend(_gen_grass_tile(wx, wy, s, rng))
+    elif underlying in (Terrain.FOREST, Terrain.DENSE_FOREST):
+        # A few sparse grass tufts instead of full trees — ore cleared the canopy
+        for _ in range(rng.randint(1, 3)):
+            ox = rng.uniform(-s * 0.45, s * 0.45)
+            oy = rng.uniform(-s * 0.4, s * 0.4)
+            items.append((wy + oy, OverlayGrassTuft(
+                wx=wx + ox, wy=wy + oy,
+                h=rng.uniform(2, 4),
+                color=rng.choice([(75, 140, 55), (65, 125, 48)]),
+            )))
+    elif underlying == Terrain.FIBER_PATCH:
+        items.extend(_gen_fiber_tile(wx, wy, s, 0, rng))
+
+    # Now place ore crystals on top
+    is_iron = terrain == Terrain.IRON_VEIN
+    colors = _IRON_CRYSTAL_COLORS if is_iron else _COPPER_CRYSTAL_COLORS
+    highlights = _IRON_HIGHLIGHT if is_iron else _COPPER_HIGHLIGHT
+
+    n_crystals = rng.randint(2, 5)
+    for _ in range(n_crystals):
+        ox = rng.uniform(-s * 0.35, s * 0.35)
+        oy = rng.uniform(-s * 0.3, s * 0.3)
+        h = s * rng.uniform(0.2, 0.5)
+        w = s * rng.uniform(0.08, 0.18)
+        angle = rng.uniform(-_MATH_PI / 6, _MATH_PI / 6)
+        items.append((wy + oy, OverlayCrystal(
+            wx=wx + ox, wy=wy + oy,
+            h=h, w=w,
+            color=rng.choice(colors),
+            highlight_color=rng.choice(highlights),
+            angle=angle,
         )))
     return items

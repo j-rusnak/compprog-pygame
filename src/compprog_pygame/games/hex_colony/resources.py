@@ -8,11 +8,13 @@ from compprog_pygame.games.hex_colony.hex_grid import Terrain
 
 
 class Resource(Enum):
-    """The four starting resource types."""
+    """Resource types."""
     WOOD = auto()
     FIBER = auto()
     STONE = auto()
     FOOD = auto()
+    IRON = auto()
+    COPPER = auto()
 
 
 # Mapping from terrain to the resource it yields
@@ -22,6 +24,8 @@ TERRAIN_RESOURCE: dict[Terrain, Resource] = {
     Terrain.DENSE_FOREST: Resource.WOOD,
     Terrain.STONE_DEPOSIT: Resource.STONE,
     Terrain.FIBER_PATCH: Resource.FIBER,
+    Terrain.IRON_VEIN: Resource.IRON,
+    Terrain.COPPER_VEIN: Resource.COPPER,
 }
 
 

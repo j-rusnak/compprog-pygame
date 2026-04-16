@@ -7,9 +7,6 @@ measured in cell units.  Colours are RGB tuples.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
-
-import pygame
 
 
 @dataclass(frozen=True, slots=True)

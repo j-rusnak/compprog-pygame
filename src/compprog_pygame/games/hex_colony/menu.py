@@ -188,7 +188,7 @@ class HexColonyMenu:
         surface.blit(title, ((self.width - title.get_width()) // 2, self.height // 4 - 30))
 
         subtitle = self.subtitle_font.render(
-            "A people-driven logistics game", True, MUTED_TEXT
+            "Survive on a re-evolved Earth", True, MUTED_TEXT
         )
         surface.blit(subtitle, ((self.width - subtitle.get_width()) // 2, self.height // 4 + 50))
 
