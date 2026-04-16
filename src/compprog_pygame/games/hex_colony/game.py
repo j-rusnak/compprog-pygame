@@ -336,13 +336,13 @@ class Game:
             return
         # Check existing building
         existing = tile.building
-        _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL}
+        _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE}
         if existing is not None:
-            # Can only build on top of a path/bridge (not camp, not other buildings)
+            # Can only build on top of a path/bridge (not wall, camp, or other buildings)
             if existing.type not in _PATH_LIKE:
                 return
-            # Can't place another path-like on a path-like
-            if self.build_mode in _PATH_LIKE:
+            # Can't place another path-like or wall on a path-like
+            if self.build_mode in _PATH_LIKE or self.build_mode == BuildingType.WALL:
                 return
         # Check cost (skip in sandbox mode)
         if not self.sandbox:
@@ -507,11 +507,11 @@ class Game:
         # Tech tree gate
         if not self.tech_tree.is_building_unlocked(self.build_mode):
             return False
-        _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL}
+        _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE}
         existing = tile.building
         if existing is not None:
             if existing.type not in _PATH_LIKE:
                 return False
-            if self.build_mode in _PATH_LIKE:
+            if self.build_mode in _PATH_LIKE or self.build_mode == BuildingType.WALL:
                 return False
         return True

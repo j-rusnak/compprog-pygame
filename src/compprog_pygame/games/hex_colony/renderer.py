@@ -741,7 +741,7 @@ class Renderer:
         # First pass: paths and bridges (ground-level, drawn beneath other buildings)
         # Also track non-path buildings that need a path disc underneath
         buildings_needing_path: set[HexCoord] = set()
-        _PATH_TYPES = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL}
+        _PATH_TYPES = {BuildingType.PATH, BuildingType.BRIDGE}
         for building in world.buildings.buildings:
             if building.type not in _PATH_TYPES:
                 continue
@@ -768,12 +768,33 @@ class Renderer:
             if building.type == BuildingType.BRIDGE:
                 draw_bridge(surface, sx, sy, r, zoom, nb_positions,
                             building.coord.q, building.coord.r)
-            elif building.type == BuildingType.WALL:
-                draw_wall(surface, sx, sy, r, zoom, nb_positions,
-                          building.coord.q, building.coord.r)
             else:
                 draw_path(surface, sx, sy, r, zoom, nb_positions,
                           building.coord.q, building.coord.r)
+
+        # Walls pass: walls connect only to other walls
+        for building in world.buildings.buildings:
+            if building.type != BuildingType.WALL:
+                continue
+            wx, wy = self._get_pixel(building.coord, size)
+            sx = (wx - cam_x) * zoom + half_sw
+            sy = (wy - cam_y) * zoom + half_sh
+            if sx < -margin or sx > sw + margin or sy < -margin or sy > sh + margin:
+                continue
+            r = int(size * 0.75 * zoom)
+            if r < 2:
+                pygame.draw.circle(surface, (160, 155, 145), (int(sx), int(sy)), max(1, r))
+                continue
+            nb_positions_w: list[tuple[float, float]] = []
+            for nb_coord in building.coord.neighbors():
+                nb_building = world.buildings.at(nb_coord)
+                if nb_building is not None and nb_building.type == BuildingType.WALL:
+                    nwx, nwy = self._get_pixel(nb_coord, size)
+                    nsx = (nwx - cam_x) * zoom + half_sw
+                    nsy = (nwy - cam_y) * zoom + half_sh
+                    nb_positions_w.append((nsx, nsy))
+            draw_wall(surface, sx, sy, r, zoom, nb_positions_w,
+                      building.coord.q, building.coord.r)
 
         # Draw path discs under non-path buildings adjacent to paths
         for coord in buildings_needing_path:
@@ -801,9 +822,10 @@ class Renderer:
             draw_path(surface, sx, sy, r, zoom, nb_positions_b,
                       coord.q, coord.r)
 
-        # Second pass: non-path buildings
+        # Second pass: non-path, non-wall buildings
+        _SKIP_SECOND = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL}
         for building in world.buildings.buildings:
-            if building.type in _PATH_TYPES:
+            if building.type in _SKIP_SECOND:
                 continue
             wx, wy = self._get_pixel(building.coord, size)
             sx = (wx - cam_x) * zoom + half_sw
