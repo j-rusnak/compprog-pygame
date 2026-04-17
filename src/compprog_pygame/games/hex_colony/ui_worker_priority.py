@@ -8,11 +8,15 @@ right opens the drag-and-drop overlay.
 
 Edit Hierarchy overlay
 ----------------------
-Full-screen modal.  Each tier is a horizontal row of building cards.
-The user may:
+Full-screen modal.  A strip of tabs at the top lets the player switch
+between disconnected building networks — workers can't cross
+network boundaries, so each network has its own independent priority
+queue.  Each tier is a horizontal row of building cards.  The user
+may:
 * Drag a card to another tier (including an always-present empty row
   at the bottom, which creates a new tier on drop).
 * Drop between two cards in a tier to reorder within the tier.
+* Switch networks with the tabs above the tier list.
 * Close with the Done button (upper-right) or Escape.
 
 Tier ordering drives the auto-assignment in
@@ -48,7 +52,7 @@ from compprog_pygame.games.hex_colony.ui import (
 from compprog_pygame.games.hex_colony.ui_bottom_bar import BuildingsTabContent
 
 if TYPE_CHECKING:
-    from compprog_pygame.games.hex_colony.world import World
+    from compprog_pygame.games.hex_colony.world import Network, World
 
 
 _CARD_W = 132
@@ -120,6 +124,52 @@ class WorkerPriorityTabContent(TabContent):
         self._edit_btn_rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
         self._edit_hover: bool = False
         self._scroll: int = 0
+        # Network selection sticky across frames so switching tabs
+        # out-and-back preserves the view.
+        self._selected_net_id: int | None = None
+        # Rebuilt each draw.
+        self._net_tab_rects: list[tuple[pygame.Rect, int]] = []
+
+    def _pick_network(self, world: "World") -> "Network | None":
+        if not world.networks:
+            self._selected_net_id = None
+            return None
+        # If remembered id still exists, keep it.
+        for n in world.networks:
+            if n.id == self._selected_net_id:
+                return n
+        # Otherwise pick the first.
+        self._selected_net_id = world.networks[0].id
+        return world.networks[0]
+
+    def _draw_network_tabs(
+        self, surface: pygame.Surface, rect: pygame.Rect, world: "World",
+        selected: "Network | None",
+    ) -> None:
+        self._net_tab_rects = []
+        if len(world.networks) <= 1:
+            return
+        x = rect.x
+        y = rect.y
+        pad = 10
+        for n in world.networks:
+            label = Fonts.small().render(n.name, True, UI_TEXT)
+            tab_w = label.get_width() + pad * 2
+            tab_rect = pygame.Rect(x, y, tab_w, rect.h)
+            bg = UI_TAB_ACTIVE if selected is n else UI_TAB_INACTIVE
+            bg_surf = pygame.Surface((tab_rect.w, tab_rect.h), pygame.SRCALPHA)
+            bg_surf.fill(bg)
+            surface.blit(bg_surf, tab_rect.topleft)
+            pygame.draw.rect(
+                surface, UI_ACCENT if selected is n else UI_BORDER,
+                tab_rect, width=1, border_radius=3,
+            )
+            surface.blit(label, (
+                tab_rect.centerx - label.get_width() // 2,
+                tab_rect.centery - label.get_height() // 2,
+            ))
+            self._net_tab_rects.append((tab_rect, n.id))
+            x += tab_w + 4
 
     def draw_content(
         self, surface: pygame.Surface, rect: pygame.Rect, world: "World",
@@ -146,13 +196,26 @@ class WorkerPriorityTabContent(TabContent):
             self._edit_btn_rect.centery - label.get_height() // 2,
         ))
 
+        # Network tab strip (if there are multiple networks).
+        selected = self._pick_network(world)
+        tabs_rect = pygame.Rect(
+            rect.x + 6, rect.y + 4,
+            self._edit_btn_rect.left - rect.x - 12, 22,
+        )
+        tabs_h = 0
+        if len(world.networks) > 1:
+            self._draw_network_tabs(surface, tabs_rect, world, selected)
+            tabs_h = tabs_rect.h + 4
+        else:
+            self._net_tab_rects = []
+
         # Tier list (left side).
         list_rect = pygame.Rect(
-            rect.x + 6, rect.y + 6,
+            rect.x + 6, rect.y + 6 + tabs_h,
             self._edit_btn_rect.left - rect.x - 12,
-            rect.h - 12,
+            rect.h - 12 - tabs_h,
         )
-        tiers = world.worker_priority
+        tiers = selected.priority if selected is not None else []
         if not tiers:
             msg = Fonts.body().render(
                 "No worker buildings placed yet.", True, UI_MUTED,
@@ -191,6 +254,10 @@ class WorkerPriorityTabContent(TabContent):
                 if self.on_open_edit is not None:
                     self.on_open_edit()
                 return True
+            for tab_rect, net_id in self._net_tab_rects:
+                if tab_rect.collidepoint(event.pos):
+                    self._selected_net_id = net_id
+                    return True
         return False
 
 
@@ -230,6 +297,19 @@ class WorkerPriorityOverlay(Panel):
         self._empty_row_rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
         self._done_rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
         self._scroll: int = 0
+        # Per-network tab bar state.
+        self._selected_net_id: int | None = None
+        self._net_tab_rects: list[tuple[pygame.Rect, int]] = []
+
+    def _current_network(self) -> "Network | None":
+        if self.world is None or not self.world.networks:
+            self._selected_net_id = None
+            return None
+        for n in self.world.networks:
+            if n.id == self._selected_net_id:
+                return n
+        self._selected_net_id = self.world.networks[0].id
+        return self.world.networks[0]
 
     def layout(self, screen_w: int, screen_h: int) -> None:
         # Centered panel covering most of the screen.
@@ -301,10 +381,25 @@ class WorkerPriorityOverlay(Panel):
             self.rect.bottom - self.rect.y
             - _OVERLAY_TITLE_H - _OVERLAY_PAD * 2,
         )
+
+        # Network tab strip just inside the area (only shown if more
+        # than one network exists).
+        self._net_tab_rects = []
+        current_net = self._current_network()
+        tabs_h = 0
+        if len(world.networks) > 1:
+            tabs_rect = pygame.Rect(area.x, area.y, area.w, 28)
+            self._draw_network_tabs(surface, tabs_rect, world, current_net)
+            tabs_h = tabs_rect.h + 6
+        area = pygame.Rect(
+            area.x, area.y + tabs_h,
+            area.w, area.h - tabs_h,
+        )
+
         prev_clip = surface.get_clip()
         surface.set_clip(area)
 
-        tiers = world.worker_priority
+        tiers = current_net.priority if current_net is not None else []
         self._card_rects = []
         self._row_rects = []
 
@@ -333,6 +428,34 @@ class WorkerPriorityOverlay(Panel):
                 surface, ghost_rect, self._drag_building,
                 ghost=True, highlighted=True,
             )
+
+    def _draw_network_tabs(
+        self, surface: pygame.Surface, rect: pygame.Rect, world: "World",
+        selected: "Network | None",
+    ) -> None:
+        self._net_tab_rects = []
+        x = rect.x
+        for n in world.networks:
+            label = Fonts.body().render(n.name, True, UI_TEXT)
+            pad_x = 14
+            tab_w = label.get_width() + pad_x * 2
+            tab_rect = pygame.Rect(x, rect.y, tab_w, rect.h)
+            bg = UI_TAB_ACTIVE if selected is n else UI_TAB_INACTIVE
+            bg_surf = pygame.Surface(
+                (tab_rect.w, tab_rect.h), pygame.SRCALPHA,
+            )
+            bg_surf.fill(bg)
+            surface.blit(bg_surf, tab_rect.topleft)
+            pygame.draw.rect(
+                surface, UI_ACCENT if selected is n else UI_BORDER,
+                tab_rect, width=2, border_radius=4,
+            )
+            surface.blit(label, (
+                tab_rect.centerx - label.get_width() // 2,
+                tab_rect.centery - label.get_height() // 2,
+            ))
+            self._net_tab_rects.append((tab_rect, n.id))
+            x += tab_w + 6
 
     def _draw_row(
         self, surface: pygame.Surface, rect: pygame.Rect,
@@ -412,6 +535,12 @@ class WorkerPriorityOverlay(Panel):
                 self._cancel_drag()
                 self.visible = False
                 return True
+            # Network tab click → switch active network.
+            for tab_rect, net_id in self._net_tab_rects:
+                if tab_rect.collidepoint(event.pos):
+                    self._selected_net_id = net_id
+                    self._cancel_drag()
+                    return True
             # Start drag if mouse is over a card.
             for rect, ti, ci, b in self._card_rects:
                 if rect.collidepoint(event.pos):
@@ -442,7 +571,11 @@ class WorkerPriorityOverlay(Panel):
     def _drop(self, pos: tuple[int, int]) -> None:
         if self.world is None or self._drag_building is None:
             return
-        tiers = self.world.worker_priority
+        net = self._current_network()
+        if net is None:
+            self._cancel_drag()
+            return
+        tiers = net.priority
         b = self._drag_building
         origin_ti = self._drag_origin_tier
         origin_ci = self._drag_origin_index

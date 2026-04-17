@@ -79,6 +79,51 @@ _CARD_GAP = 10
 _CARD_MARGIN_X = 12
 
 
+# ── Shared icons ─────────────────────────────────────────────────
+
+# Cache of red-X "close/delete" icons keyed by pixel size.  The sprite
+# is used everywhere a menu shows a close or delete affordance so the
+# UI reads consistently.
+_RED_X_CACHE: dict[int, pygame.Surface] = {}
+
+
+def _get_red_x_icon(size: int) -> pygame.Surface:
+    """Return a procedurally-drawn red-X icon of the given pixel size."""
+    cached = _RED_X_CACHE.get(size)
+    if cached is not None:
+        return cached
+    surf = pygame.Surface((size, size), pygame.SRCALPHA)
+    pad = max(2, size // 6)
+    # Dark red shadow behind for readability on pale backgrounds.
+    shadow = (90, 10, 10)
+    body = (235, 60, 60)
+    hilite = (255, 150, 150)
+    thick = max(2, size // 6)
+    # Shadow (one pixel down-right)
+    pygame.draw.line(surf, shadow, (pad + 1, pad + 1),
+                     (size - pad + 1, size - pad + 1), thick + 1)
+    pygame.draw.line(surf, shadow, (size - pad + 1, pad + 1),
+                     (pad + 1, size - pad + 1), thick + 1)
+    # Main strokes
+    pygame.draw.line(surf, body, (pad, pad),
+                     (size - pad, size - pad), thick)
+    pygame.draw.line(surf, body, (size - pad, pad),
+                     (pad, size - pad), thick)
+    # Highlight stroke (thin, offset up-left) to give dimensionality
+    hlw = max(1, thick // 3)
+    pygame.draw.line(surf, hilite, (pad, pad - 1),
+                     (size - pad, size - pad - 1), hlw)
+    pygame.draw.line(surf, hilite, (size - pad, pad - 1),
+                     (pad, size - pad - 1), hlw)
+    _RED_X_CACHE[size] = surf
+    return surf
+
+
+def get_red_x_icon(size: int) -> pygame.Surface:
+    """Public accessor for the shared red-X sprite."""
+    return _get_red_x_icon(size)
+
+
 # ── Tab definition ───────────────────────────────────────────────
 
 @dataclass
@@ -430,7 +475,7 @@ class BuildingsTabContent(TabContent):
         border_col = UI_BAD if is_sel else UI_BORDER
         pygame.draw.rect(surface, border_col, rect, width=2, border_radius=4)
 
-        icon = Fonts.label().render("\u2716", True, UI_BAD)
+        icon = _get_red_x_icon(24)
         surface.blit(icon, (rect.x + 6, rect.y + 4))
         inner_w = rect.w - 12
         name = render_text_clipped(

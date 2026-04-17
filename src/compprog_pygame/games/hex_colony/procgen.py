@@ -559,10 +559,138 @@ def generate_terrain(seed: str, settings: HexColonySettings) -> HexGrid:
                 tile.resource_amount = 0.0
     _soften_clearing_fringe(grid, origin, SAFE_RADIUS)
 
+    # --- Pass 6b: guarantee starter resource clusters near spawn ----
+    # Ensures the player can craft every tier-0 recipe without hiking
+    # across the map — at least one small cluster of each of wood,
+    # stone, and fibre/food lives within the starter radius of origin.
+    _ensure_starter_resources(grid, rng, origin)
+
     # --- Pass 7: ensure connectivity from safe-zone edge to map border
     _ensure_connectivity(grid, rng, radius)
 
     return grid
+
+
+# ── Starter-area resource guarantee ──────────────────────────────
+
+_STARTER_SEARCH_RADIUS = 25
+_STARTER_CLUSTER_SIZE = 4
+
+
+def _count_terrain_near(
+    grid: HexGrid, origin: HexCoord, targets: set[Terrain], radius: int,
+) -> int:
+    count = 0
+    for q in range(-radius, radius + 1):
+        for r in range(max(-radius, -q - radius),
+                       min(radius, -q + radius) + 1):
+            c = HexCoord(q, r)
+            if c.distance(origin) > radius:
+                continue
+            tile = grid.get(c)
+            if tile is not None and tile.terrain in targets:
+                count += 1
+    return count
+
+
+def _stamp_cluster(
+    grid: HexGrid,
+    rng: _random.Random,
+    origin: HexCoord,
+    terrain: Terrain,
+    size: int,
+    resource_range: tuple[float, float],
+    search_radius: int,
+) -> None:
+    """Replace a small grassy cluster near spawn with *terrain* tiles.
+
+    Picks a grassy tile in a ring just outside the safe zone (so the
+    spawn clearing stays clean) but within *search_radius*, then grows
+    a BFS cluster of *size* tiles, converting each to *terrain* with
+    a resource amount drawn from *resource_range*.
+    """
+    # Candidate seed tiles: grass just outside the safe zone, within
+    # search_radius of origin, with enough grassy neighbours to grow.
+    inner = SAFE_RADIUS + 1
+    candidates: list[HexCoord] = []
+    for q in range(-search_radius, search_radius + 1):
+        for r in range(max(-search_radius, -q - search_radius),
+                       min(search_radius, -q + search_radius) + 1):
+            c = HexCoord(q, r)
+            d = c.distance(origin)
+            if d < inner or d > search_radius:
+                continue
+            tile = grid.get(c)
+            if tile is None or tile.terrain != Terrain.GRASS:
+                continue
+            # Need some grassy room for a cluster.
+            grassy_nb = sum(
+                1 for nb in c.neighbors()
+                if grid.get(nb) is not None
+                and grid.get(nb).terrain == Terrain.GRASS
+                and nb.distance(origin) > SAFE_RADIUS
+            )
+            if grassy_nb >= 2:
+                candidates.append(c)
+    if not candidates:
+        return
+    # Prefer candidates closer to origin to keep the starter ring tight.
+    candidates.sort(key=lambda c: c.distance(origin))
+    # Pick a random seed from the closest third for determinism-friendly
+    # variety.
+    pool_end = max(1, len(candidates) // 3)
+    seed = rng.choice(candidates[:pool_end])
+
+    placed: set[HexCoord] = set()
+    frontier = [seed]
+    lo, hi = resource_range
+    while frontier and len(placed) < size:
+        rng.shuffle(frontier)
+        cur = frontier.pop(0)
+        if cur in placed:
+            continue
+        tile = grid.get(cur)
+        if tile is None or tile.terrain != Terrain.GRASS:
+            continue
+        if cur.distance(origin) <= SAFE_RADIUS:
+            continue
+        tile.terrain = terrain
+        tile.resource_amount = rng.uniform(lo, hi)
+        placed.add(cur)
+        for nb in cur.neighbors():
+            if nb not in placed:
+                frontier.append(nb)
+
+
+def _ensure_starter_resources(
+    grid: HexGrid, rng: _random.Random, origin: HexCoord,
+) -> None:
+    """Ensure wood, stone, and fibre tiles exist near the spawn."""
+    wood_terrains = {Terrain.FOREST, Terrain.DENSE_FOREST}
+    stone_terrains = {Terrain.STONE_DEPOSIT}
+    fibre_terrains = {Terrain.FIBER_PATCH}
+    # Each category needs at least 3 tiles near spawn so the first
+    # gatherer assignment doesn't starve.
+    min_count = 3
+    r = _STARTER_SEARCH_RADIUS
+
+    if _count_terrain_near(grid, origin, wood_terrains, r) < min_count:
+        _stamp_cluster(
+            grid, rng, origin, Terrain.FOREST,
+            _STARTER_CLUSTER_SIZE, params.TILE_RESOURCE_FOREST, r,
+        )
+    if _count_terrain_near(grid, origin, stone_terrains, r) < min_count:
+        lo_hi = getattr(params, "TILE_RESOURCE_STONE_DEPOSIT", (3.0, 6.0))
+        _stamp_cluster(
+            grid, rng, origin, Terrain.STONE_DEPOSIT,
+            _STARTER_CLUSTER_SIZE, lo_hi, r,
+        )
+    if _count_terrain_near(grid, origin, fibre_terrains, r) < min_count:
+        lo_hi = getattr(params, "TILE_RESOURCE_FIBER_PATCH", (2.0, 5.0))
+        _stamp_cluster(
+            grid, rng, origin, Terrain.FIBER_PATCH,
+            _STARTER_CLUSTER_SIZE, lo_hi, r,
+        )
 
 
 def _classify(elev: float, moist: float, detail: float, edge_t: float,

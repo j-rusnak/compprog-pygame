@@ -195,6 +195,7 @@ class Renderer:
             self._draw_ripples(surface, camera, world.settings.hex_size)
         self._draw_buildings(surface, world, camera)
         self._draw_people(surface, world, camera)
+        self._draw_unreachable_markers(surface, world, camera)
         if self.show_resource_overlay:
             self._draw_resource_overlay(surface, world, camera)
         if self.ghost_building is not None and self.ghost_coord is not None:
@@ -954,6 +955,56 @@ class Renderer:
                                    max(1, int(zoom * 1.5)))
 
     # ── Selection highlight ──────────────────────────────────────
+
+    def _draw_unreachable_markers(
+        self, surface: pygame.Surface, world: World, camera: Camera,
+    ) -> None:
+        """Draw a red "!" above worker-buildings in networks with no
+        populated houses (and therefore no workers that can reach them).
+        """
+        try:
+            ids = world.unreachable_buildings()
+        except AttributeError:
+            return
+        if not ids:
+            return
+        zoom = camera.zoom
+        cam_x, cam_y = camera.x, camera.y
+        sw, sh = surface.get_size()
+        half_sw, half_sh = sw * 0.5, sh * 0.5
+        size = world.settings.hex_size
+        glyph_font = pygame.font.Font(None, max(20, int(32 * zoom)))
+        glyph = glyph_font.render("!", True, (255, 80, 80))
+        shadow = glyph_font.render("!", True, (60, 0, 0))
+        for b in world.buildings.buildings:
+            if id(b) not in ids:
+                continue
+            wx, wy = self._get_pixel(b.coord, size)
+            sx = (wx - cam_x) * zoom + half_sw
+            sy = (wy - cam_y) * zoom + half_sh - size * zoom * 1.1
+            if sx < -30 or sx > sw + 30 or sy < -30 or sy > sh + 30:
+                continue
+            # Small circular badge behind the glyph for readability.
+            r = max(10, int(14 * zoom))
+            pygame.draw.circle(
+                surface, (40, 0, 0), (int(sx), int(sy)), r + 1,
+            )
+            pygame.draw.circle(
+                surface, (230, 60, 60), (int(sx), int(sy)), r,
+            )
+            pygame.draw.circle(
+                surface, (140, 0, 0), (int(sx), int(sy)), r, width=2,
+            )
+            surface.blit(
+                shadow,
+                (int(sx) - shadow.get_width() // 2 + 1,
+                 int(sy) - shadow.get_height() // 2 + 1),
+            )
+            surface.blit(
+                glyph,
+                (int(sx) - glyph.get_width() // 2,
+                 int(sy) - glyph.get_height() // 2),
+            )
 
     def _draw_hex_highlight(
         self, surface: pygame.Surface, coord: HexCoord,

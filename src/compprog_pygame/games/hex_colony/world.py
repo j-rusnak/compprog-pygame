@@ -7,6 +7,7 @@ camp, and spawns the initial population.
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass, field
 
 from compprog_pygame.games.hex_colony.buildings import Building, BuildingManager, BuildingType, BUILDING_MAX_WORKERS
 from compprog_pygame.games.hex_colony.hex_grid import HexCoord, HexGrid
@@ -15,6 +16,35 @@ from compprog_pygame.games.hex_colony.procgen import generate_terrain
 from compprog_pygame.games.hex_colony.resources import BuildingInventory, Inventory, Resource
 from compprog_pygame.games.hex_colony.settings import HexColonySettings
 from compprog_pygame.games.hex_colony import params
+
+
+@dataclass
+class Network:
+    """A path-connected group of buildings with an independent worker
+    priority queue.  Two buildings belong to the same network when
+    there's an unbroken chain of adjacent buildings between them (any
+    building type counts, matching how housing connectivity works).
+
+    Each network has a stable, monotonically-assigned ``id`` so that its
+    priority queue survives across recomputations even as buildings are
+    placed or removed.  When two networks merge (e.g. the player bridges
+    a gap), the surviving network inherits zipped priority tiers from
+    both parents.  When a network splits, the largest fragment keeps
+    the id and the smaller ones receive freshly-allocated ids.
+    """
+    id: int
+    buildings: list[Building] = field(default_factory=list)
+    priority: list[list[Building]] = field(default_factory=list)
+    # Identity-set for fast ``b in network`` checks.  Populated
+    # alongside ``buildings`` — callers should not mutate directly.
+    _bids: set[int] = field(default_factory=set)
+
+    @property
+    def name(self) -> str:
+        return f"Network {self.id}"
+
+    def contains(self, b: Building) -> bool:
+        return id(b) in self._bids
 
 
 class World:
@@ -30,13 +60,29 @@ class World:
         self.building_inventory = BuildingInventory()
         self.time_elapsed: float = 0.0
         self._housing_dirty: bool = True  # needs recalc on first frame
-        # Worker-priority hierarchy: ordered list of tiers, each a list
-        # of Buildings.  Tiers are processed top→bottom; within a tier,
-        # workers are distributed round-robin left→right so tier-mates
-        # fill evenly.  By default each new building-with-workers gets
-        # appended as its own singleton tier in placement order.  The
-        # player may reorder via the Edit Hierarchy overlay.
-        self.worker_priority: list[list[Building]] = []
+        # Per-building-network worker priority lists.  ``networks`` is
+        # rebuilt each frame; each Network keeps its own tier list so
+        # the player can edit them independently in the UI.
+        self.networks: list[Network] = []
+        self._next_network_id: int = 1
+        # Buildings we've already notified the player are unreachable
+        # (no path from any populated house).  Tracked by ``id(b)`` so
+        # the warning pushes exactly once per newly-stranded building.
+        self._unreachable_notified: set[int] = set()
+        # Optional NotificationManager plugged in by game.py for
+        # one-time toasts like "No workers can reach X".
+        self.notifications: object | None = None
+
+    @property
+    def worker_priority(self) -> list[list[Building]]:
+        """Flat view of every network's tier list — convenience used by
+        legacy code paths and tests.  Mutating the returned structure
+        does not feed back into ``networks``; edit ``Network.priority``
+        directly instead."""
+        flat: list[list[Building]] = []
+        for net in self.networks:
+            flat.extend(net.priority)
+        return flat
 
     @property
     def game_over(self) -> bool:
@@ -112,12 +158,13 @@ class World:
             self._update_housing()
             self._housing_dirty = False
 
-        # Keep the worker-priority list in sync with placed buildings and
-        # auto-assign available (non-homeless) workers every frame.  This
-        # is cheap even with hundreds of buildings and makes the
-        # assignment instantly responsive to placement / deletion / edits.
-        self._sync_worker_priority()
+        # Keep networks and worker-priority lists in sync with placed
+        # buildings, assign targets, and dispatch commuters.  The
+        # building.workers count is rebuilt from people actually present
+        # at the end so production naturally gates on arrival.
+        self._rebuild_networks()
         self._assign_workers()
+        self._dispatch_commuters()
 
         # Farm & Refinery production
         self._update_production(dt)
@@ -128,74 +175,374 @@ class World:
         # Move people
         self.population.update(dt, self, self.settings.hex_size)
 
+        # Finally, recount present workers (must be AFTER movement so
+        # newly-arrived commuters are credited this frame).
+        self._recount_present_workers()
+        self._check_unreachable_buildings()
+
     def mark_housing_dirty(self) -> None:
         """Flag that housing assignments need recalculation."""
         self._housing_dirty = True
 
-    # ── Worker priority / assignment ─────────────────────────────
+    # ── Networks ─────────────────────────────────────────────────
 
-    def _sync_worker_priority(self) -> None:
-        """Add newly-placed worker buildings to the priority list and
-        remove ones that were deleted.  Preserves the player's custom
-        tier ordering for buildings that still exist."""
-        seen: set[int] = set()
-        # Prune removed buildings while preserving tier order.
-        new_tiers: list[list[Building]] = []
-        current_buildings = set(id(b) for b in self.buildings.buildings)
-        for tier in self.worker_priority:
-            kept = [b for b in tier if id(b) in current_buildings]
-            for b in kept:
-                seen.add(id(b))
-            if kept:
-                new_tiers.append(kept)
-        # Append buildings that gained workers after placement or were
-        # never added (placement order is preserved by buildings.buildings).
-        for b in self.buildings.buildings:
-            if BUILDING_MAX_WORKERS.get(b.type, 0) <= 0:
-                continue
-            if id(b) in seen:
-                continue
-            new_tiers.append([b])
-        self.worker_priority = new_tiers
+    def _compute_components(self) -> list[list[Building]]:
+        """Return the list of path-connected building components.
 
-    def _available_workers(self) -> int:
-        """Workers available for assignment = total population minus
-        homeless people (camp residents above camp capacity)."""
-        from compprog_pygame.games.hex_colony.hex_grid import HexCoord
-        camp = self.buildings.at(HexCoord(0, 0))
-        if camp is None:
-            return self.population.count
-        homeless = max(0, camp.residents - camp.housing_capacity)
-        return max(0, self.population.count - homeless)
+        Two buildings are in the same component when there's a chain of
+        adjacent buildings between them — matching the way housing
+        connectivity works.  Every placed building appears in exactly
+        one component.  Order within a component follows BFS order for
+        determinism, not for any gameplay reason.
+        """
+        all_buildings = list(self.buildings.buildings)
+        by_coord: dict[HexCoord, Building] = {
+            b.coord: b for b in all_buildings
+        }
+        visited: set[int] = set()
+        components: list[list[Building]] = []
+        for seed in all_buildings:
+            if id(seed) in visited:
+                continue
+            comp: list[Building] = []
+            queue: deque[Building] = deque([seed])
+            visited.add(id(seed))
+            while queue:
+                cur = queue.popleft()
+                comp.append(cur)
+                for nb in cur.coord.neighbors():
+                    nb_b = by_coord.get(nb)
+                    if nb_b is None or id(nb_b) in visited:
+                        continue
+                    visited.add(id(nb_b))
+                    queue.append(nb_b)
+            components.append(comp)
+        return components
+
+    def _rebuild_networks(self) -> None:
+        """Match current components to existing networks by majority of
+        member buildings, preserving ids and each network's priority.
+
+        * A component whose buildings are all in the same old network
+          keeps that network's id (same network, possibly shrunk).
+        * A component that unions multiple old networks inherits the
+          id of the old network contributing the most buildings; tier
+          lists are zipped (tier-k = concat of parent tier-ks filtered
+          to current members).
+        * A component with no old-network overlap gets a fresh id.
+        * A new buildings (no old network) are appended as singleton
+          tiers at the end of their component's priority list.
+        """
+        components = self._compute_components()
+        # Map each building → its old network id (if any).
+        old_net_by_bid: dict[int, int] = {}
+        old_nets: dict[int, Network] = {n.id: n for n in self.networks}
+        for n in self.networks:
+            for b in n.buildings:
+                old_net_by_bid[id(b)] = n.id
+
+        # Choose a new id for each component: majority of members'
+        # old ids; ties broken by smallest id; empty → fresh.  Also
+        # ensure no two components share the same new id — if two
+        # components both "want" id X, the larger wins and the smaller
+        # gets a fresh id (a split).
+        claimed: dict[int, tuple[int, int]] = {}  # old_id -> (comp_idx, size)
+        picks: list[int | None] = [None] * len(components)
+        for ci, comp in enumerate(components):
+            counts: dict[int, int] = {}
+            for b in comp:
+                oid = old_net_by_bid.get(id(b))
+                if oid is not None:
+                    counts[oid] = counts.get(oid, 0) + 1
+            if not counts:
+                continue
+            # Pick highest count, ties → smallest id.
+            best_id = min(counts, key=lambda k: (-counts[k], k))
+            prev = claimed.get(best_id)
+            size = len(comp)
+            if prev is None or size > prev[1]:
+                if prev is not None:
+                    picks[prev[0]] = None  # evict smaller
+                claimed[best_id] = (ci, size)
+                picks[ci] = best_id
+
+        # Assign fresh ids to unclaimed components.
+        used_ids = set(claimed)
+        new_networks: list[Network] = []
+        for ci, comp in enumerate(components):
+            comp_ids: set[int] = {id(b) for b in comp}
+            net_id = picks[ci]
+            if net_id is None:
+                while self._next_network_id in used_ids:
+                    self._next_network_id += 1
+                net_id = self._next_network_id
+                self._next_network_id += 1
+                used_ids.add(net_id)
+
+            # Gather parent networks that contributed buildings.
+            parent_ids: list[int] = []
+            seen_p: set[int] = set()
+            for b in comp:
+                oid = old_net_by_bid.get(id(b))
+                if oid is not None and oid not in seen_p:
+                    seen_p.add(oid)
+                    parent_ids.append(oid)
+            # Put the surviving parent first so its tiers anchor.
+            if net_id in parent_ids:
+                parent_ids.remove(net_id)
+                parent_ids.insert(0, net_id)
+
+            # Build priority: zip parent tiers by index, then filter to
+            # current comp members, preserving left-to-right order.
+            tier_lists: list[list[list[Building]]] = [
+                old_nets[pid].priority for pid in parent_ids
+                if pid in old_nets
+            ]
+            max_depth = max((len(tl) for tl in tier_lists), default=0)
+            new_priority: list[list[Building]] = []
+            placed_bids: set[int] = set()
+            for k in range(max_depth):
+                merged: list[Building] = []
+                for tl in tier_lists:
+                    if k < len(tl):
+                        for b in tl[k]:
+                            if id(b) in comp_ids and id(b) not in placed_bids:
+                                merged.append(b)
+                                placed_bids.add(id(b))
+                if merged:
+                    new_priority.append(merged)
+            # Append buildings new to this network as singleton tiers
+            # (in placement order — buildings.buildings is append-only).
+            for b in self.buildings.buildings:
+                if id(b) not in comp_ids:
+                    continue
+                if BUILDING_MAX_WORKERS.get(b.type, 0) <= 0:
+                    continue
+                if id(b) in placed_bids:
+                    continue
+                new_priority.append([b])
+                placed_bids.add(id(b))
+
+            new_networks.append(Network(
+                id=net_id,
+                buildings=list(comp),
+                priority=new_priority,
+                _bids=comp_ids,
+            ))
+
+        # Stable display order: by id ascending.
+        new_networks.sort(key=lambda n: n.id)
+        self.networks = new_networks
+
+    # ── Worker assignment & dispatch ─────────────────────────────
+
+    def _network_of_building(self, b: Building) -> Network | None:
+        for n in self.networks:
+            if n.contains(b):
+                return n
+        return None
 
     def _assign_workers(self) -> None:
-        """Distribute available workers across the priority list.
+        """Walk each network's priority list and assign each eligible
+        person in that network a ``workplace_target`` building.
 
-        Walks tiers top→bottom.  Within a tier, workers are dealt out
-        round-robin left→right so tier-mates fill evenly before any one
-        of them reaches capacity.  Moves on to the next tier once every
-        building in the current tier is full or workers run out.
+        People whose current ``workplace_target`` is still a valid slot
+        keep it (minimises commuter churn).  Remaining slots are filled
+        from idle / newly-homed people in that network.  People with no
+        target have ``workplace_target = None`` and (if already at a
+        workplace they've now lost) will drift back to idle.
         """
-        # Reset every worker count first so removed-from-priority
-        # buildings (e.g. zero-worker types) never retain stale values.
+        # Clear targets for buildings that no longer belong to any
+        # network (deleted or zero-worker).
+        valid_buildings: set[int] = set()
+        for n in self.networks:
+            for b in n.buildings:
+                valid_buildings.add(id(b))
+        for p in self.population.people:
+            if (p.workplace_target is not None
+                    and id(p.workplace_target) not in valid_buildings):
+                p.workplace_target = None
+            if p.workplace is not None and id(p.workplace) not in valid_buildings:
+                p.workplace = None
+
+        # Group people by the network of their current home.
+        by_network: dict[int, list] = {}
+        for p in self.population.people:
+            if p.home is None:
+                continue
+            net = self._network_of_building(p.home)
+            if net is None:
+                continue
+            by_network.setdefault(net.id, []).append(p)
+
+        camp_coord = HexCoord(0, 0)
+        camp = self.buildings.at(camp_coord)
+
+        for net in self.networks:
+            people = by_network.get(net.id, [])
+            # Available = people in this network who aren't "homeless
+            # overflow" at the camp.  Homeless people still belong to
+            # network 1 (where the camp is) and can be assigned.
+            available = len(people)
+            if camp is not None and net.contains(camp):
+                homeless = max(0, camp.residents - camp.housing_capacity)
+                available = max(0, available - homeless)
+
+            # Compute per-building target slot counts via the tiered
+            # round-robin algorithm.
+            target_slots: dict[int, int] = {
+                id(b): 0
+                for tier in net.priority for b in tier
+            }
+            remaining = available
+            for tier in net.priority:
+                if remaining <= 0:
+                    break
+                while remaining > 0:
+                    placed_any = False
+                    for b in tier:
+                        if target_slots[id(b)] < b.max_workers:
+                            target_slots[id(b)] += 1
+                            remaining -= 1
+                            placed_any = True
+                            if remaining <= 0:
+                                break
+                    if not placed_any:
+                        break
+
+            # Reconcile targets with people.  First pass: respect
+            # existing assignments that still have an open slot.
+            remaining_slots = dict(target_slots)
+            unassigned: list = []
+            b_by_id: dict[int, Building] = {
+                id(b): b for tier in net.priority for b in tier
+            }
+            for p in people:
+                tgt = p.workplace_target
+                if tgt is not None and id(tgt) in remaining_slots \
+                        and remaining_slots[id(tgt)] > 0:
+                    remaining_slots[id(tgt)] -= 1
+                else:
+                    p.workplace_target = None
+                    unassigned.append(p)
+            # Fill remaining slots with unassigned people, preserving
+            # priority order (tiers top→bottom, cards left→right).
+            ui = 0
+            for tier in net.priority:
+                for b in tier:
+                    while remaining_slots.get(id(b), 0) > 0 and ui < len(unassigned):
+                        unassigned[ui].workplace_target = b
+                        remaining_slots[id(b)] -= 1
+                        ui += 1
+
+    def _dispatch_commuters(self) -> None:
+        """Give each person a COMMUTE path when their target differs
+        from their current workplace.  Workers that lost their target
+        go idle; new assignments trigger path recomputation."""
+        for p in self.population.people:
+            tgt = p.workplace_target
+            if tgt is None:
+                if p.workplace is not None:
+                    # Target was cleared — send them back toward home
+                    # (they'll linger there until reassigned).
+                    p.workplace = None
+                if p.task in (Task.COMMUTE, Task.GATHER):
+                    if not p.path:
+                        p.task = Task.IDLE
+                continue
+            if p.workplace is tgt and p.hex_pos == tgt.coord:
+                # Already there and working.
+                if p.task == Task.IDLE or p.task == Task.COMMUTE:
+                    p.task = Task.GATHER
+                continue
+            # Need to travel to target.  Only recompute the path if
+            # we're not already commuting, target changed, or path
+            # became stale (destination hex differs).
+            needs_path = (
+                p.task != Task.COMMUTE
+                or not p.path
+                or (p.path and p.path[-1] != tgt.coord)
+            )
+            if needs_path:
+                path = self._find_building_path(p.hex_pos, tgt.coord)
+                if path:
+                    p.path = path
+                    p.task = Task.COMMUTE
+                    # Clear workplace immediately so production stops
+                    # at the old workplace the moment they leave.
+                    p.workplace = None
+                else:
+                    # No path — they're stranded.  Stay idle at home.
+                    p.task = Task.IDLE
+                    p.path = []
+                    p.workplace = None
+
+    def _recount_present_workers(self) -> None:
+        """Set ``building.workers`` to the number of people currently
+        standing at that building's hex with it as their workplace."""
         for b in self.buildings.buildings:
             b.workers = 0
-        available = self._available_workers()
-        for tier in self.worker_priority:
-            if available <= 0:
-                break
-            # Round-robin pass until the tier is full or we run out.
-            while available > 0:
-                placed_any = False
-                for b in tier:
-                    if b.workers < b.max_workers:
-                        b.workers += 1
-                        available -= 1
-                        placed_any = True
-                        if available <= 0:
-                            break
-                if not placed_any:
-                    break
+        for p in self.population.people:
+            wp = p.workplace
+            if wp is None:
+                continue
+            if p.hex_pos == wp.coord:
+                wp.workers += 1
+
+    def _check_unreachable_buildings(self) -> None:
+        """Push a one-time notification for every worker-building that
+        is in a network with no housed population."""
+        if self.notifications is None:
+            return
+        # Networks with at least one populated home (camp or house).
+        populated_net_ids: set[int] = set()
+        for p in self.population.people:
+            if p.home is None:
+                continue
+            net = self._network_of_building(p.home)
+            if net is not None:
+                populated_net_ids.add(net.id)
+
+        current_unreachable: set[int] = set()
+        for net in self.networks:
+            if net.id in populated_net_ids:
+                continue
+            for b in net.buildings:
+                if BUILDING_MAX_WORKERS.get(b.type, 0) <= 0:
+                    continue
+                bid = id(b)
+                current_unreachable.add(bid)
+                if bid in self._unreachable_notified:
+                    continue
+                label = b.type.name.replace("_", " ").title()
+                self.notifications.push(
+                    f"No workers can reach {label}", (230, 100, 100),
+                )
+                self._unreachable_notified.add(bid)
+        # Forget buildings that became reachable again (or were deleted)
+        # so a future disconnection re-notifies.
+        self._unreachable_notified &= current_unreachable
+
+    def unreachable_buildings(self) -> set[int]:
+        """Return ``id(b)`` for every worker-building in a network with
+        no populated house.  Used by the renderer to draw a red "!"
+        marker above the affected buildings."""
+        populated_net_ids: set[int] = set()
+        for p in self.population.people:
+            if p.home is None:
+                continue
+            net = self._network_of_building(p.home)
+            if net is not None:
+                populated_net_ids.add(net.id)
+        result: set[int] = set()
+        for net in self.networks:
+            if net.id in populated_net_ids:
+                continue
+            for b in net.buildings:
+                if BUILDING_MAX_WORKERS.get(b.type, 0) <= 0:
+                    continue
+                result.add(id(b))
+        return result
 
     # ── Housing connectivity ─────────────────────────────────────
 

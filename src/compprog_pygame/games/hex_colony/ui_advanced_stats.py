@@ -106,6 +106,20 @@ _GRAPH_PAD = 12
 _CLOSE_SZ = 32
 
 
+def _draw_close_button(
+    surface: pygame.Surface, rect: pygame.Rect, *, hover: bool,
+) -> None:
+    """Red-X close button — shared between overlay popups."""
+    from compprog_pygame.games.hex_colony.ui_bottom_bar import get_red_x_icon
+    bg_col = (60, 20, 20, 220) if hover else (34, 34, 40, 200)
+    bg = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
+    bg.fill(bg_col)
+    surface.blit(bg, rect.topleft)
+    pygame.draw.rect(surface, (200, 80, 80), rect, width=2, border_radius=4)
+    icon = get_red_x_icon(rect.w - 8)
+    surface.blit(icon, (rect.x + 4, rect.y + 4))
+
+
 class AdvancedStatsOverlay(Panel):
     """Full-screen popup with selectable resource graphs and stats."""
 
@@ -173,12 +187,9 @@ class AdvancedStatsOverlay(Panel):
             panel.right - _CLOSE_SZ - 12, panel.top + 12,
             _CLOSE_SZ, _CLOSE_SZ,
         )
-        draw_button(
-            surface, self._close_rect, "\u2715",
-            state="hover"
-            if self._close_rect.collidepoint(pygame.mouse.get_pos())
-            else "normal",
-            font=Fonts.label(),
+        _draw_close_button(
+            surface, self._close_rect,
+            hover=self._close_rect.collidepoint(pygame.mouse.get_pos()),
         )
 
         # Time-window strip

@@ -25,6 +25,7 @@ class Task(Enum):
     BUILD = auto()        # constructing a building
     HAUL = auto()         # carrying resources back to camp
     RELOCATE = auto()     # moving to a new home (house)
+    COMMUTE = auto()      # walking along a path to an assigned workplace
 
 
 @dataclass(slots=True)
@@ -40,7 +41,16 @@ class Person:
     work_timer: float = 0.0     # time spent on current work action
     carry_resource: object | None = None  # (Resource, amount) tuple when hauling
     home: object | None = None  # Building reference (dwelling)
-    workplace: object | None = None  # Building reference (work assignment)
+    workplace: object | None = None  # Building reference — where they currently
+                                     # work.  Set only once the person has
+                                     # physically arrived at the assigned
+                                     # building.  Contributes to that
+                                     # building's active worker count.
+    workplace_target: object | None = None  # Building reference — where the
+                                            # worker-priority system wants
+                                            # this person to go.  While
+                                            # `workplace_target != workplace`
+                                            # the person is commuting.
 
     def snap_to_hex(self, size: int) -> None:
         """Set pixel position to centre of current hex."""
@@ -87,9 +97,19 @@ class PopulationManager:
                     person.px, person.py = tx, ty
                     person.hex_pos = target
                     person.path.pop(0)
-                    # Arrived at destination for RELOCATE
-                    if not person.path and person.task == Task.RELOCATE:
-                        person.task = Task.IDLE
+                    if not person.path:
+                        # Arrival hooks
+                        if person.task == Task.RELOCATE:
+                            person.task = Task.IDLE
+                        elif person.task == Task.COMMUTE:
+                            target_b = person.workplace_target
+                            if (target_b is not None
+                                    and person.hex_pos == target_b.coord):
+                                person.workplace = target_b
+                                person.task = Task.GATHER
+                            else:
+                                # Target vanished or moved; clear.
+                                person.task = Task.IDLE
                 else:
                     person.px += dx / dist * step
                     person.py += dy / dist * step

@@ -89,7 +89,8 @@ class StatsTabContent(TabContent):
                               BuildingType.CAMP, BuildingType.WALL)
         )
         idle = sum(
-            1 for p in world.population.people if p.workplace is None
+            1 for p in world.population.people
+            if p.workplace is None and p.workplace_target is None
         )
         research_count = getattr(world, "_tech_research_count", 0)
         raw_stock = self._count_stock(world, RAW_RESOURCES)

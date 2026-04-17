@@ -93,12 +93,12 @@ class TechTreeOverlay(Panel):
             panel.right - close_sz - 12, panel.top + 12,
             close_sz, close_sz,
         )
-        draw_button(
-            surface, self._close_rect, "\u2715",
-            state="hover"
-            if self._close_rect.collidepoint(pygame.mouse.get_pos())
-            else "normal",
-            font=Fonts.label(),
+        from compprog_pygame.games.hex_colony.ui_advanced_stats import (
+            _draw_close_button,
+        )
+        _draw_close_button(
+            surface, self._close_rect,
+            hover=self._close_rect.collidepoint(pygame.mouse.get_pos()),
         )
 
         # Active research banner
