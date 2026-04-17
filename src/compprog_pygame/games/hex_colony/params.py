@@ -26,12 +26,12 @@ CAMP_STORAGE_MULTIPLIER: int = 2
 #  RESOURCE GATHERING (units per second per worker)
 # ═══════════════════════════════════════════════════════════════════
 
-GATHER_RATE_WOOD: float = 1.0
-GATHER_RATE_FIBER: float = 0.8
-GATHER_RATE_STONE: float = 0.6
-GATHER_RATE_FOOD: float = 1.2
-GATHER_RATE_IRON: float = 0.4
-GATHER_RATE_COPPER: float = 0.4
+GATHER_RATE_WOOD: float = 0.1
+GATHER_RATE_FIBER: float = 0.08
+GATHER_RATE_STONE: float = 0.06
+GATHER_RATE_FOOD: float = 0.05
+GATHER_RATE_IRON: float = 0.08
+GATHER_RATE_COPPER: float = 0.08
 
 # ═══════════════════════════════════════════════════════════════════
 #  RESOURCE CONSUMPTION
@@ -117,8 +117,8 @@ BUILDING_HOUSING_RESEARCH_CENTER: int = 0
 # Storage capacity (max total resources stored; 0 = none)
 # Camp capacity is set dynamically at placement time.
 BUILDING_STORAGE_CAMP: int = 0
-BUILDING_STORAGE_HOUSE: int = 0
-BUILDING_STORAGE_HABITAT: int = 0
+BUILDING_STORAGE_HOUSE: int = 50
+BUILDING_STORAGE_HABITAT: int = 50
 BUILDING_STORAGE_PATH: int = 0
 BUILDING_STORAGE_BRIDGE: int = 0
 BUILDING_STORAGE_WOODCUTTER: int = 40
@@ -144,6 +144,17 @@ LOGISTICS_CARRY_CAPACITY: int = 5
 # Worker count scaling factor — the more logistics workers, the more
 # the proximity term dominates (so swarms spread across the map).
 LOGISTICS_PROXIMITY_WORKER_FACTOR: float = 0.08
+
+# ═══════════════════════════════════════════════════════════════════
+#  POPULATION GROWTH
+# ═══════════════════════════════════════════════════════════════════
+
+# Seconds between natural births at a dwelling.
+POPULATION_REPRO_INTERVAL: float = 120.0
+# Food consumed per new person born (paid from the house's storage).
+POPULATION_FOOD_PER_BIRTH: float = 25.0
+# Minimum food a dwelling must hold before a birth can occur.
+POPULATION_MIN_FOOD_TO_BIRTH: float = 25.0
 
 # ═══════════════════════════════════════════════════════════════════
 #  BUILDING DELETE REFUND
@@ -483,6 +494,7 @@ TILE_RESOURCE_FOREST: tuple[float, float] = (100.0, 300.0)
 TILE_RESOURCE_DENSE_FOREST: tuple[float, float] = (100.0, 300.0)
 TILE_RESOURCE_STONE_DEPOSIT: tuple[float, float] = (150.0, 400.0)
 TILE_RESOURCE_FIBER_PATCH: tuple[float, float] = (75.0, 200.0)
+TILE_RESOURCE_BERRY_PATCH: tuple[float, float] = (50.0, 150.0)  # Food capacity for berry patches
 TILE_RESOURCE_MOUNTAIN: tuple[float, float] = (250.0, 600.0)
 TILE_RESOURCE_IRON_VEIN: tuple[float, float] = (200.0, 500.0)
 TILE_RESOURCE_COPPER_VEIN: tuple[float, float] = (200.0, 500.0)

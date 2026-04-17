@@ -10,7 +10,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from compprog_pygame.games.hex_colony.buildings import Building, BuildingManager, BuildingType, BUILDING_MAX_WORKERS
-from compprog_pygame.games.hex_colony.hex_grid import HexCoord, HexGrid
+from compprog_pygame.games.hex_colony.hex_grid import HexCoord, HexGrid, Terrain
 from compprog_pygame.games.hex_colony.people import PopulationManager, Task
 from compprog_pygame.games.hex_colony.procgen import generate_terrain
 from compprog_pygame.games.hex_colony.resources import BuildingInventory, Inventory, Resource
@@ -182,6 +182,9 @@ class World:
 
         # Move people
         self.population.update(dt, self, self.settings.hex_size)
+
+        # Natural population growth from well-fed, spacious dwellings.
+        self._update_population_growth(dt)
 
         # Finally, recount present workers (must be AFTER movement so
         # newly-arrived commuters are credited this frame).
@@ -560,6 +563,8 @@ class World:
         if t == BuildingType.QUARRY:
             return {Resource.STONE}
         if t == BuildingType.GATHERER:
+            if b.gatherer_output is not None:
+                return {b.gatherer_output}
             return {Resource.FIBER, Resource.FOOD}
         if t == BuildingType.FARM:
             return {Resource.FOOD}
@@ -612,6 +617,16 @@ class World:
             if b.stored_resource is not None:
                 out[b.stored_resource] = free
             return out
+        # Dwellings: demand FOOD (capped at 50 worth of food on-site,
+        # regardless of total storage capacity — keeps large camps
+        # from vacuuming up everything).
+        if b.housing_capacity > 0:
+            on_site = b.storage.get(Resource.FOOD, 0.0)
+            target = 50.0
+            need = max(0.0, min(target - on_site, free))
+            if need > 0.5:
+                out[Resource.FOOD] = need
+            return out
         # MINING_MACHINE: demands fuel.
         if b.type == BuildingType.MINING_MACHINE:
             for fuel_name in params.MINING_MACHINE_FUELS:
@@ -655,6 +670,8 @@ class World:
             BuildingType.WORKSHOP, BuildingType.FORGE,
             BuildingType.REFINERY, BuildingType.ASSEMBLER,
         ) and isinstance(b.recipe, Resource):
+            return True
+        if b.housing_capacity > 0:
             return True
         return False
 
@@ -781,6 +798,53 @@ class World:
         p.logistics_res = None
         p.path = []
 
+    # ── Population growth ────────────────────────────────────────
+
+    def _update_population_growth(self, dt: float) -> None:
+        """Every dwelling with empty space accumulates a reproduction
+        timer.  Once it reaches POPULATION_REPRO_INTERVAL and the
+        dwelling holds at least POPULATION_MIN_FOOD_TO_BIRTH units of
+        food, a new person is born: the food is consumed and the new
+        person is assigned this dwelling as their home (housing will
+        rebalance on the next dirty flag)."""
+        birth_interval = params.POPULATION_REPRO_INTERVAL
+        food_cost = params.POPULATION_FOOD_PER_BIRTH
+        food_min = params.POPULATION_MIN_FOOD_TO_BIRTH
+        spawned_any = False
+        for b in self.buildings.buildings:
+            if b.housing_capacity <= 0:
+                continue
+            # Only tick timer when there's room to grow.
+            if b.residents >= b.housing_capacity:
+                b.reproduction_timer = 0.0
+                continue
+            food_here = b.storage.get(Resource.FOOD, 0.0)
+            if food_here < food_min:
+                # Not enough food — timer stalls until food arrives.
+                continue
+            b.reproduction_timer += dt
+            if b.reproduction_timer >= birth_interval:
+                b.reproduction_timer = 0.0
+                # Pay the food cost from the building's storage.
+                new_food = max(0.0, food_here - food_cost)
+                if new_food <= 1e-6:
+                    b.storage.pop(Resource.FOOD, None)
+                else:
+                    b.storage[Resource.FOOD] = new_food
+                # Spawn a new person at the dwelling.
+                new_person = self.population.spawn(
+                    b.coord, self.settings.hex_size,
+                )
+                new_person.home = b
+                b.residents += 1
+                spawned_any = True
+                if self.notifications is not None:
+                    self.notifications.push(
+                        "A new colonist was born!", (180, 255, 180),
+                    )
+        if spawned_any:
+            self.mark_housing_dirty()
+
     def _logistics_find_job(self, p) -> None:
         """Score every (supplier, consumer, resource) pair in *p*'s
         network and pick the best one."""
@@ -840,8 +904,10 @@ class World:
                 d_sd = sb.coord.distance(db.coord)
                 total_d = max(1, d_ps + d_sd)
                 proximity = 1.0 / total_d
-                # Urgency from fill ratios.
-                urgency = sfill * 0.6 + dempty * 0.6
+                # Urgency from fill ratios.  Empty demand buildings
+                # edge out full supply buildings by a small margin so
+                # that consumers are kept fed before producers unclog.
+                urgency = sfill * 0.55 + dempty * 0.65
                 # Magnitude: what we can actually transport.
                 qty = min(
                     params.LOGISTICS_CARRY_CAPACITY, samt, dneed,
@@ -995,43 +1061,55 @@ class World:
                 person.task = Task.IDLE
                 person.path = []
 
-        # Assign non-relocating people
+        # Assign non-relocating people.  Distribute as evenly as
+        # possible across every connected dwelling (camp + houses) by
+        # always picking the dwelling with the fewest current residents
+        # that still has capacity.  Fall back to keeping the person's
+        # existing home only if it's already the most-empty option.
+        dwellings: list[Building] = [camp] + list(connected_houses)
         for person in self.population.people:
             if person.task == Task.RELOCATE and person.path:
                 continue  # already counted above
 
             old_home = person.home
-            placed = False
-            # Try to keep them in their current home if it's connected and has space
-            if old_home is not None and old_home != camp:
-                if (old_home in connected_houses
-                        and old_home.residents < old_home.housing_capacity):
-                    old_home.residents += 1
-                    placed = True
-            if not placed:
-                # Find a connected house with space
-                for house in connected_houses:
-                    if house.residents < house.housing_capacity:
-                        person.home = house
-                        house.residents += 1
-                        placed = True
-                        break
-            if not placed:
-                # Assign to camp (may be over capacity = homeless)
+            # Pick dwelling with capacity and the fewest residents.
+            best: Building | None = None
+            best_ratio = 2.0
+            for d in dwellings:
+                if d.residents >= d.housing_capacity:
+                    continue
+                ratio = d.residents / max(1, d.housing_capacity)
+                if ratio < best_ratio:
+                    best_ratio = ratio
+                    best = d
+            if best is None:
+                # No connected dwelling has space — overflow to camp
+                # (camp is also allowed to be over its cap = homeless).
                 person.home = camp
                 camp.residents += 1
+                placed_home = camp
+            else:
+                # If the old home is as empty as the best option, keep
+                # them there to avoid churn.
+                if (old_home is not None and old_home in dwellings
+                        and old_home.residents < old_home.housing_capacity
+                        and old_home.residents / max(1, old_home.housing_capacity) <= best_ratio):
+                    best = old_home
+                person.home = best
+                best.residents += 1
+                placed_home = best
 
             # Trigger relocation animation if home changed
-            if person.home != old_home and old_home is not None:
+            if placed_home != old_home and old_home is not None:
                 path = self._find_building_path(
-                    person.hex_pos, person.home.coord,
+                    person.hex_pos, placed_home.coord,
                 )
                 if path:
                     person.task = Task.RELOCATE
                     person.path = path
                 else:
                     # No building path — snap to new home
-                    person.hex_pos = person.home.coord
+                    person.hex_pos = placed_home.coord
                     person.snap_to_hex(self.settings.hex_size)
 
     def _find_building_path(
@@ -1083,7 +1161,8 @@ class World:
         dt: float,
     ) -> None:
         """Adjacent-terrain harvester: pulls from any neighbour tile whose
-        TERRAIN_RESOURCE is in *resources* into the building's storage."""
+        TERRAIN_RESOURCE is in *resources* into the building's storage.
+        Also harvests food from fiber/berry patch food_amount."""
         from compprog_pygame.games.hex_colony.resources import TERRAIN_RESOURCE
         if b.workers <= 0:
             return
@@ -1103,6 +1182,15 @@ class World:
             tile = self.grid.get(nb)
             if tile is None:
                 continue
+            # Try food harvest from food_amount on fiber/berry patches
+            if Resource.FOOD in resources and tile.food_amount > 0:
+                take = min(budget, tile.food_amount)
+                tile.food_amount -= take
+                self._deposit(b, Resource.FOOD, take)
+                budget -= take
+                produced = True
+                self._maybe_deplete_tile(tile)
+                continue
             res = TERRAIN_RESOURCE.get(tile.terrain)
             if res is None or res not in resources:
                 continue
@@ -1113,7 +1201,19 @@ class World:
             self._deposit(b, res, take)
             budget -= take
             produced = True
+            self._maybe_deplete_tile(tile)
         b.active = produced
+
+    def _maybe_deplete_tile(self, tile: "HexTile") -> None:
+        """Convert a tile to grass once all its resources are exhausted."""
+        if tile.terrain == Terrain.GRASS or tile.terrain == Terrain.WATER:
+            return
+        if tile.resource_amount <= 0 and tile.food_amount <= 0:
+            if tile.underlying_terrain is not None:
+                tile.terrain = tile.underlying_terrain
+                tile.underlying_terrain = None
+            else:
+                tile.terrain = Terrain.GRASS
 
     def _update_production(self, dt: float) -> None:
         """Per-frame resource production.  All outputs go into the
@@ -1129,12 +1229,21 @@ class World:
             self._harvest_from_terrain(
                 b, {Resource.STONE}, s.gather_stone, dt,
             )
-        # Gatherer (fiber AND food from adjacent patches)
+        # Gatherer: produce only the user-selected resource, or both
         for b in self.buildings.by_type(BuildingType.GATHERER):
-            self._harvest_from_terrain(
-                b, {Resource.FIBER, Resource.FOOD},
-                (s.gather_fiber + s.gather_food) * 0.5, dt,
-            )
+            if b.gatherer_output == Resource.FOOD:
+                self._harvest_from_terrain(
+                    b, {Resource.FOOD}, s.gather_food, dt,
+                )
+            elif b.gatherer_output == Resource.FIBER:
+                self._harvest_from_terrain(
+                    b, {Resource.FIBER}, s.gather_fiber, dt,
+                )
+            else:
+                self._harvest_from_terrain(
+                    b, {Resource.FIBER, Resource.FOOD},
+                    (s.gather_fiber + s.gather_food) * 0.5, dt,
+                )
 
         # Pre-compute well locations for farm bonus
         well_coords: set[HexCoord] = set()

@@ -151,9 +151,16 @@ class _StorageResBtn:
     height: int = _SMALL_LINE_H + 2
 
 
+@dataclass
+class _GathererOutputBtn:
+    resource: Resource | None  # None means "both"
+    selected: bool
+    height: int = _SMALL_LINE_H + 2
+
+
 _Item = (
     _Line | _IconLine | _Spacer | _RecipeBtn | _MaterialRecipeBtn
-    | _TechTreeBtn | _StorageResBtn
+    | _TechTreeBtn | _StorageResBtn | _GathererOutputBtn
 )
 
 
@@ -168,6 +175,7 @@ class BuildingInfoPanel(Panel):
         self._recipe_rects: list[tuple[pygame.Rect, BuildingType]] = []
         self._mat_recipe_rects: list[tuple[pygame.Rect, MaterialRecipe]] = []
         self._storage_res_rects: list[tuple[pygame.Rect, Resource]] = []
+        self._gatherer_output_rects: list[tuple[pygame.Rect, Resource | None]] = []
         self._tech_tree_btn: pygame.Rect | None = None
         self.on_open_tech_tree: typing.Callable[[], None] | None = None
         self.tier_tracker: typing.Any = None
@@ -190,6 +198,7 @@ class BuildingInfoPanel(Panel):
         if self.building is None:
             self._recipe_rects = []
             self._mat_recipe_rects = []
+            self._gatherer_output_rects = []
             self._tech_tree_btn = None
             return
 
@@ -225,6 +234,7 @@ class BuildingInfoPanel(Panel):
         self._recipe_rects = []
         self._mat_recipe_rects = []
         self._storage_res_rects = []
+        self._gatherer_output_rects = []
         self._tech_tree_btn = None
 
         for item in items:
@@ -263,6 +273,8 @@ class BuildingInfoPanel(Panel):
                 self._draw_material_recipe_btn(surface, x, cy, item, world)
             elif isinstance(item, _StorageResBtn):
                 self._draw_storage_res_btn(surface, x, cy, item)
+            elif isinstance(item, _GathererOutputBtn):
+                self._draw_gatherer_output_btn(surface, x, cy, item)
             elif isinstance(item, _TechTreeBtn):
                 self._draw_tech_btn(surface, x, cy)
             cy += item.height
@@ -339,6 +351,35 @@ class BuildingInfoPanel(Panel):
         )
         surface.blit(surf, (icon_x + icon_size + 6, btn_rect.y + 2))
         self._storage_res_rects.append((btn_rect, item.resource))
+
+    def _draw_gatherer_output_btn(
+        self, surface: pygame.Surface, x: int, cy: int,
+        item: _GathererOutputBtn,
+    ) -> None:
+        btn_rect = pygame.Rect(
+            x + _PADDING, cy, _PANEL_W - _PADDING * 2, _SMALL_LINE_H + 2,
+        )
+        bg = UI_ACCENT if item.selected else UI_BG
+        pygame.draw.rect(surface, bg, btn_rect, border_radius=3)
+        pygame.draw.rect(surface, UI_BORDER, btn_rect, width=1, border_radius=3)
+        if item.resource is not None:
+            icon_size = 14
+            icon_surf = get_resource_icon(item.resource, icon_size)
+            icon_x = btn_rect.x + 4
+            icon_y = btn_rect.centery - icon_size // 2
+            surface.blit(icon_surf, (icon_x, icon_y))
+            label = item.resource.name.replace("_", " ").title()
+            surf = render_text_clipped(
+                Fonts.small(), label, UI_TEXT, btn_rect.w - icon_size - 12,
+            )
+            surface.blit(surf, (icon_x + icon_size + 6, btn_rect.y + 2))
+        else:
+            label = "Both (Food & Fiber)"
+            surf = render_text_clipped(
+                Fonts.small(), label, UI_TEXT, btn_rect.w - 12,
+            )
+            surface.blit(surf, (btn_rect.x + 6, btn_rect.y + 2))
+        self._gatherer_output_rects.append((btn_rect, item.resource))
 
     def _draw_tech_btn(self, surface: pygame.Surface, x: int, cy: int) -> None:
         btn_rect = pygame.Rect(
@@ -453,6 +494,25 @@ class BuildingInfoPanel(Panel):
                     resource=res, selected=(current == res),
                 ))
                 items.append(_Spacer(2))
+
+        # GATHERER building: let the player pick food, fiber, or both.
+        if b.type == BuildingType.GATHERER:
+            items.append(_Spacer())
+            current = b.gatherer_output
+            line(
+                f"Gathers: {current.name.replace('_',' ').title() if current else 'Both'}",
+                UI_ACCENT if current else UI_MUTED,
+            )
+            items.append(_Spacer(2))
+            for res in [Resource.FOOD, Resource.FIBER]:
+                items.append(_GathererOutputBtn(
+                    resource=res, selected=(current == res),
+                ))
+                items.append(_Spacer(2))
+            items.append(_GathererOutputBtn(
+                resource=None, selected=(current is None),
+            ))
+            items.append(_Spacer(2))
 
         # Crafting stations — Workshop / Forge / Refinery / Assembler.
         if b.type in (
@@ -633,5 +693,10 @@ class BuildingInfoPanel(Panel):
                             self.building.stored_resource = None
                         else:
                             self.building.stored_resource = res
+                        return True
+            if self.building.type == BuildingType.GATHERER:
+                for btn_rect, res in self._gatherer_output_rects:
+                    if btn_rect.collidepoint(event.pos):
+                        self.building.gatherer_output = res
                         return True
         return True  # consume any click inside the panel

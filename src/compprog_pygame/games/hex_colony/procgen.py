@@ -517,7 +517,9 @@ def generate_terrain(seed: str, settings: HexColonySettings) -> HexGrid:
 
             terrain = _classify(elev, moist, det, edge_t, mtn_affinity, lake_affinity)
             amount = _resource_amount(terrain, rng)
-            grid.set_tile(HexTile(coord=coord, terrain=terrain, resource_amount=amount))
+            food = _food_amount(terrain, rng)
+            grid.set_tile(HexTile(coord=coord, terrain=terrain,
+                                  resource_amount=amount, food_amount=food))
 
     # --- Pass 2: (clearing deferred to after all post-processing) ---
 
@@ -757,6 +759,14 @@ def _resource_amount(terrain: Terrain, rng: _random.Random) -> float:
         return rng.uniform(lo, hi)
     if terrain == Terrain.MOUNTAIN:
         lo, hi = params.TILE_RESOURCE_MOUNTAIN
+        return rng.uniform(lo, hi)
+    return 0.0
+
+
+def _food_amount(terrain: Terrain, rng: _random.Random) -> float:
+    """Food available on fiber/berry patch tiles."""
+    if terrain == Terrain.FIBER_PATCH:
+        lo, hi = params.TILE_RESOURCE_BERRY_PATCH
         return rng.uniform(lo, hi)
     return 0.0
 

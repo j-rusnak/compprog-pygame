@@ -162,6 +162,11 @@ class Building:
     # dedicated to.  ``None`` means the player hasn't picked one yet
     # (the building will neither supply nor demand).
     stored_resource: "Resource | None" = None
+    # GATHERER only: which resource to gather.  ``None`` means both
+    # food and fiber (legacy behaviour).
+    gatherer_output: "Resource | None" = None
+    # Dwellings only: seconds accumulated toward the next birth.
+    reproduction_timer: float = 0.0
 
     @property
     def max_workers(self) -> int:

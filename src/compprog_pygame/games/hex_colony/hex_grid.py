@@ -64,6 +64,7 @@ class HexTile:
     coord: HexCoord
     terrain: Terrain
     resource_amount: float = 0.0  # harvestable resource remaining
+    food_amount: float = 0.0     # harvestable food (fiber/berry patches)
     building: object | None = None  # will hold Building reference
     underlying_terrain: Terrain | None = None  # original terrain under ore veins
 

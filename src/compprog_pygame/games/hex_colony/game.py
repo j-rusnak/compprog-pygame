@@ -176,7 +176,7 @@ class Game:
             for event in pygame.event.get():
                 self._handle_event(event)
 
-            if not self._pause_overlay.visible and not self._tech_tree_overlay.visible and not self._advanced_stats_overlay.visible and not self.world.game_over:
+            if not self._pause_overlay.visible and not self.world.game_over:
                 self._update_keyboard_pan(dt)
                 self._update_alt_overlay()
                 self._update_ghost_building()
