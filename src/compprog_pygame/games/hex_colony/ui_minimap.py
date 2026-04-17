@@ -24,10 +24,11 @@ if TYPE_CHECKING:
 
 _MAP_SIZE = 160
 _MARGIN = 8
+_TOP_OFFSET = 46      # below 38px resource bar + a gap
 
 
 class MinimapPanel(Panel):
-    """Small overview map in the bottom-right corner."""
+    """Small overview map anchored to the top-right corner."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -37,9 +38,11 @@ class MinimapPanel(Panel):
         self.camera: Camera | None = None
 
     def layout(self, screen_w: int, screen_h: int) -> None:
+        # Anchor top-left (below resource bar). Keeps the right side
+        # free for the tile/building info popups.
         self.rect = pygame.Rect(
-            screen_w - _MAP_SIZE - _MARGIN,
-            38 + _MARGIN,  # just under the resource bar (height 38)
+            _MARGIN,
+            _TOP_OFFSET,
             _MAP_SIZE, _MAP_SIZE,
         )
         self._dirty = True

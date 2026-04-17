@@ -1,92 +1,118 @@
-"""Technology tree framework for Hex Colony.
+"""Technology tree and tier progression for Hex Colony.
 
-The tech tree gates access to advanced buildings behind research costs.
-Each ``Tech`` has a resource cost and a set of ``BuildingType``s it
-unlocks.  The ``TechTree`` tracks which techs have been researched.
+Two progression systems:
+1. **Tiers** — accessed via the Ship Wreckage (camp).  Each tier unlocks
+   core buildings/features.  Requirements include population, resources
+   delivered, buildings placed, and research count.
+2. **Tech Tree** — accessed via the Research Center.  Each node costs
+   resources + time and unlocks niche/optional features.
 
-Buildings in ``TECH_REQUIREMENTS`` cannot be built until the required
-tech is unlocked.  Buildings *not* listed are available from the start.
+All data is driven by ``params.TIER_DATA`` and ``params.TECH_TREE_DATA``
+so balancing changes need only touch params.py.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum, auto
 
 from compprog_pygame.games.hex_colony.buildings import BuildingType
 from compprog_pygame.games.hex_colony.resources import Resource
+from compprog_pygame.games.hex_colony import params
 
 
-class Tech(Enum):
-    METALLURGY = auto()     # unlocks Refinery
-    AGRICULTURE = auto()    # unlocks Farm
-    HYDRAULICS = auto()     # unlocks Well
-    ENGINEERING = auto()    # unlocks Bridge
+# ═══════════════════════════════════════════════════════════════════
+#  Tech Tree (Research Center)
+# ═══════════════════════════════════════════════════════════════════
 
-
-@dataclass(frozen=True)
-class TechInfo:
-    """Metadata for a single technology."""
+@dataclass
+class TechNode:
+    """A single research node."""
+    key: str
     name: str
     description: str
     cost: dict[Resource, int]
-    unlocks: frozenset[BuildingType]
-    prerequisites: frozenset[Tech] = frozenset()
+    time: float  # seconds to research
+    prerequisites: list[str]
+    unlocks: list[BuildingType]
+    position: tuple[int, int]  # grid (col, row) for visual layout
 
 
-# ── Tech definitions ─────────────────────────────────────────────
+def _build_tech_nodes() -> dict[str, TechNode]:
+    nodes: dict[str, TechNode] = {}
+    for key, data in params.TECH_TREE_DATA.items():
+        cost = {Resource[k]: v for k, v in data["cost"].items()}
+        unlocks = [BuildingType[b] for b in data.get("unlocks", [])]
+        nodes[key] = TechNode(
+            key=key,
+            name=data["name"],
+            description=data["description"],
+            cost=cost,
+            time=data["time"],
+            prerequisites=list(data.get("prerequisites", [])),
+            unlocks=unlocks,
+            position=tuple(data.get("position", (0, 0))),
+        )
+    return nodes
 
-TECH_DATA: dict[Tech, TechInfo] = {
-    Tech.METALLURGY: TechInfo(
-        name="Metallurgy",
-        description="Smelt raw ore into usable metal",
-        cost={Resource.IRON: 10, Resource.STONE: 15},
-        unlocks=frozenset({BuildingType.REFINERY}),
-    ),
-    Tech.AGRICULTURE: TechInfo(
-        name="Agriculture",
-        description="Cultivate crops for steady food",
-        cost={Resource.WOOD: 20, Resource.FIBER: 15},
-        unlocks=frozenset({BuildingType.FARM}),
-    ),
-    Tech.HYDRAULICS: TechInfo(
-        name="Hydraulics",
-        description="Harness water to irrigate farms",
-        cost={Resource.STONE: 20, Resource.IRON: 5},
-        unlocks=frozenset({BuildingType.WELL}),
-        prerequisites=frozenset({Tech.AGRICULTURE}),
-    ),
-    Tech.ENGINEERING: TechInfo(
-        name="Engineering",
-        description="Build structures over difficult terrain",
-        cost={Resource.WOOD: 15, Resource.STONE: 10},
-        unlocks=frozenset({BuildingType.BRIDGE}),
-    ),
-}
 
-# Reverse lookup: which tech is needed for a building?
-TECH_REQUIREMENTS: dict[BuildingType, Tech] = {}
-for _tech, _info in TECH_DATA.items():
-    for _bt in _info.unlocks:
-        TECH_REQUIREMENTS[_bt] = _tech
+TECH_NODES: dict[str, TechNode] = _build_tech_nodes()
+
+# Reverse lookup: which tech key unlocks a building?
+TECH_REQUIREMENTS: dict[BuildingType, str] = {}
+for _key, _node in TECH_NODES.items():
+    for _bt in _node.unlocks:
+        TECH_REQUIREMENTS[_bt] = _key
 
 
 class TechTree:
     """Tracks researched technologies for a single game session."""
 
     def __init__(self) -> None:
-        self.researched: set[Tech] = set()
+        self.researched: set[str] = set()
+        self.current_research: str | None = None
+        self.research_progress: float = 0.0  # seconds elapsed
 
-    def is_unlocked(self, tech: Tech) -> bool:
-        return tech in self.researched
+    @property
+    def researched_count(self) -> int:
+        return len(self.researched)
 
-    def can_research(self, tech: Tech) -> bool:
+    def is_unlocked(self, key: str) -> bool:
+        return key in self.researched
+
+    def can_research(self, key: str) -> bool:
         """Check if prerequisites are met (ignores cost)."""
-        info = TECH_DATA[tech]
-        return info.prerequisites.issubset(self.researched) and tech not in self.researched
+        if key in self.researched:
+            return False
+        node = TECH_NODES.get(key)
+        if node is None:
+            return False
+        return all(p in self.researched for p in node.prerequisites)
 
-    def research(self, tech: Tech) -> None:
-        self.researched.add(tech)
+    def start_research(self, key: str) -> None:
+        """Begin researching a tech node (resets progress)."""
+        self.current_research = key
+        self.research_progress = 0.0
+
+    def cancel_research(self) -> None:
+        self.current_research = None
+        self.research_progress = 0.0
+
+    def update(self, dt: float) -> str | None:
+        """Advance research by *dt* seconds.  Returns the key if completed."""
+        if self.current_research is None:
+            return None
+        node = TECH_NODES.get(self.current_research)
+        if node is None:
+            self.current_research = None
+            return None
+        self.research_progress += dt
+        if self.research_progress >= node.time:
+            completed = self.current_research
+            self.researched.add(completed)
+            self.current_research = None
+            self.research_progress = 0.0
+            return completed
+        return None
 
     def is_building_unlocked(self, btype: BuildingType) -> bool:
         """Return True if the building has no tech requirement or it's been researched."""
@@ -95,6 +121,107 @@ class TechTree:
             return True
         return req in self.researched
 
-    def available_techs(self) -> list[Tech]:
-        """Return techs that can currently be researched (prereqs met, not yet done)."""
-        return [t for t in Tech if self.can_research(t)]
+    def available_techs(self) -> list[str]:
+        """Return tech keys that can currently be researched (prereqs met, not yet done)."""
+        return [k for k in TECH_NODES if self.can_research(k)]
+
+    def all_nodes(self) -> list[TechNode]:
+        return list(TECH_NODES.values())
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Tier System (Ship Wreckage / Camp)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class TierInfo:
+    """Data for a single tier."""
+    level: int
+    name: str
+    description: str
+    unlocks_buildings: list[BuildingType]
+    requirements: dict  # raw requirement dict from params
+
+
+def _build_tiers() -> list[TierInfo]:
+    tiers: list[TierInfo] = []
+    for i, data in enumerate(params.TIER_DATA):
+        unlocks = [BuildingType[b] for b in data.get("unlocks_buildings", [])]
+        tiers.append(TierInfo(
+            level=i,
+            name=data["name"],
+            description=data["description"],
+            unlocks_buildings=unlocks,
+            requirements=dict(data.get("requirements", {})),
+        ))
+    return tiers
+
+
+TIERS: list[TierInfo] = _build_tiers()
+
+# Reverse lookup: which tier unlocks a building?
+TIER_BUILDING_REQUIREMENTS: dict[BuildingType, int] = {}
+for _tier in TIERS:
+    for _bt in _tier.unlocks_buildings:
+        TIER_BUILDING_REQUIREMENTS[_bt] = _tier.level
+
+
+class TierTracker:
+    """Tracks the player's current tier and progress toward the next."""
+
+    def __init__(self) -> None:
+        self.current_tier: int = 0
+
+    def check_requirements(self, world) -> dict[str, tuple[float, float]]:
+        """Return {req_name: (current, required)} for the next tier.
+
+        Values are (current_progress, target).  Returns empty if max tier.
+        """
+        next_level = self.current_tier + 1
+        if next_level >= len(TIERS):
+            return {}
+        reqs = TIERS[next_level].requirements
+        progress: dict[str, tuple[float, float]] = {}
+
+        if "population" in reqs:
+            progress["Population"] = (
+                float(world.population.count),
+                float(reqs["population"]),
+            )
+        if "buildings_placed" in reqs:
+            # Count non-path, non-camp buildings
+            count = sum(
+                1 for b in world.buildings.buildings
+                if b.type not in (BuildingType.PATH, BuildingType.BRIDGE,
+                                  BuildingType.CAMP, BuildingType.WALL)
+            )
+            progress["Buildings"] = (float(count), float(reqs["buildings_placed"]))
+        if "resource_gathered" in reqs:
+            from compprog_pygame.games.hex_colony.resources import Resource
+            for res_name, target in reqs["resource_gathered"].items():
+                res = Resource[res_name]
+                current = world.inventory[res]
+                progress[res_name.capitalize()] = (float(current), float(target))
+        if "research_count" in reqs:
+            count = getattr(world, '_tech_research_count', 0)
+            progress["Research"] = (float(count), float(reqs["research_count"]))
+
+        return progress
+
+    def try_advance(self, world) -> bool:
+        """Check if all requirements met; if so, advance tier.  Returns True if advanced."""
+        progress = self.check_requirements(world)
+        if not progress:
+            return False  # already max tier
+        for current, required in progress.values():
+            if current < required:
+                return False
+        self.current_tier += 1
+        return True
+
+    def is_building_unlocked(self, btype: BuildingType) -> bool:
+        """Return True if the building's tier requirement is met."""
+        req_tier = TIER_BUILDING_REQUIREMENTS.get(btype)
+        if req_tier is None:
+            return True  # no tier restriction
+        return self.current_tier >= req_tier

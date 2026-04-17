@@ -10,10 +10,10 @@ from __future__ import annotations
 #  STARTING CONDITIONS
 # ═══════════════════════════════════════════════════════════════════
 
-START_WOOD: int = 50
-START_FIBER: int = 20
-START_STONE: int = 30
-START_FOOD: int = 80
+START_WOOD: int = 0
+START_FIBER: int = 0
+START_STONE: int = 0
+START_FOOD: int = 0
 START_IRON: int = 0
 START_COPPER: int = 0
 
@@ -65,6 +65,7 @@ BUILDING_COST_FARM: dict[str, int] = {"WOOD": 12, "FIBER": 8, "STONE": 4}
 BUILDING_COST_WELL: dict[str, int] = {"STONE": 10, "WOOD": 6}
 BUILDING_COST_WALL: dict[str, int] = {"STONE": 8, "WOOD": 4}
 BUILDING_COST_WORKSHOP: dict[str, int] = {}
+BUILDING_COST_RESEARCH_CENTER: dict[str, int] = {}
 
 # ═══════════════════════════════════════════════════════════════════
 #  BUILDING CAPACITY
@@ -85,6 +86,7 @@ BUILDING_MAX_WORKERS_FARM: int = 3
 BUILDING_MAX_WORKERS_WELL: int = 0
 BUILDING_MAX_WORKERS_WALL: int = 0
 BUILDING_MAX_WORKERS_WORKSHOP: int = 2
+BUILDING_MAX_WORKERS_RESEARCH_CENTER: int = 0
 
 # Housing capacity (number of people that can live here; 0 = not a dwelling)
 BUILDING_HOUSING_CAMP: int = 10
@@ -101,6 +103,7 @@ BUILDING_HOUSING_FARM: int = 0
 BUILDING_HOUSING_WELL: int = 0
 BUILDING_HOUSING_WALL: int = 0
 BUILDING_HOUSING_WORKSHOP: int = 0
+BUILDING_HOUSING_RESEARCH_CENTER: int = 0
 
 # Storage capacity (max total resources stored; 0 = none)
 # Camp capacity is set dynamically at placement time.
@@ -118,6 +121,7 @@ BUILDING_STORAGE_FARM: int = 25
 BUILDING_STORAGE_WELL: int = 0
 BUILDING_STORAGE_WALL: int = 0
 BUILDING_STORAGE_WORKSHOP: int = 0
+BUILDING_STORAGE_RESEARCH_CENTER: int = 0
 
 # ═══════════════════════════════════════════════════════════════════
 #  BUILDING DELETE REFUND
@@ -164,6 +168,142 @@ START_BUILDINGS: dict[str, int] = {
     "REFINERY": 1,
     "FARM": 2,
     "WELL": 1,
+    "RESEARCH_CENTER": 1,
+}
+
+# ═══════════════════════════════════════════════════════════════════
+#  TIER PROGRESSION SYSTEM
+#  Each tier unlocks new buildings/features.  Requirements use string
+#  keys so this file stays free of enum imports.
+#  Requirement types:
+#    "population"      — min living population
+#    "buildings_placed" — total non-path buildings on the map
+#    "resource_delivered" — {resource_name: amount} delivered to camp
+#    "research_count"   — number of tech nodes researched
+#    "production_rate"  — {resource_name: min_per_second} sustained
+# ═══════════════════════════════════════════════════════════════════
+
+TIER_DATA: list[dict] = [
+    # ── Tier 0 (starting) ────────────────────────────────────────
+    {
+        "name": "Crash Site",
+        "description": "Establish basic survival operations",
+        "unlocks_buildings": [
+            "PATH", "WALL", "WOODCUTTER", "QUARRY", "GATHERER",
+            "STORAGE", "HABITAT", "WORKSHOP", "RESEARCH_CENTER",
+        ],
+        "requirements": {},  # no requirements — starting tier
+    },
+    # ── Tier 1 ───────────────────────────────────────────────────
+    {
+        "name": "Foothold",
+        "description": "Secure basic resource production",
+        "unlocks_buildings": ["BRIDGE", "FARM"],
+        "requirements": {
+            "population": 8,
+            "buildings_placed": 6,
+        },
+    },
+    # ── Tier 2 ───────────────────────────────────────────────────
+    {
+        "name": "Settlement",
+        "description": "Begin processing raw materials",
+        "unlocks_buildings": ["REFINERY", "WELL"],
+        "requirements": {
+            "population": 15,
+            "resource_gathered": {"FOOD": 100},
+            "research_count": 1,
+        },
+    },
+    # ── Tier 3 ───────────────────────────────────────────────────
+    {
+        "name": "Colony",
+        "description": "Establish a self-sustaining colony",
+        "unlocks_buildings": [],  # future expansion
+        "requirements": {
+            "population": 25,
+            "resource_gathered": {"IRON": 50, "COPPER": 25},
+            "research_count": 3,
+        },
+    },
+]
+
+# ═══════════════════════════════════════════════════════════════════
+#  TECH TREE (RESEARCH CENTER)
+#  Each node is a dict with:
+#    "name"          — display name
+#    "description"   — tooltip text
+#    "cost"          — {resource_name: amount} to research
+#    "time"          — seconds of research time
+#    "prerequisites" — list of tech node keys that must be done first
+#    "unlocks"       — list of BuildingType names this tech enables
+#    "position"      — (x, y) grid position for visual layout
+# ═══════════════════════════════════════════════════════════════════
+
+TECH_TREE_DATA: dict[str, dict] = {
+    "advanced_logistics": {
+        "name": "Advanced Logistics",
+        "description": "Unlock bridges for crossing water",
+        "cost": {"WOOD": 15, "STONE": 10},
+        "time": 20.0,
+        "prerequisites": [],
+        "unlocks": ["BRIDGE"],
+        "position": (0, 0),
+    },
+    "agriculture": {
+        "name": "Agriculture",
+        "description": "Cultivate crops for steady food supply",
+        "cost": {"WOOD": 20, "FIBER": 15},
+        "time": 30.0,
+        "prerequisites": [],
+        "unlocks": ["FARM"],
+        "position": (1, 0),
+    },
+    "metallurgy": {
+        "name": "Metallurgy",
+        "description": "Smelt raw ore into usable metal",
+        "cost": {"STONE": 15, "WOOD": 10},
+        "time": 35.0,
+        "prerequisites": [],
+        "unlocks": ["REFINERY"],
+        "position": (2, 0),
+    },
+    "irrigation": {
+        "name": "Irrigation",
+        "description": "Wells boost adjacent farm output",
+        "cost": {"STONE": 20, "IRON": 5},
+        "time": 25.0,
+        "prerequisites": ["agriculture"],
+        "unlocks": ["WELL"],
+        "position": (1, 1),
+    },
+    "fortification": {
+        "name": "Fortification",
+        "description": "Advanced wall construction techniques",
+        "cost": {"STONE": 30, "IRON": 10},
+        "time": 40.0,
+        "prerequisites": ["metallurgy"],
+        "unlocks": [],
+        "position": (2, 1),
+    },
+    "advanced_smelting": {
+        "name": "Advanced Smelting",
+        "description": "Improved refinery efficiency",
+        "cost": {"IRON": 15, "COPPER": 10},
+        "time": 45.0,
+        "prerequisites": ["metallurgy"],
+        "unlocks": [],
+        "position": (3, 1),
+    },
+    "exploration": {
+        "name": "Exploration",
+        "description": "Reveal more of the surrounding area",
+        "cost": {"WOOD": 25, "FIBER": 20},
+        "time": 30.0,
+        "prerequisites": ["advanced_logistics"],
+        "unlocks": [],
+        "position": (0, 1),
+    },
 }
 
 # ═══════════════════════════════════════════════════════════════════

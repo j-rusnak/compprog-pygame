@@ -13,12 +13,9 @@ import pygame
 
 from compprog_pygame.games.hex_colony.resources import Resource
 from compprog_pygame.games.hex_colony.ui import (
+    Fonts,
     TabContent,
-    UI_BG,
-    UI_BORDER,
     UI_MUTED,
-    UI_TEXT,
-    UI_ACCENT,
     RESOURCE_COLORS,
     RESOURCE_ICONS,
 )
@@ -26,16 +23,14 @@ from compprog_pygame.games.hex_colony.ui import (
 if TYPE_CHECKING:
     from compprog_pygame.games.hex_colony.world import World
 
-_HISTORY_LEN = 120   # number of samples (at ~1 sample/sec = 2 min of data)
-_SAMPLE_INTERVAL = 1.0  # seconds between samples
+_HISTORY_LEN = 120
+_SAMPLE_INTERVAL = 1.0
 
 
 class StatsTabContent(TabContent):
     """Shows resource history as sparkline graphs."""
 
     def __init__(self) -> None:
-        self._font = pygame.font.Font(None, 20)
-        self._small = pygame.font.Font(None, 18)
         self._history: dict[Resource, deque[float]] = {
             r: deque(maxlen=_HISTORY_LEN) for r in Resource
         }
@@ -69,12 +64,12 @@ class StatsTabContent(TabContent):
             color = RESOURCE_COLORS.get(res, (200, 200, 200))
             icon = RESOURCE_ICONS.get(res, "?")
             # Label
-            label = self._font.render(f"{icon} {res.name}", True, color)
+            label = Fonts.small().render(f"{icon} {res.name}", True, color)
             surface.blit(label, (rect.x + 6, y + 1))
 
             # Value
             val = world.inventory[res]
-            val_surf = self._small.render(f"{val:.0f}", True, UI_MUTED)
+            val_surf = Fonts.tiny().render(f"{val:.0f}", True, UI_MUTED)
             surface.blit(val_surf, (rect.x + 6, y + 13))
 
             # Sparkline

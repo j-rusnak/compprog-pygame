@@ -639,3 +639,45 @@ def draw_workshop(surface: pygame.Surface, sx: float, sy: float, r: int, z: floa
     gear_cy = isy - bh // 2
     pygame.draw.circle(surface, dark, (gear_cx, gear_cy), gear_r, iz)
     pygame.draw.circle(surface, light, (gear_cx, gear_cy), max(1, gear_r // 2))
+
+
+def draw_research_center(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Research Center — domed building with antenna/satellite dish."""
+    if _try_sprite(surface, "buildings/research_center", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    base_col = (70, 100, 150)
+    dark = _darken(base_col, 0.6)
+    light = _lighten(base_col, 1.3)
+
+    # Main dome body (ellipse)
+    bw = max(6, int(r * 1.0))
+    bh = max(4, int(r * 0.6))
+    body = pygame.Rect(isx - bw // 2, isy - bh, bw, bh)
+    pygame.draw.ellipse(surface, base_col, body)
+    pygame.draw.ellipse(surface, dark, body, iz)
+
+    # Base platform
+    plat_w = max(6, int(r * 1.1))
+    plat_h = max(2, int(r * 0.15))
+    plat = pygame.Rect(isx - plat_w // 2, isy - plat_h, plat_w, plat_h)
+    pygame.draw.rect(surface, dark, plat)
+
+    # Antenna / spire
+    ant_h = max(4, int(r * 0.7))
+    ant_x = isx
+    ant_bot = isy - bh
+    pygame.draw.line(surface, light, (ant_x, ant_bot), (ant_x, ant_bot - ant_h), max(1, iz))
+
+    # Dish (small arc at top of antenna)
+    dish_r = max(2, int(r * 0.2))
+    pygame.draw.arc(
+        surface, light,
+        (ant_x - dish_r, ant_bot - ant_h - dish_r // 2, dish_r * 2, dish_r),
+        0.3, 2.8, max(1, iz),
+    )
+
+    # Glowing dot at top
+    dot_r = max(1, int(r * 0.06))
+    pygame.draw.circle(surface, (100, 200, 255), (ant_x, ant_bot - ant_h), dot_r)

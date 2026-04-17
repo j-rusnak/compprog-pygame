@@ -28,6 +28,7 @@ class BuildingType(Enum):
     WELL = auto()           # boosts adjacent farm output
     WALL = auto()           # defensive stone wall — connects to adjacent walls
     WORKSHOP = auto()       # crafting workshop — produces buildings from resources
+    RESEARCH_CENTER = auto() # research center — opens the tech tree
 
 
 @dataclass(slots=True)
@@ -57,6 +58,7 @@ BUILDING_COSTS: dict[BuildingType, BuildingCost] = {
     BuildingType.WELL: BuildingCost(_costs_from_dict(params.BUILDING_COST_WELL)),
     BuildingType.WALL: BuildingCost(_costs_from_dict(params.BUILDING_COST_WALL)),
     BuildingType.WORKSHOP: BuildingCost(_costs_from_dict(params.BUILDING_COST_WORKSHOP)),
+    BuildingType.RESEARCH_CENTER: BuildingCost(_costs_from_dict(params.BUILDING_COST_RESEARCH_CENTER)),
 }
 
 # Max workers each building supports
@@ -75,6 +77,7 @@ BUILDING_MAX_WORKERS: dict[BuildingType, int] = {
     BuildingType.WELL: params.BUILDING_MAX_WORKERS_WELL,
     BuildingType.WALL: params.BUILDING_MAX_WORKERS_WALL,
     BuildingType.WORKSHOP: params.BUILDING_MAX_WORKERS_WORKSHOP,
+    BuildingType.RESEARCH_CENTER: params.BUILDING_MAX_WORKERS_RESEARCH_CENTER,
 }
 
 # Housing capacity per building type (0 = not a dwelling)
@@ -93,6 +96,7 @@ BUILDING_HOUSING: dict[BuildingType, int] = {
     BuildingType.WELL: params.BUILDING_HOUSING_WELL,
     BuildingType.WALL: params.BUILDING_HOUSING_WALL,
     BuildingType.WORKSHOP: params.BUILDING_HOUSING_WORKSHOP,
+    BuildingType.RESEARCH_CENTER: params.BUILDING_HOUSING_RESEARCH_CENTER,
 }
 
 # Storage capacity per building type.
@@ -114,6 +118,7 @@ BUILDING_STORAGE_CAPACITY: dict[BuildingType, int] = {
     BuildingType.WELL: params.BUILDING_STORAGE_WELL,
     BuildingType.WALL: params.BUILDING_STORAGE_WALL,
     BuildingType.WORKSHOP: params.BUILDING_STORAGE_WORKSHOP,
+    BuildingType.RESEARCH_CENTER: params.BUILDING_STORAGE_RESEARCH_CENTER,
 }
 
 

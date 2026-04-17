@@ -8,8 +8,12 @@ The UI is built from **panels** managed by a central ``UIManager``.
   Every panel implements ``draw()``, optionally ``handle_event()``, and
   ``layout()`` (called when the window resizes).
 
-* ``UIManager`` — owns all panels, dispatches events top-to-bottom
-  (front-to-back), calls ``layout()`` on resize, and draws back-to-front.
+* ``UIManager`` — owns all panels, dispatches events front-to-back,
+  calls ``layout()`` on resize, and draws back-to-front.
+
+Theme and primitives (fonts, colours, buttons, text clipping) live in
+``ui_theme``.  Import them from there (this module re-exports them for
+backward compatibility).
 
 Adding a new panel
 ~~~~~~~~~~~~~~~~~~
@@ -19,24 +23,11 @@ Adding a new panel
 4.  Optionally override ``handle_event(event) -> bool`` (return True to
     consume the event so panels beneath don't see it).
 5.  Register the panel with ``ui_manager.add_panel(my_panel)``.
-
-Adding a new tab to the bottom bar
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-1.  Subclass ``TabContent``.
-2.  Override ``draw_content(surface, rect, world)`` to render content
-    inside the tab's content area.
-3.  Optionally override ``handle_event(event, rect) -> bool``.
-4.  Add an entry in ``_create_default_tabs()`` inside ``BottomBar``, or
-    call ``bottom_bar.add_tab("Label", my_content_instance)`` at runtime.
-
-Colour constants shared across all panels live here so the look stays
-consistent.  Import them instead of defining duplicates.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import pygame
@@ -45,29 +36,45 @@ if TYPE_CHECKING:
     from compprog_pygame.games.hex_colony.world import World
 
 from compprog_pygame.games.hex_colony.resources import Resource
+from compprog_pygame.games.hex_colony.ui_theme import (  # re-export
+    Fonts,
+    UI_ACCENT,
+    UI_BAD,
+    UI_BG,
+    UI_BG_OPAQUE,
+    UI_BG_SOLID,
+    UI_BORDER,
+    UI_BORDER_LIGHT,
+    UI_BTN_ACTIVE,
+    UI_BTN_BG,
+    UI_BTN_DISABLED,
+    UI_BTN_HOVER,
+    UI_MUTED,
+    UI_OK,
+    UI_OVERLAY,
+    UI_TAB_ACTIVE,
+    UI_TAB_HOVER,
+    UI_TAB_INACTIVE,
+    UI_TEXT,
+    UI_WARN,
+    draw_button,
+    draw_panel_bg,
+    draw_progress_bar,
+    draw_titled_panel,
+    render_text_clipped,
+    wrap_text,
+)
 
-
-# ── Shared colour palette ────────────────────────────────────────
-
-UI_BG = (16, 24, 45, 220)
-UI_BG_OPAQUE = (16, 24, 45)
-UI_TEXT = (242, 244, 255)
-UI_MUTED = (140, 150, 175)
-UI_ACCENT = (200, 160, 60)
-UI_BORDER = (60, 70, 100)
-UI_TAB_ACTIVE = (35, 50, 85, 240)
-UI_TAB_HOVER = (30, 42, 72, 200)
-UI_TAB_INACTIVE = (16, 24, 45, 200)
 
 # ── Resource display constants (shared across all panels) ────────
 
 RESOURCE_ICONS: dict[Resource, str] = {
-    Resource.WOOD: "\u25b2",   # ▲
-    Resource.FIBER: "\u2022",  # •
-    Resource.STONE: "\u25a0",  # ■
-    Resource.FOOD: "\u2665",   # ♥
-    Resource.IRON: "\u25c6",   # ◆
-    Resource.COPPER: "\u25c8", # ◈
+    Resource.WOOD: "\u2663",
+    Resource.FIBER: "\u2740",
+    Resource.STONE: "\u25a3",
+    Resource.FOOD: "\u2665",
+    Resource.IRON: "\u25c6",
+    Resource.COPPER: "\u25c7",
 }
 
 RESOURCE_COLORS: dict[Resource, tuple[int, int, int]] = {
@@ -83,11 +90,7 @@ RESOURCE_COLORS: dict[Resource, tuple[int, int, int]] = {
 # ── Panel base class ─────────────────────────────────────────────
 
 class Panel(ABC):
-    """Abstract UI panel drawn in screen space.
-
-    Subclasses must set ``self.rect`` in ``layout()`` and render into
-    the given surface in ``draw()``.
-    """
+    """Abstract UI panel drawn in screen space."""
 
     def __init__(self) -> None:
         self.rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
@@ -102,18 +105,14 @@ class Panel(ABC):
         """Render the panel onto *surface*."""
 
     def handle_event(self, event: pygame.event.Event) -> bool:
-        """Process an input event.  Return True to consume it."""
+        """Process an input event. Return True to consume it."""
         return False
 
 
 # ── UIManager ────────────────────────────────────────────────────
 
 class UIManager:
-    """Owns all UI panels and orchestrates layout, drawing, and events.
-
-    Panels are drawn back-to-front (index 0 first) and receive events
-    front-to-back (last panel first) so overlapping panels work correctly.
-    """
+    """Owns all UI panels and orchestrates layout, drawing, and events."""
 
     def __init__(self) -> None:
         self._panels: list[Panel] = []
@@ -128,7 +127,6 @@ class UIManager:
             panel.layout(screen_w, screen_h)
 
     def handle_event(self, event: pygame.event.Event) -> bool:
-        """Dispatch *event* front-to-back; stop at the first consumer."""
         for panel in reversed(self._panels):
             if not panel.visible:
                 continue
@@ -145,7 +143,6 @@ class UIManager:
                 panel.draw(surface, world)
 
     def hit_test(self, pos: tuple[int, int]) -> bool:
-        """Return True if *pos* is inside any visible panel."""
         for panel in reversed(self._panels):
             if panel.visible and panel.rect.collidepoint(pos):
                 return True
@@ -169,23 +166,3 @@ class TabContent(ABC):
         """Handle event within *rect*. Return True to consume."""
         return False
 
-
-# ── Helpers ──────────────────────────────────────────────────────
-
-def draw_panel_bg(
-    surface: pygame.Surface,
-    rect: pygame.Rect,
-    *,
-    accent_edge: str = "top",
-) -> None:
-    """Draw a semi-transparent panel background with optional accent line."""
-    bg = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
-    bg.fill(UI_BG)
-    surface.blit(bg, rect.topleft)
-    pygame.draw.rect(surface, UI_BORDER, rect, width=2, border_radius=4)
-    if accent_edge == "top":
-        pygame.draw.line(surface, UI_ACCENT, rect.topleft, rect.topright, 2)
-    elif accent_edge == "bottom":
-        pygame.draw.line(
-            surface, UI_ACCENT, rect.bottomleft, rect.bottomright, 2,
-        )

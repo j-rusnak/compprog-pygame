@@ -22,11 +22,12 @@ from compprog_pygame.games.hex_colony.ui_resource_bar import ResourceBar
 from compprog_pygame.games.hex_colony.ui_tile_info import TileInfoPanel
 from compprog_pygame.games.hex_colony.world import World
 from compprog_pygame.games.hex_colony.notifications import NotificationManager
-from compprog_pygame.games.hex_colony.tech_tree import TechTree, TECH_REQUIREMENTS, TECH_DATA
+from compprog_pygame.games.hex_colony.tech_tree import TechTree, TierTracker, TECH_REQUIREMENTS, TECH_NODES
 from compprog_pygame.games.hex_colony.blueprints import BlueprintManager
 from compprog_pygame.games.hex_colony.supply_chain import draw_supply_lines
 from compprog_pygame.games.hex_colony.ui_minimap import MinimapPanel
 from compprog_pygame.games.hex_colony.ui_stats import StatsTabContent
+from compprog_pygame.games.hex_colony.ui_tech_tree import TechTreeOverlay
 from compprog_pygame.games.hex_colony import params
 
 # Build-mode palette order
@@ -43,6 +44,7 @@ BUILDABLE = [
     BuildingType.FARM,
     BuildingType.WELL,
     BuildingType.WORKSHOP,
+    BuildingType.RESEARCH_CENTER,
 ]
 
 
@@ -65,8 +67,9 @@ class Game:
         self._sim_speed: float = 1.0  # 1x, 2x, or 3x
         self._drag_button: int = 0  # which mouse button started camera drag
 
-        # Tech tree & notifications
+        # Tech tree, tier tracker & notifications
         self.tech_tree = TechTree()
+        self.tier_tracker = TierTracker()
         self.notifications = NotificationManager()
         self.blueprints = BlueprintManager()
 
@@ -80,12 +83,14 @@ class Game:
         self._game_over_overlay = GameOverOverlay()
         self._help_overlay = HelpOverlay()
         self._minimap = MinimapPanel()
+        self._tech_tree_overlay = TechTreeOverlay()
         self.ui.add_panel(self._resource_bar)
         self.ui.add_panel(self._bottom_bar)
         self.ui.add_panel(self._building_info)
         self.ui.add_panel(self._tile_info)
         self.ui.add_panel(self._minimap)
         self.ui.add_panel(self._help_overlay)
+        self.ui.add_panel(self._tech_tree_overlay)
         self.ui.add_panel(self._pause_overlay)
         self.ui.add_panel(self._game_over_overlay)
 
@@ -109,6 +114,12 @@ class Game:
         # Wire sandbox population buttons
         self._resource_bar.set_on_pop_change(self._on_pop_change)
 
+        # Wire building info -> tech tree overlay
+        self._building_info.on_open_tech_tree = self._on_open_tech_tree
+        self._building_info.tier_tracker = self.tier_tracker
+        self._tech_tree_overlay.on_close = self._on_close_tech_tree
+        self._tech_tree_overlay.tech_tree = self.tech_tree
+
         # Wire game-over overlay callbacks
         self._game_over_overlay.on_return_to_menu = self._on_pause_return_to_menu
         self._game_over_overlay.on_quit = self._on_pause_quit
@@ -128,15 +139,36 @@ class Game:
             for event in pygame.event.get():
                 self._handle_event(event)
 
-            if not self._pause_overlay.visible and not self.world.game_over:
+            if not self._pause_overlay.visible and not self._tech_tree_overlay.visible and not self.world.game_over:
                 self._update_keyboard_pan(dt)
                 self._update_alt_overlay()
                 self._update_ghost_building()
                 self.world.update(dt * self._sim_speed)
+                # Research progress
+                completed = self.tech_tree.update(dt * self._sim_speed)
+                if completed:
+                    from compprog_pygame.games.hex_colony.tech_tree import TECH_NODES
+                    node = TECH_NODES[completed]
+                    self.notifications.push(
+                        f"Research complete: {node.name}", (100, 255, 100),
+                    )
+                # Expose research count for tier checks
+                self.world._tech_research_count = self.tech_tree.researched_count
+                # Tier advancement
+                if self.tier_tracker.try_advance(self.world):
+                    from compprog_pygame.games.hex_colony.tech_tree import TIERS
+                    tier = TIERS[self.tier_tracker.current_tier]
+                    self.notifications.push(
+                        f"Tier {self.tier_tracker.current_tier}: {tier.name} reached!",
+                        (255, 215, 0),
+                    )
                 self.notifications.update(dt)
             self.camera.update(dt)
             self._resource_bar.delete_mode = self.delete_mode
             self._resource_bar.sim_speed = self._sim_speed
+            self._resource_bar.tier_tracker = self.tier_tracker
+            self._resource_bar.tech_tree = self.tech_tree
+            self._resource_bar.world = self.world
             self.renderer.draw(screen, self.world, self.camera, dt=dt)
             # Supply chain lines for selected building
             draw_supply_lines(
@@ -330,10 +362,19 @@ class Game:
         if not self.tech_tree.is_building_unlocked(self.build_mode):
             req = TECH_REQUIREMENTS.get(self.build_mode)
             if req is not None:
-                info = TECH_DATA[req]
+                node = TECH_NODES[req]
                 self.notifications.push(
-                    f"Requires {info.name} research", (255, 150, 80),
+                    f"Requires {node.name} research", (255, 150, 80),
                 )
+            return
+        # Tier gate
+        if not self.tier_tracker.is_building_unlocked(self.build_mode):
+            from compprog_pygame.games.hex_colony.tech_tree import TIER_BUILDING_REQUIREMENTS, TIERS
+            req_tier = TIER_BUILDING_REQUIREMENTS.get(self.build_mode, 0)
+            tier_info = TIERS[req_tier]
+            self.notifications.push(
+                f"Requires Tier {req_tier}: {tier_info.name}", (255, 150, 80),
+            )
             return
         # Check existing building
         existing = tile.building
@@ -428,6 +469,15 @@ class Game:
     def _on_pause_resume(self) -> None:
         """Callback from pause overlay Resume button."""
 
+    def _on_open_tech_tree(self) -> None:
+        """Open the tech tree overlay and pause the game."""
+        self._tech_tree_overlay.visible = True
+        self._tech_tree_overlay.tech_tree = self.tech_tree
+
+    def _on_close_tech_tree(self) -> None:
+        """Close the tech tree overlay (unpause is automatic — overlay consumes events)."""
+        pass
+
     def _on_pause_return_to_menu(self) -> None:
         """Callback from pause overlay Return to Main Menu button."""
         self.running = False
@@ -500,6 +550,9 @@ class Game:
                 return False
         # Tech tree gate
         if not self.tech_tree.is_building_unlocked(self.build_mode):
+            return False
+        # Tier gate
+        if not self.tier_tracker.is_building_unlocked(self.build_mode):
             return False
         # Building inventory check (skip in sandbox)
         if not self.sandbox:
