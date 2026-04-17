@@ -81,6 +81,8 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_well,
     draw_wall,
     draw_workshop,
+    draw_forge,
+    draw_assembler,
     draw_research_center,
 )
 from compprog_pygame.games.hex_colony.render_terrain import (
@@ -210,6 +212,7 @@ class Renderer:
         if self._overlays is None:
             self._overlays, self._mountain_depths = build_overlays(
                 world.grid, world.settings.hex_size,
+                seed=abs(hash(getattr(world, "seed", "default"))) & 0xFFFFFFFF,
             )
             self._static_overlays = [
                 item for item in self._overlays
@@ -857,6 +860,10 @@ class Renderer:
                 draw_storage(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.REFINERY:
                 draw_refinery(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.FORGE:
+                draw_forge(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.ASSEMBLER:
+                draw_assembler(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.FARM:
                 draw_farm(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.WELL:
@@ -1101,6 +1108,10 @@ class Renderer:
                 draw_path(bld_surf, cx_local, cy_local, r, zoom, [], coord.q, coord.r)
             elif btype == BuildingType.WORKSHOP:
                 draw_workshop(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.FORGE:
+                draw_forge(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.ASSEMBLER:
+                draw_assembler(bld_surf, cx_local, cy_local, r, zoom)
             elif btype == BuildingType.RESEARCH_CENTER:
                 draw_research_center(bld_surf, cx_local, cy_local, r, zoom)
 

@@ -65,6 +65,8 @@ BUILDING_COST_FARM: dict[str, int] = {"WOOD": 12, "FIBER": 8, "STONE": 4}
 BUILDING_COST_WELL: dict[str, int] = {"STONE": 10, "WOOD": 6}
 BUILDING_COST_WALL: dict[str, int] = {"STONE": 8, "WOOD": 4}
 BUILDING_COST_WORKSHOP: dict[str, int] = {}
+BUILDING_COST_FORGE: dict[str, int] = {"STONE": 20, "WOOD": 10}
+BUILDING_COST_ASSEMBLER: dict[str, int] = {"IRON_BAR": 8, "COPPER_BAR": 4, "PLANKS": 6, "BRICKS": 6}
 BUILDING_COST_RESEARCH_CENTER: dict[str, int] = {}
 
 # ═══════════════════════════════════════════════════════════════════
@@ -86,6 +88,8 @@ BUILDING_MAX_WORKERS_FARM: int = 3
 BUILDING_MAX_WORKERS_WELL: int = 0
 BUILDING_MAX_WORKERS_WALL: int = 0
 BUILDING_MAX_WORKERS_WORKSHOP: int = 2
+BUILDING_MAX_WORKERS_FORGE: int = 2
+BUILDING_MAX_WORKERS_ASSEMBLER: int = 2
 BUILDING_MAX_WORKERS_RESEARCH_CENTER: int = 0
 
 # Housing capacity (number of people that can live here; 0 = not a dwelling)
@@ -103,6 +107,8 @@ BUILDING_HOUSING_FARM: int = 0
 BUILDING_HOUSING_WELL: int = 0
 BUILDING_HOUSING_WALL: int = 0
 BUILDING_HOUSING_WORKSHOP: int = 0
+BUILDING_HOUSING_FORGE: int = 0
+BUILDING_HOUSING_ASSEMBLER: int = 0
 BUILDING_HOUSING_RESEARCH_CENTER: int = 0
 
 # Storage capacity (max total resources stored; 0 = none)
@@ -121,6 +127,8 @@ BUILDING_STORAGE_FARM: int = 25
 BUILDING_STORAGE_WELL: int = 0
 BUILDING_STORAGE_WALL: int = 0
 BUILDING_STORAGE_WORKSHOP: int = 0
+BUILDING_STORAGE_FORGE: int = 0
+BUILDING_STORAGE_ASSEMBLER: int = 0
 BUILDING_STORAGE_RESEARCH_CENTER: int = 0
 
 # ═══════════════════════════════════════════════════════════════════
@@ -160,6 +168,7 @@ START_BUILDINGS: dict[str, int] = {
     "WALL": 10,
     "BRIDGE": 4,
     "WORKSHOP": 3,
+    "FORGE": 1,
     "HABITAT": 3,
     "WOODCUTTER": 2,
     "QUARRY": 2,
@@ -190,7 +199,7 @@ TIER_DATA: list[dict] = [
         "description": "Establish basic survival operations",
         "unlocks_buildings": [
             "PATH", "WALL", "WOODCUTTER", "QUARRY", "GATHERER",
-            "STORAGE", "HABITAT", "WORKSHOP", "RESEARCH_CENTER",
+            "STORAGE", "HABITAT", "WORKSHOP", "FORGE", "RESEARCH_CENTER",
         ],
         "requirements": {},  # no requirements — starting tier
     },
@@ -208,7 +217,7 @@ TIER_DATA: list[dict] = [
     {
         "name": "Settlement",
         "description": "Begin processing raw materials",
-        "unlocks_buildings": ["REFINERY", "WELL"],
+        "unlocks_buildings": ["REFINERY", "WELL", "ASSEMBLER"],
         "requirements": {
             "population": 15,
             "resource_gathered": {"FOOD": 100},
@@ -310,11 +319,26 @@ TECH_TREE_DATA: dict[str, dict] = {
 #  RUINS
 # ═══════════════════════════════════════════════════════════════════
 
-# Number of ruin sites scattered across the map
-RUINS_COUNT_MIN: int = 2
-RUINS_COUNT_MAX: int = 5
-# Min distance from camp (in hex tiles) for ruins
+# Ruins spawn as small clusters of weathered structures.  The map
+# generates 1-2 clusters on small maps and up to 3 on large maps.
+# Each cluster contains 5-8 ruin pieces placed on nearby tiles.
+RUINS_CLUSTERS_MIN: int = 1
+RUINS_CLUSTERS_MAX: int = 2
+# Map-radius threshold above which an extra cluster may appear.
+RUINS_EXTRA_CLUSTER_RADIUS: int = 80
+# Pieces per cluster.
+RUINS_PIECES_MIN: int = 5
+RUINS_PIECES_MAX: int = 8
+# Minimum hex distance from camp for any cluster centre.
 RUINS_MIN_DISTANCE: int = 8
+# Minimum hex distance between two cluster centres.
+RUINS_CLUSTER_SEPARATION: int = 10
+# Radius (in hexes) around the cluster centre in which pieces are placed.
+RUINS_CLUSTER_RADIUS: int = 2
+
+# Legacy aliases (kept so older code paths still import cleanly).
+RUINS_COUNT_MIN: int = RUINS_CLUSTERS_MIN * RUINS_PIECES_MIN
+RUINS_COUNT_MAX: int = RUINS_CLUSTERS_MAX * RUINS_PIECES_MAX
 
 # ═══════════════════════════════════════════════════════════════════
 #  RESOURCE AMOUNTS PER TILE (min, max) — set during terrain generation

@@ -22,6 +22,7 @@ class World:
 
     def __init__(self, settings: HexColonySettings) -> None:
         self.settings = settings
+        self.seed: str = "default"
         self.grid = HexGrid()
         self.buildings = BuildingManager()
         self.population = PopulationManager()
@@ -40,6 +41,7 @@ class World:
     @classmethod
     def generate(cls, settings: HexColonySettings, seed: str = "default") -> World:
         world = cls(settings)
+        world.seed = seed
         world.grid = generate_terrain(seed, settings)
         world._place_starting_camp()
         world._init_resources()
@@ -287,31 +289,76 @@ class World:
                 elif tile.terrain == Terrain.COPPER_VEIN:
                     self.inventory.add(Resource.COPPER, amount)
 
-    # ── Workshop crafting ────────────────────────────────────────
+    # ── Crafting stations (Workshop / Forge / Refinery) ──────────
 
     def _update_workshops(self, dt: float) -> None:
-        """Advance workshop crafting; finished items go to building inventory."""
+        """Advance crafting at every Workshop, Forge, and Refinery.
+
+        A station's ``recipe`` may be either:
+          * a ``BuildingType`` — crafts a placeable building (Workshop only).
+          * a ``Resource``     — crafts an intermediate material using
+            :data:`MATERIAL_RECIPES`.  The output is added to the world
+            inventory; inputs are consumed from it.
+        """
         from compprog_pygame.games.hex_colony.buildings import BUILDING_COSTS
+        from compprog_pygame.games.hex_colony.resources import (
+            MATERIAL_RECIPES, Resource,
+        )
 
-        for ws in self.buildings.by_type(BuildingType.WORKSHOP):
-            if ws.recipe is None or ws.workers <= 0:
-                continue
+        station_types = (
+            BuildingType.WORKSHOP,
+            BuildingType.FORGE,
+            BuildingType.REFINERY,
+            BuildingType.ASSEMBLER,
+        )
+        for stype in station_types:
+            for station in self.buildings.by_type(stype):
+                if station.recipe is None or station.workers <= 0:
+                    continue
 
-            # Check if resources are available for the recipe
-            cost = BUILDING_COSTS[ws.recipe]
-            can_afford = all(
-                self.inventory[res] >= amount
-                for res, amount in cost.costs.items()
-            )
-            if not can_afford:
-                continue
+                if isinstance(station.recipe, BuildingType):
+                    # Building recipe — Workshop only.
+                    if stype is not BuildingType.WORKSHOP:
+                        station.recipe = None
+                        station.craft_progress = 0.0
+                        continue
+                    self._tick_building_recipe(station, dt, BUILDING_COSTS)
+                elif isinstance(station.recipe, Resource):
+                    recipe = MATERIAL_RECIPES.get(station.recipe)
+                    if recipe is None or recipe.station != stype.name:
+                        # Stale recipe — clear it.
+                        station.recipe = None
+                        station.craft_progress = 0.0
+                        continue
+                    self._tick_material_recipe(station, recipe, dt)
 
-            # Advance crafting progress (more workers = faster)
-            ws.craft_progress += dt * ws.workers
-            if ws.craft_progress >= params.WORKSHOP_CRAFT_TIME:
-                # Consume resources
-                for res, amount in cost.costs.items():
-                    self.inventory.spend(res, amount)
-                # Produce the building into inventory
-                self.building_inventory.add(ws.recipe)
-                ws.craft_progress = 0.0
+    def _tick_building_recipe(
+        self, station, dt: float, building_costs,
+    ) -> None:
+        cost = building_costs[station.recipe]
+        can_afford = all(
+            self.inventory[res] >= amount
+            for res, amount in cost.costs.items()
+        )
+        if not can_afford:
+            return
+        station.craft_progress += dt * station.workers
+        if station.craft_progress >= params.WORKSHOP_CRAFT_TIME:
+            for res, amount in cost.costs.items():
+                self.inventory.spend(res, amount)
+            self.building_inventory.add(station.recipe)
+            station.craft_progress = 0.0
+
+    def _tick_material_recipe(self, station, recipe, dt: float) -> None:
+        can_afford = all(
+            self.inventory[res] >= amount
+            for res, amount in recipe.inputs.items()
+        )
+        if not can_afford:
+            return
+        station.craft_progress += dt * station.workers
+        if station.craft_progress >= recipe.time:
+            for res, amount in recipe.inputs.items():
+                self.inventory.spend(res, amount)
+            self.inventory.add(recipe.output, recipe.output_amount)
+            station.craft_progress = 0.0

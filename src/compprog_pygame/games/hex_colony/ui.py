@@ -75,6 +75,18 @@ RESOURCE_ICONS: dict[Resource, str] = {
     Resource.FOOD: "\u2665",
     Resource.IRON: "\u25c6",
     Resource.COPPER: "\u25c7",
+    Resource.PLANKS: "\u25ad",
+    Resource.IRON_BAR: "\u25ac",
+    Resource.COPPER_BAR: "\u25ac",
+    Resource.BRICKS: "\u25a7",
+    Resource.COPPER_WIRE: "\u03b6",
+    Resource.ROPE: "\u2683",
+    Resource.CHARCOAL: "\u25ac",
+    Resource.GLASS: "\u25a1",
+    Resource.STEEL_BAR: "\u25ac",
+    Resource.GEARS: "\u2699",
+    Resource.SILICON: "\u2b22",
+    Resource.CIRCUIT: "\u25a6",
 }
 
 RESOURCE_COLORS: dict[Resource, tuple[int, int, int]] = {
@@ -84,6 +96,18 @@ RESOURCE_COLORS: dict[Resource, tuple[int, int, int]] = {
     Resource.FOOD: (220, 100, 80),
     Resource.IRON: (180, 110, 75),
     Resource.COPPER: (80, 180, 120),
+    Resource.PLANKS: (210, 170, 110),
+    Resource.IRON_BAR: (170, 180, 200),
+    Resource.COPPER_BAR: (225, 150, 90),
+    Resource.BRICKS: (200, 120, 90),
+    Resource.COPPER_WIRE: (240, 180, 110),
+    Resource.ROPE: (200, 170, 120),
+    Resource.CHARCOAL: (90, 85, 85),
+    Resource.GLASS: (180, 220, 235),
+    Resource.STEEL_BAR: (190, 200, 220),
+    Resource.GEARS: (170, 175, 195),
+    Resource.SILICON: (150, 160, 200),
+    Resource.CIRCUIT: (120, 210, 140),
 }
 
 

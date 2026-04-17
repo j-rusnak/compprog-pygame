@@ -22,6 +22,13 @@ from compprog_pygame.games.hex_colony.buildings import (
     BuildingType,
 )
 from compprog_pygame.games.hex_colony import params
+from compprog_pygame.games.hex_colony.resources import (
+    MATERIAL_RECIPES,
+    MaterialRecipe,
+    Resource,
+    recipes_for_station,
+)
+from compprog_pygame.games.hex_colony.resource_icons import get_resource_icon
 from compprog_pygame.games.hex_colony.ui import (
     Fonts,
     Panel,
@@ -67,6 +74,8 @@ _BUILDING_LABEL: dict[BuildingType, str] = {
     BuildingType.FARM: "Farm",
     BuildingType.WELL: "Well",
     BuildingType.WORKSHOP: "Workshop",
+    BuildingType.FORGE: "Forge",
+    BuildingType.ASSEMBLER: "Assembler",
     BuildingType.RESEARCH_CENTER: "Research Center",
 }
 
@@ -98,6 +107,15 @@ class _Line:
 
 
 @dataclass
+class _IconLine:
+    """A line of text preceded by a 16px resource icon."""
+    resource: Resource
+    text: str
+    color: tuple[int, int, int]
+    height: int = _SMALL_LINE_H
+
+
+@dataclass
 class _Spacer:
     height: int = _SPACER_H
 
@@ -110,11 +128,18 @@ class _RecipeBtn:
 
 
 @dataclass
+class _MaterialRecipeBtn:
+    recipe: MaterialRecipe
+    selected: bool
+    height: int = _LINE_H + 4
+
+
+@dataclass
 class _TechTreeBtn:
     height: int = _LINE_H + 10
 
 
-_Item = _Line | _Spacer | _RecipeBtn | _TechTreeBtn
+_Item = _Line | _IconLine | _Spacer | _RecipeBtn | _MaterialRecipeBtn | _TechTreeBtn
 
 
 class BuildingInfoPanel(Panel):
@@ -126,6 +151,7 @@ class BuildingInfoPanel(Panel):
         self._screen_w = 0
         self._screen_h = 0
         self._recipe_rects: list[tuple[pygame.Rect, BuildingType]] = []
+        self._mat_recipe_rects: list[tuple[pygame.Rect, MaterialRecipe]] = []
         self._tech_tree_btn: pygame.Rect | None = None
         self.on_open_tech_tree: typing.Callable[[], None] | None = None
         self.tier_tracker: typing.Any = None
@@ -145,6 +171,7 @@ class BuildingInfoPanel(Panel):
     def draw(self, surface: pygame.Surface, world: World) -> None:
         if self.building is None:
             self._recipe_rects = []
+            self._mat_recipe_rects = []
             self._tech_tree_btn = None
             return
 
@@ -178,6 +205,7 @@ class BuildingInfoPanel(Panel):
 
         cy = y + _PADDING - self._scroll
         self._recipe_rects = []
+        self._mat_recipe_rects = []
         self._tech_tree_btn = None
 
         for item in items:
@@ -197,8 +225,23 @@ class BuildingInfoPanel(Panel):
                     item.font, item.text, item.color, max_w,
                 )
                 surface.blit(surf, (x + _PADDING, cy))
+            elif isinstance(item, _IconLine):
+                icon_size = 16
+                icon_surf = get_resource_icon(item.resource, icon_size)
+                icon_x = x + _PADDING + 4
+                icon_y = cy + (item.height - icon_size) // 2
+                surface.blit(icon_surf, (icon_x, icon_y))
+                max_w = _PANEL_W - _PADDING * 2 - icon_size - 8
+                if max_scroll > 0:
+                    max_w -= _SCROLLBAR_W + 4
+                surf = render_text_clipped(
+                    Fonts.small(), item.text, item.color, max_w,
+                )
+                surface.blit(surf, (icon_x + icon_size + 4, cy + 2))
             elif isinstance(item, _RecipeBtn):
-                self._draw_recipe_btn(surface, x, cy, item)
+                self._draw_recipe_btn(surface, x, cy, item, world)
+            elif isinstance(item, _MaterialRecipeBtn):
+                self._draw_material_recipe_btn(surface, x, cy, item, world)
             elif isinstance(item, _TechTreeBtn):
                 self._draw_tech_btn(surface, x, cy)
             cy += item.height
@@ -211,6 +254,7 @@ class BuildingInfoPanel(Panel):
 
     def _draw_recipe_btn(
         self, surface: pygame.Surface, x: int, cy: int, item: _RecipeBtn,
+        world: World,
     ) -> None:
         btn_rect = pygame.Rect(
             x + _PADDING, cy, _PANEL_W - _PADDING * 2, _LINE_H,
@@ -225,6 +269,33 @@ class BuildingInfoPanel(Panel):
         )
         surface.blit(surf, (btn_rect.x + 6, btn_rect.y + 3))
         self._recipe_rects.append((btn_rect, item.craft_type))
+
+    def _draw_material_recipe_btn(
+        self, surface: pygame.Surface, x: int, cy: int,
+        item: _MaterialRecipeBtn, world: World,
+    ) -> None:
+        btn_rect = pygame.Rect(
+            x + _PADDING, cy, _PANEL_W - _PADDING * 2, _LINE_H,
+        )
+        bg = UI_ACCENT if item.selected else UI_BG
+        pygame.draw.rect(surface, bg, btn_rect, border_radius=3)
+        pygame.draw.rect(surface, UI_BORDER, btn_rect, width=1, border_radius=3)
+
+        # Output icon + name on the left.
+        icon_size = 16
+        out_icon = get_resource_icon(item.recipe.output, icon_size)
+        icon_x = btn_rect.x + 4
+        icon_y = btn_rect.centery - icon_size // 2
+        surface.blit(out_icon, (icon_x, icon_y))
+        label = (
+            f"{item.recipe.output.name.replace('_', ' ').title()}"
+            f" \u00d7{item.recipe.output_amount}"
+        )
+        surf = render_text_clipped(
+            Fonts.small(), label, UI_TEXT, btn_rect.w - icon_size - 12,
+        )
+        surface.blit(surf, (icon_x + icon_size + 4, btn_rect.y + 3))
+        self._mat_recipe_rects.append((btn_rect, item.recipe))
 
     def _draw_tech_btn(self, surface: pygame.Surface, x: int, cy: int) -> None:
         btn_rect = pygame.Rect(
@@ -305,32 +376,72 @@ class BuildingInfoPanel(Panel):
             line(f"Storage: {int(b.stored_total)}/{b.storage_capacity}")
             for res, amount in b.storage.items():
                 if amount > 0:
-                    icon = RESOURCE_ICONS[res]
-                    line(f"  {icon} {res.name.capitalize()}: {int(amount)}",
-                         RESOURCE_COLORS[res], Fonts.small())
+                    items.append(_IconLine(
+                        res,
+                        f"{res.name.replace('_', ' ').capitalize()}: {int(amount)}",
+                        RESOURCE_COLORS[res],
+                    ))
 
-        # Workshop recipes
-        if b.type == BuildingType.WORKSHOP:
+        # Crafting stations — Workshop / Forge / Refinery / Assembler.
+        if b.type in (
+            BuildingType.WORKSHOP,
+            BuildingType.FORGE,
+            BuildingType.REFINERY,
+            BuildingType.ASSEMBLER,
+        ):
             items.append(_Spacer())
+
+            # Active recipe + progress + cost breakdown.
             if b.recipe is not None:
-                recipe_name = b.recipe.name.replace("_", " ").title()
-                line(f"Crafting: {recipe_name}", UI_ACCENT)
-                pct = int(b.craft_progress / params.WORKSHOP_CRAFT_TIME * 100)
-                line(f"Progress: {pct}%")
-                cost = BUILDING_COSTS[b.recipe]
-                for res, amount in cost.costs.items():
-                    icon = RESOURCE_ICONS[res]
-                    has = world.inventory[res] >= amount
-                    col = RESOURCE_COLORS[res] if has else UI_BAD
-                    line(f"  {icon} {amount}", col, Fonts.small())
+                if isinstance(b.recipe, BuildingType):
+                    recipe_name = b.recipe.name.replace("_", " ").title()
+                    line(f"Crafting: {recipe_name}", UI_ACCENT)
+                    pct = int(
+                        b.craft_progress / params.WORKSHOP_CRAFT_TIME * 100
+                    )
+                    line(f"Progress: {pct}%")
+                    cost = BUILDING_COSTS[b.recipe]
+                    for res, amount in cost.costs.items():
+                        has = world.inventory[res] >= amount
+                        col = RESOURCE_COLORS[res] if has else UI_BAD
+                        items.append(_IconLine(res, f"{amount}", col))
+                else:
+                    # Material recipe — b.recipe is a Resource.
+                    mrec = MATERIAL_RECIPES.get(b.recipe)
+                    if mrec is not None:
+                        name = b.recipe.name.replace("_", " ").title()
+                        line(f"Crafting: {name} \u00d7{mrec.output_amount}",
+                             UI_ACCENT)
+                        pct = int(b.craft_progress / mrec.time * 100)
+                        line(f"Progress: {pct}%")
+                        for res, amount in mrec.inputs.items():
+                            has = world.inventory[res] >= amount
+                            col = RESOURCE_COLORS[res] if has else UI_BAD
+                            items.append(_IconLine(res, f"{amount}", col))
             else:
                 line("Select recipe:", UI_MUTED)
+
             items.append(_Spacer(4))
-            for craft_type in WORKSHOP_CRAFTABLE:
-                items.append(_RecipeBtn(
-                    craft_type, selected=(b.recipe == craft_type),
-                ))
-                items.append(_Spacer(2))
+
+            # Building recipes (Workshop only).
+            if b.type == BuildingType.WORKSHOP:
+                for craft_type in WORKSHOP_CRAFTABLE:
+                    items.append(_RecipeBtn(
+                        craft_type, selected=(b.recipe == craft_type),
+                    ))
+                    items.append(_Spacer(2))
+
+            # Material recipes for this station.
+            station_recipes = recipes_for_station(b.type.name)
+            if station_recipes:
+                if b.type == BuildingType.WORKSHOP:
+                    items.append(_Spacer(2))
+                    line("Materials:", UI_MUTED, Fonts.small())
+                for mrec in station_recipes:
+                    items.append(_MaterialRecipeBtn(
+                        mrec, selected=(b.recipe == mrec.output),
+                    ))
+                    items.append(_Spacer(2))
 
         # Research Center button
         if b.type == BuildingType.RESEARCH_CENTER:
@@ -403,7 +514,12 @@ class BuildingInfoPanel(Panel):
                 if self.on_open_tech_tree is not None:
                     self.on_open_tech_tree()
                 return True
-            if self.building.type == BuildingType.WORKSHOP:
+            if self.building.type in (
+                BuildingType.WORKSHOP,
+                BuildingType.FORGE,
+                BuildingType.REFINERY,
+                BuildingType.ASSEMBLER,
+            ):
                 for btn_rect, craft_type in self._recipe_rects:
                     if btn_rect.collidepoint(event.pos):
                         if self.building.recipe == craft_type:
@@ -411,6 +527,15 @@ class BuildingInfoPanel(Panel):
                             self.building.craft_progress = 0.0
                         else:
                             self.building.recipe = craft_type
+                            self.building.craft_progress = 0.0
+                        return True
+                for btn_rect, mrec in self._mat_recipe_rects:
+                    if btn_rect.collidepoint(event.pos):
+                        if self.building.recipe == mrec.output:
+                            self.building.recipe = None
+                            self.building.craft_progress = 0.0
+                        else:
+                            self.building.recipe = mrec.output
                             self.building.craft_progress = 0.0
                         return True
         return True  # consume any click inside the panel

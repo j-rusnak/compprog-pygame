@@ -155,7 +155,7 @@ def _tile_seed(coord: HexCoord) -> int:
 # ── Public API ───────────────────────────────────────────────────
 
 def build_overlays(
-    grid: HexGrid, hex_size: int,
+    grid: HexGrid, hex_size: int, seed: int = 0,
 ) -> tuple[list[OverlayItem], dict[HexCoord, tuple[int, int]]]:
     """Analyse terrain clusters; return overlay items and mountain depth map."""
     clusters = _find_terrain_clusters(grid)
@@ -193,7 +193,7 @@ def build_overlays(
     sorted_items = [item for _, item in items]
 
     # ── Ruins: rare remnants of old human civilization ─────────
-    sorted_items.extend(_gen_ruins(grid, hex_size))
+    sorted_items.extend(_gen_ruins(grid, hex_size, seed))
 
     return sorted_items, mountain_depths
 
@@ -466,34 +466,101 @@ _RUIN_COLORS = [
     ((100, 90, 75), (145, 135, 115)),    # weathered brick
 ]
 
-def _gen_ruins(grid: HexGrid, hex_size: int) -> list[OverlayRuin]:
-    """Scatter rare old human ruins across non-water, non-mountain tiles."""
+def _gen_ruins(
+    grid: HexGrid, hex_size: int, seed: int = 0,
+) -> list[OverlayRuin]:
+    """Scatter 1-3 ruin *clusters* of 5-8 pieces each across the map.
+
+    Cluster count scales with map size: a larger radius increases the
+    upper bound.  Cluster pieces are placed on adjacent passable tiles
+    via a small BFS so ruins feel like a single site rather than an
+    even scatter.
+    """
     from compprog_pygame.games.hex_colony import params
     from compprog_pygame.games.hex_colony.procgen import UNBUILDABLE
 
     origin = HexCoord(0, 0)
-    candidates = [
+    # Map radius as a proxy for scale.
+    map_radius = max(
+        (abs(t.coord.q) + abs(t.coord.r) + abs(t.coord.q + t.coord.r)) // 2
+        for t in grid.tiles()
+    )
+
+    # Tiles eligible to *host* ruins (cluster pieces).
+    eligible_coords: set[HexCoord] = {
         tile.coord for tile in grid.tiles()
         if tile.terrain not in UNBUILDABLE
-        and tile.coord.distance(origin) >= params.RUINS_MIN_DISTANCE
+    }
+    # Valid cluster centres must also be far from camp.
+    centre_candidates = [
+        c for c in eligible_coords
+        if c.distance(origin) >= params.RUINS_MIN_DISTANCE
     ]
-    if not candidates:
+    if not centre_candidates:
         return []
 
-    rng = _random.Random(42)
-    rng.shuffle(candidates)
-    count = rng.randint(params.RUINS_COUNT_MIN, params.RUINS_COUNT_MAX)
-    count = min(count, len(candidates))
+    rng = _random.Random((seed or 0) ^ 0xA17C1E5)
+
+    # Base cluster count plus optional extras for larger maps.
+    base = rng.randint(params.RUINS_CLUSTERS_MIN, params.RUINS_CLUSTERS_MAX)
+    extras = max(0, map_radius // max(1, params.RUINS_EXTRA_CLUSTER_RADIUS))
+    target_clusters = base + extras
+
+    # Pick well-separated cluster centres.
+    rng.shuffle(centre_candidates)
+    centres: list[HexCoord] = []
+    for cand in centre_candidates:
+        if len(centres) >= target_clusters:
+            break
+        if all(
+            cand.distance(c) >= params.RUINS_CLUSTER_SEPARATION
+            for c in centres
+        ):
+            centres.append(cand)
 
     ruins: list[OverlayRuin] = []
-    for coord in candidates[:count]:
-        wx, wy = hex_to_pixel(coord, hex_size)
-        variant = rng.randint(0, 2)
-        color, highlight = rng.choice(_RUIN_COLORS)
-        ruins.append(OverlayRuin(
-            wx=wx, wy=wy,
-            variant=variant,
-            color=color, highlight_color=highlight,
-            coord=(coord.q, coord.r),
-        ))
+    used: set[HexCoord] = set()
+
+    for centre in centres:
+        # Gather candidate tiles within the cluster radius via BFS.
+        frontier: list[HexCoord] = [centre]
+        ring: list[HexCoord] = []
+        visited: set[HexCoord] = {centre}
+        while frontier:
+            nxt: list[HexCoord] = []
+            for coord in frontier:
+                if (
+                    coord in eligible_coords
+                    and coord not in used
+                ):
+                    ring.append(coord)
+                for nb in coord.neighbors():
+                    if nb in visited:
+                        continue
+                    visited.add(nb)
+                    if nb.distance(centre) <= params.RUINS_CLUSTER_RADIUS:
+                        nxt.append(nb)
+            frontier = nxt
+
+        if not ring:
+            continue
+
+        rng.shuffle(ring)
+        target = rng.randint(
+            params.RUINS_PIECES_MIN, params.RUINS_PIECES_MAX,
+        )
+        pieces = ring[:target]
+
+        for coord in pieces:
+            used.add(coord)
+            wx, wy = hex_to_pixel(coord, hex_size)
+            variant = rng.randint(0, 2)
+            color, highlight = rng.choice(_RUIN_COLORS)
+            ruins.append(OverlayRuin(
+                wx=wx, wy=wy,
+                variant=variant,
+                color=color, highlight_color=highlight,
+                coord=(coord.q, coord.r),
+            ))
+
     return ruins

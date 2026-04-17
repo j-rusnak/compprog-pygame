@@ -14,6 +14,7 @@ import pygame
 
 from compprog_pygame.games.hex_colony.hex_grid import HexCoord, HexTile, Terrain
 from compprog_pygame.games.hex_colony.resources import TERRAIN_RESOURCE
+from compprog_pygame.games.hex_colony.resource_icons import get_resource_icon
 from compprog_pygame.games.hex_colony.ui import (
     Fonts,
     Panel,
@@ -100,14 +101,16 @@ class TileInfoPanel(Panel):
 
         tile = self.tile
         inner_w = _PANEL_W - _PADDING * 2
-        lines: list[tuple[str, tuple[int, int, int], pygame.font.Font, int]] = []
+        # Each line: (text, color, font, height, icon_resource | None)
+        lines: list[tuple] = []
 
         def add(text: str, color: tuple[int, int, int],
-                font: pygame.font.Font, h: int = _LINE_H) -> None:
-            lines.append((text, color, font, h))
+                font: pygame.font.Font, h: int = _LINE_H,
+                icon_res=None) -> None:
+            lines.append((text, color, font, h, icon_res))
 
         def spacer() -> None:
-            lines.append(("", UI_TEXT, Fonts.small(), _SPACER_H))
+            lines.append(("", UI_TEXT, Fonts.small(), _SPACER_H, None))
 
         label = _TERRAIN_LABEL.get(tile.terrain, tile.terrain.name)
         color = _TERRAIN_COLOR.get(tile.terrain, UI_ACCENT)
@@ -121,11 +124,10 @@ class TileInfoPanel(Panel):
 
         resource = TERRAIN_RESOURCE.get(tile.terrain)
         if resource is not None:
-            icon = RESOURCE_ICONS.get(resource, "?")
             res_color = RESOURCE_COLORS.get(resource, UI_TEXT)
             add("Resource:", UI_MUTED, Fonts.small())
-            add(f"  {icon} {resource.name.capitalize()}",
-                res_color, Fonts.body())
+            add(f"  {resource.name.capitalize()}",
+                res_color, Fonts.body(), icon_res=resource)
             amount = int(tile.resource_amount)
             if amount > 0:
                 add(f"  Remaining: {amount}", UI_TEXT, Fonts.body())
@@ -145,7 +147,7 @@ class TileInfoPanel(Panel):
             add(f"Coords: ({self.coord.q}, {self.coord.r})",
                 UI_MUTED, Fonts.small())
 
-        panel_h = _PADDING * 2 + sum(h for _, _, _, h in lines)
+        panel_h = _PADDING * 2 + sum(h for _, _, _, h, _ in lines)
         max_h = self._screen_h - _TOP_MARGIN - _BOTTOM_MARGIN
         panel_h = min(panel_h, max(120, max_h))
 
@@ -161,8 +163,16 @@ class TileInfoPanel(Panel):
         prev_clip = surface.get_clip()
         surface.set_clip(self.rect)
         cy = y + _PADDING
-        for text, col, font, h in lines:
-            if text:
+        for text, col, font, h, icon_res in lines:
+            if icon_res is not None:
+                icon_surf = get_resource_icon(icon_res, 16)
+                surface.blit(icon_surf, (x + _PADDING + 4, cy + 1))
+                if text:
+                    surf = render_text_clipped(
+                        font, text, col, inner_w - 22,
+                    )
+                    surface.blit(surf, (x + _PADDING + 24, cy))
+            elif text:
                 surf = render_text_clipped(font, text, col, inner_w)
                 surface.blit(surf, (x + _PADDING, cy))
             cy += h

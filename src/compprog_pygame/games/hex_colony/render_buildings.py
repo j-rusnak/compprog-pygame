@@ -641,6 +641,253 @@ def draw_workshop(surface: pygame.Surface, sx: float, sy: float, r: int, z: floa
     pygame.draw.circle(surface, light, (gear_cx, gear_cy), max(1, gear_r // 2))
 
 
+def draw_forge(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Forge — squat stone blacksmithing forge with a glowing furnace and chimney."""
+    if _try_sprite(surface, "buildings/forge", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    stone_col = (110, 100, 92)
+    stone_dark = _darken(stone_col, 0.65)
+    stone_light = _lighten(stone_col, 1.18)
+    mortar = _darken(stone_col, 0.45)
+
+    # ── Stone base (wider at bottom, slightly trapezoidal) ──────
+    base_w = max(4, int(r * 1.1))
+    base_h = max(3, int(r * 0.58))
+    top_w = max(4, int(base_w * 0.85))
+    base_top = isy - base_h
+    base_bottom = isy + max(1, int(r * 0.05))
+    base_pts = [
+        (isx - base_w // 2, base_bottom),
+        (isx + base_w // 2, base_bottom),
+        (isx + top_w // 2, base_top),
+        (isx - top_w // 2, base_top),
+    ]
+    pygame.draw.polygon(surface, stone_col, base_pts)
+    pygame.draw.polygon(surface, stone_dark, base_pts, iz)
+    # Top highlight strip
+    pygame.draw.line(
+        surface, stone_light,
+        (isx - top_w // 2 + iz, base_top),
+        (isx + top_w // 2 - iz, base_top), iz,
+    )
+
+    # ── Stone block texture (mortar lines) ──────────────────────
+    row_h = max(2, base_h // 3)
+    for row in range(1, 3):
+        y = base_top + row * row_h
+        if y >= base_bottom:
+            break
+        # Interpolate width so the mortar lines follow the trapezoid.
+        t = (y - base_top) / max(1, base_h)
+        w = int(top_w + (base_w - top_w) * t)
+        pygame.draw.line(
+            surface, mortar,
+            (isx - w // 2 + 1, y), (isx + w // 2 - 1, y), max(1, iz // 2),
+        )
+        # Staggered vertical joints
+        stagger = (row % 2) * (w // 4)
+        jx1 = isx - w // 2 + stagger + w // 4
+        jx2 = isx + w // 2 - (w // 4 - stagger)
+        pygame.draw.line(
+            surface, mortar, (jx1, y), (jx1, min(y + row_h, base_bottom)),
+            max(1, iz // 2),
+        )
+        if jx2 != jx1:
+            pygame.draw.line(
+                surface, mortar,
+                (jx2, y), (jx2, min(y + row_h, base_bottom)),
+                max(1, iz // 2),
+            )
+
+    # ── Furnace opening (glowing arch) ──────────────────────────
+    mouth_w = max(3, int(base_w * 0.40))
+    mouth_h = max(3, int(base_h * 0.55))
+    mouth_rect = pygame.Rect(
+        isx - mouth_w // 2, base_bottom - mouth_h - max(1, iz),
+        mouth_w, mouth_h,
+    )
+    pygame.draw.rect(surface, (30, 15, 10), mouth_rect, border_radius=max(1, mouth_h // 3))
+    # Inner glow
+    glow = pygame.Rect(
+        mouth_rect.x + max(1, iz), mouth_rect.y + max(1, iz),
+        mouth_rect.w - max(2, iz * 2), mouth_rect.h - max(2, iz * 2),
+    )
+    if glow.w > 0 and glow.h > 0:
+        pygame.draw.rect(surface, (210, 90, 30), glow,
+                         border_radius=max(1, glow.h // 3))
+        inner = pygame.Rect(
+            glow.x + max(1, iz), glow.y + max(1, iz),
+            glow.w - max(2, iz * 2), glow.h - max(2, iz * 2),
+        )
+        if inner.w > 0 and inner.h > 0:
+            pygame.draw.rect(surface, (255, 180, 70), inner,
+                             border_radius=max(1, inner.h // 3))
+
+    # ── Anvil silhouette to one side ────────────────────────────
+    anvil_x = isx + int(base_w * 0.35)
+    anvil_y = base_top - max(2, int(r * 0.1))
+    anvil_w = max(2, int(r * 0.22))
+    anvil_h = max(1, int(r * 0.08))
+    pygame.draw.rect(
+        surface, (50, 48, 52),
+        (anvil_x - anvil_w // 2, anvil_y - anvil_h, anvil_w, anvil_h),
+    )
+    pygame.draw.rect(
+        surface, (35, 33, 38),
+        (anvil_x - anvil_w // 4, anvil_y, anvil_w // 2, anvil_h),
+    )
+
+    # ── Chimney & smoke ─────────────────────────────────────────
+    ch_w = max(2, int(r * 0.22))
+    ch_h = max(3, int(r * 0.38))
+    ch_x = isx - int(base_w * 0.28) - ch_w // 2
+    ch_y = base_top - ch_h
+    pygame.draw.rect(surface, stone_dark, (ch_x, ch_y, ch_w, ch_h))
+    pygame.draw.rect(surface, stone_col, (ch_x, ch_y, ch_w, max(1, iz)))
+    # Smoke puffs
+    for i in range(3):
+        puff_r = max(1, int(r * 0.09 * (i + 1)))
+        py = ch_y - puff_r - max(1, int(r * 0.08)) * i
+        pygame.draw.circle(
+            surface, (170, 160, 150),
+            (ch_x + ch_w // 2, py), puff_r,
+        )
+    # Ember sparks above chimney
+    for dx, dy in ((-1, -2), (2, -3), (-2, -4)):
+        spark_x = ch_x + ch_w // 2 + int(dx * max(1, iz))
+        spark_y = ch_y + int(dy * max(1, iz))
+        pygame.draw.circle(surface, (255, 180, 90), (spark_x, spark_y), max(1, iz))
+
+
+def draw_assembler(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Assembler — futuristic industrial machine with robotic arm and indicator lights."""
+    if _try_sprite(surface, "buildings/assembler", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    body_col = (120, 140, 165)
+    body_dark = _darken(body_col, 0.6)
+    body_light = _lighten(body_col, 1.25)
+    panel_col = (55, 68, 90)
+    glow_col = (80, 200, 255)
+    accent = (255, 180, 80)
+
+    # ── Main body (metal box) ────────────────────────────────────
+    body_w = max(4, int(r * 1.15))
+    body_h = max(4, int(r * 0.70))
+    body_top = isy - body_h
+    body_bottom = isy + max(1, int(r * 0.05))
+    body_rect = pygame.Rect(
+        isx - body_w // 2, body_top, body_w, body_h,
+    )
+    pygame.draw.rect(surface, body_col, body_rect, border_radius=max(1, iz))
+    pygame.draw.rect(surface, body_dark, body_rect, iz, border_radius=max(1, iz))
+    # Top highlight strip
+    pygame.draw.line(
+        surface, body_light,
+        (body_rect.x + iz + 1, body_top + 1),
+        (body_rect.right - iz - 1, body_top + 1), iz,
+    )
+
+    # ── Control panel screen ─────────────────────────────────────
+    screen_w = max(3, int(body_w * 0.45))
+    screen_h = max(2, int(body_h * 0.32))
+    screen_x = isx - screen_w // 2
+    screen_y = body_top + max(2, int(body_h * 0.15))
+    screen_rect = pygame.Rect(screen_x, screen_y, screen_w, screen_h)
+    pygame.draw.rect(surface, panel_col, screen_rect, border_radius=max(1, iz // 2))
+    pygame.draw.rect(surface, body_dark, screen_rect, max(1, iz // 2),
+                     border_radius=max(1, iz // 2))
+    # Scan-line glow
+    for i in range(2):
+        ly = screen_rect.y + max(1, iz) + i * max(2, screen_h // 3)
+        if ly < screen_rect.bottom - 1:
+            pygame.draw.line(
+                surface, glow_col,
+                (screen_rect.x + 2, ly),
+                (screen_rect.right - 2, ly),
+                max(1, iz // 2),
+            )
+
+    # ── Indicator LEDs (row of tiny lights) ─────────────────────
+    led_y = body_bottom - max(2, int(body_h * 0.18))
+    led_r = max(1, iz)
+    led_colors = ((90, 240, 120), accent, (240, 90, 90))
+    led_spacing = max(3, int(body_w * 0.12))
+    led_start_x = isx - led_spacing
+    for i, col in enumerate(led_colors):
+        lx = led_start_x + i * led_spacing
+        pygame.draw.circle(surface, body_dark, (lx, led_y), led_r + 1)
+        pygame.draw.circle(surface, col, (lx, led_y), led_r)
+
+    # ── Vent grill on the right side ────────────────────────────
+    vent_x = body_rect.right - max(3, int(body_w * 0.16))
+    vent_y = body_top + max(2, int(body_h * 0.15))
+    vent_w = max(2, int(body_w * 0.10))
+    vent_h = max(2, int(body_h * 0.55))
+    vent_rect = pygame.Rect(vent_x, vent_y, vent_w, vent_h)
+    pygame.draw.rect(surface, body_dark, vent_rect)
+    for i in range(3):
+        ly = vent_y + max(1, iz) + i * max(2, vent_h // 4)
+        if ly < vent_y + vent_h - 1:
+            pygame.draw.line(
+                surface, panel_col,
+                (vent_x + 1, ly), (vent_x + vent_w - 1, ly),
+                max(1, iz // 2),
+            )
+
+    # ── Robotic arm on top ──────────────────────────────────────
+    arm_base_x = isx + int(body_w * 0.18)
+    arm_base_y = body_top
+    # Shoulder joint
+    shoulder_r = max(2, int(r * 0.10))
+    pygame.draw.circle(surface, body_dark, (arm_base_x, arm_base_y),
+                       shoulder_r)
+    pygame.draw.circle(surface, body_light, (arm_base_x, arm_base_y),
+                       max(1, shoulder_r - iz))
+    # Upper arm segment
+    elbow_x = arm_base_x - max(2, int(r * 0.26))
+    elbow_y = arm_base_y - max(2, int(r * 0.18))
+    pygame.draw.line(
+        surface, body_dark,
+        (arm_base_x, arm_base_y), (elbow_x, elbow_y),
+        max(2, iz * 2),
+    )
+    pygame.draw.line(
+        surface, body_light,
+        (arm_base_x, arm_base_y - 1), (elbow_x, elbow_y - 1),
+        max(1, iz),
+    )
+    # Elbow joint
+    pygame.draw.circle(surface, body_dark, (elbow_x, elbow_y),
+                       max(2, int(r * 0.07)))
+    # Forearm + claw
+    claw_x = elbow_x - max(2, int(r * 0.12))
+    claw_y = elbow_y + max(1, int(r * 0.04))
+    pygame.draw.line(
+        surface, body_dark,
+        (elbow_x, elbow_y), (claw_x, claw_y), max(2, iz * 2),
+    )
+    # Claw tips (tiny V)
+    pygame.draw.line(surface, accent, (claw_x, claw_y),
+                     (claw_x - max(1, iz), claw_y + max(1, iz)),
+                     max(1, iz))
+    pygame.draw.line(surface, accent, (claw_x, claw_y),
+                     (claw_x - max(1, iz), claw_y - max(1, iz)),
+                     max(1, iz))
+
+    # ── Corner rivets ──────────────────────────────────────────
+    for cx_, cy_ in (
+        (body_rect.x + max(2, iz), body_top + max(2, iz)),
+        (body_rect.right - max(2, iz) - 1, body_top + max(2, iz)),
+        (body_rect.x + max(2, iz), body_bottom - max(2, iz) - 1),
+        (body_rect.right - max(2, iz) - 1, body_bottom - max(2, iz) - 1),
+    ):
+        pygame.draw.circle(surface, body_dark, (cx_, cy_), max(1, iz))
+
+
 def draw_research_center(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
     """Research Center — domed building with antenna/satellite dish."""
     if _try_sprite(surface, "buildings/research_center", sx, sy, r, z):

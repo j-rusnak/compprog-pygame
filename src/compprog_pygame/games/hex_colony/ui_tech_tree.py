@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 import pygame
 
 from compprog_pygame.games.hex_colony.tech_tree import TECH_NODES
+from compprog_pygame.games.hex_colony.resource_icons import get_resource_icon
 from compprog_pygame.games.hex_colony.ui import (
     Fonts,
     Panel,
@@ -211,13 +212,16 @@ class TechTreeOverlay(Panel):
             cost_y = ny + _NODE_H - 22
             cost_x = nx + 6
             for res, amount in node.cost.items():
-                icon = RESOURCE_ICONS[res]
                 col = RESOURCE_COLORS[res]
-                s = Fonts.small().render(f"{icon}{amount}", True, col)
-                if cost_x + s.get_width() > nx + _NODE_W - 40:
+                icon_surf = get_resource_icon(res, 14)
+                amt_surf = Fonts.small().render(f"{amount}", True, col)
+                chunk_w = icon_surf.get_width() + 2 + amt_surf.get_width()
+                if cost_x + chunk_w > nx + _NODE_W - 40:
                     break
-                surface.blit(s, (cost_x, cost_y))
-                cost_x += s.get_width() + 6
+                surface.blit(icon_surf, (cost_x, cost_y + 2))
+                surface.blit(amt_surf, (cost_x + icon_surf.get_width() + 2,
+                                        cost_y))
+                cost_x += chunk_w + 6
             time_surf = Fonts.small().render(
                 f"{node.time:.0f}s", True, UI_MUTED,
             )

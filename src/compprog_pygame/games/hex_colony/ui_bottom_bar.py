@@ -79,7 +79,8 @@ class BuildingsTabContent(TabContent):
         ("Housing", [BuildingType.HABITAT]),
         ("Resource", [BuildingType.WOODCUTTER, BuildingType.QUARRY,
                       BuildingType.GATHERER, BuildingType.FARM, BuildingType.WELL]),
-        ("Processing", [BuildingType.WORKSHOP, BuildingType.REFINERY,
+        ("Processing", [BuildingType.WORKSHOP, BuildingType.FORGE,
+                        BuildingType.ASSEMBLER, BuildingType.REFINERY,
                         BuildingType.STORAGE]),
         ("Logistics", [BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL]),
     ]
@@ -101,6 +102,8 @@ class BuildingsTabContent(TabContent):
         BuildingType.WELL: "\u25ce",
         BuildingType.WALL: "\u2588",
         BuildingType.WORKSHOP: "\u2699",
+        BuildingType.FORGE: "\u2692",
+        BuildingType.ASSEMBLER: "\u25a6",
         BuildingType.RESEARCH_CENTER: "\u2261",
     }
 
@@ -117,6 +120,8 @@ class BuildingsTabContent(TabContent):
         BuildingType.WELL: (60, 100, 180),
         BuildingType.WALL: (160, 155, 145),
         BuildingType.WORKSHOP: (180, 140, 60),
+        BuildingType.FORGE: (110, 100, 92),
+        BuildingType.ASSEMBLER: (120, 140, 165),
         BuildingType.RESEARCH_CENTER: (70, 130, 200),
     }
 
@@ -133,6 +138,8 @@ class BuildingsTabContent(TabContent):
         BuildingType.WELL: "Boosts nearby farms",
         BuildingType.WALL: "Defensive wall",
         BuildingType.WORKSHOP: "Crafts buildings",
+        BuildingType.FORGE: "Smelts metal bars",
+        BuildingType.ASSEMBLER: "Builds advanced parts",
         BuildingType.RESEARCH_CENTER: "Unlocks tech tree",
     }
 
@@ -149,6 +156,8 @@ class BuildingsTabContent(TabContent):
         BuildingType.FARM: "Farm",
         BuildingType.WELL: "Well",
         BuildingType.WORKSHOP: "Workshop",
+        BuildingType.FORGE: "Forge",
+        BuildingType.ASSEMBLER: "Assembler",
         BuildingType.RESEARCH_CENTER: "Research",
     }
 

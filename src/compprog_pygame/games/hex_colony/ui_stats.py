@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import pygame
 
 from compprog_pygame.games.hex_colony.resources import Resource
+from compprog_pygame.games.hex_colony.resource_icons import get_resource_icon
 from compprog_pygame.games.hex_colony.ui import (
     Fonts,
     TabContent,
@@ -62,10 +63,12 @@ class StatsTabContent(TabContent):
 
         for res in self._tracked:
             color = RESOURCE_COLORS.get(res, (200, 200, 200))
-            icon = RESOURCE_ICONS.get(res, "?")
-            # Label
-            label = Fonts.small().render(f"{icon} {res.name}", True, color)
-            surface.blit(label, (rect.x + 6, y + 1))
+            # Icon sprite + label text
+            icon_surf = get_resource_icon(res, 14)
+            surface.blit(icon_surf, (rect.x + 6, y + 2))
+            label = Fonts.small().render(res.name.title(), True, color)
+            surface.blit(label, (rect.x + 6 + icon_surf.get_width() + 4,
+                                 y + 1))
 
             # Value
             val = world.inventory[res]

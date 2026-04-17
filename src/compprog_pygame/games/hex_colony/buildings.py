@@ -27,7 +27,9 @@ class BuildingType(Enum):
     FARM = auto()           # produces food without terrain requirement
     WELL = auto()           # boosts adjacent farm output
     WALL = auto()           # defensive stone wall — connects to adjacent walls
-    WORKSHOP = auto()       # crafting workshop — produces buildings from resources
+    WORKSHOP = auto()       # crafting workshop — produces buildings and intermediate materials
+    FORGE = auto()          # stone blacksmithing forge — smelts raw ore into bars
+    ASSEMBLER = auto()      # higher-tier assembler — builds gears, silicon, circuits
     RESEARCH_CENTER = auto() # research center — opens the tech tree
 
 
@@ -58,6 +60,8 @@ BUILDING_COSTS: dict[BuildingType, BuildingCost] = {
     BuildingType.WELL: BuildingCost(_costs_from_dict(params.BUILDING_COST_WELL)),
     BuildingType.WALL: BuildingCost(_costs_from_dict(params.BUILDING_COST_WALL)),
     BuildingType.WORKSHOP: BuildingCost(_costs_from_dict(params.BUILDING_COST_WORKSHOP)),
+    BuildingType.FORGE: BuildingCost(_costs_from_dict(params.BUILDING_COST_FORGE)),
+    BuildingType.ASSEMBLER: BuildingCost(_costs_from_dict(params.BUILDING_COST_ASSEMBLER)),
     BuildingType.RESEARCH_CENTER: BuildingCost(_costs_from_dict(params.BUILDING_COST_RESEARCH_CENTER)),
 }
 
@@ -77,6 +81,8 @@ BUILDING_MAX_WORKERS: dict[BuildingType, int] = {
     BuildingType.WELL: params.BUILDING_MAX_WORKERS_WELL,
     BuildingType.WALL: params.BUILDING_MAX_WORKERS_WALL,
     BuildingType.WORKSHOP: params.BUILDING_MAX_WORKERS_WORKSHOP,
+    BuildingType.FORGE: params.BUILDING_MAX_WORKERS_FORGE,
+    BuildingType.ASSEMBLER: params.BUILDING_MAX_WORKERS_ASSEMBLER,
     BuildingType.RESEARCH_CENTER: params.BUILDING_MAX_WORKERS_RESEARCH_CENTER,
 }
 
@@ -96,6 +102,8 @@ BUILDING_HOUSING: dict[BuildingType, int] = {
     BuildingType.WELL: params.BUILDING_HOUSING_WELL,
     BuildingType.WALL: params.BUILDING_HOUSING_WALL,
     BuildingType.WORKSHOP: params.BUILDING_HOUSING_WORKSHOP,
+    BuildingType.FORGE: params.BUILDING_HOUSING_FORGE,
+    BuildingType.ASSEMBLER: params.BUILDING_HOUSING_ASSEMBLER,
     BuildingType.RESEARCH_CENTER: params.BUILDING_HOUSING_RESEARCH_CENTER,
 }
 
@@ -118,6 +126,8 @@ BUILDING_STORAGE_CAPACITY: dict[BuildingType, int] = {
     BuildingType.WELL: params.BUILDING_STORAGE_WELL,
     BuildingType.WALL: params.BUILDING_STORAGE_WALL,
     BuildingType.WORKSHOP: params.BUILDING_STORAGE_WORKSHOP,
+    BuildingType.FORGE: params.BUILDING_STORAGE_FORGE,
+    BuildingType.ASSEMBLER: params.BUILDING_STORAGE_ASSEMBLER,
     BuildingType.RESEARCH_CENTER: params.BUILDING_STORAGE_RESEARCH_CENTER,
 }
 
@@ -133,8 +143,12 @@ class Building:
     storage: dict[Resource, float] = field(default_factory=dict)
     storage_capacity: int = 0  # max total resources stored
     upgrade_level: int = 0  # current upgrade tier (0 = base)
-    recipe: BuildingType | None = None  # workshop: what building to craft
-    craft_progress: float = 0.0  # workshop: seconds of work done
+    # A crafting station's active recipe.  For a Workshop this may be
+    # either a BuildingType (crafts a placeable building) or a Resource
+    # (crafts an intermediate material).  Forge and Refinery only ever
+    # hold Resource recipes.  ``None`` means the station is idle.
+    recipe: "BuildingType | Resource | None" = None
+    craft_progress: float = 0.0  # seconds of crafting work accumulated
 
     @property
     def max_workers(self) -> int:
