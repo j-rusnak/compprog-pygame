@@ -28,6 +28,7 @@ from compprog_pygame.games.hex_colony.supply_chain import draw_supply_lines
 from compprog_pygame.games.hex_colony.ui_minimap import MinimapPanel
 from compprog_pygame.games.hex_colony.ui_stats import StatsTabContent
 from compprog_pygame.games.hex_colony.ui_tech_tree import TechTreeOverlay
+from compprog_pygame.games.hex_colony.ui_advanced_stats import AdvancedStatsOverlay
 from compprog_pygame.games.hex_colony import params
 
 # Build-mode palette order
@@ -61,6 +62,9 @@ class Game:
         self.build_mode: BuildingType | None = None
         self.delete_mode = False
         self.sandbox = False
+        # God mode: bypass tech/tier/inventory gates and reveal all
+        # locked content in the UI.  Toggle at runtime with F1.
+        self.god_mode: bool = self.settings.god_mode
         self._build_dragging = False
         self._delete_dragging = False
         self._hint_font = pygame.font.Font(None, 26)
@@ -84,6 +88,7 @@ class Game:
         self._help_overlay = HelpOverlay()
         self._minimap = MinimapPanel()
         self._tech_tree_overlay = TechTreeOverlay()
+        self._advanced_stats_overlay = AdvancedStatsOverlay()
         self.ui.add_panel(self._resource_bar)
         self.ui.add_panel(self._bottom_bar)
         self.ui.add_panel(self._building_info)
@@ -91,6 +96,7 @@ class Game:
         self.ui.add_panel(self._minimap)
         self.ui.add_panel(self._help_overlay)
         self.ui.add_panel(self._tech_tree_overlay)
+        self.ui.add_panel(self._advanced_stats_overlay)
         self.ui.add_panel(self._pause_overlay)
         self.ui.add_panel(self._game_over_overlay)
 
@@ -104,6 +110,24 @@ class Game:
             buildings_tab.set_on_select(self._on_building_selected)
             buildings_tab.set_on_delete_toggle(self._on_delete_toggled)
             buildings_tab.building_inventory = self.world.building_inventory
+            buildings_tab.tech_tree = self.tech_tree
+            buildings_tab.tier_tracker = self.tier_tracker
+            buildings_tab.god_mode_getter = lambda: self.god_mode
+
+        # Give other panels references for unlock filtering
+        self._building_info.tech_tree = self.tech_tree
+        self._building_info.god_mode_getter = lambda: self.god_mode
+        self._stats_tab.tech_tree = self.tech_tree
+        self._stats_tab.tier_tracker = self.tier_tracker
+        self._stats_tab.god_mode_getter = lambda: self.god_mode
+        self._stats_tab.on_open_advanced = self._on_open_advanced_stats
+
+        # Advanced Stats overlay: share history with the stats tab so
+        # the graphs cover the whole session, not just time-since-open.
+        self._advanced_stats_overlay.history = self._stats_tab.history
+        self._advanced_stats_overlay.tech_tree = self.tech_tree
+        self._advanced_stats_overlay.tier_tracker = self.tier_tracker
+        self._advanced_stats_overlay.god_mode_getter = lambda: self.god_mode
 
         # Wire pause overlay callbacks
         self._pause_overlay.on_resume = self._on_pause_resume
@@ -139,7 +163,7 @@ class Game:
             for event in pygame.event.get():
                 self._handle_event(event)
 
-            if not self._pause_overlay.visible and not self._tech_tree_overlay.visible and not self.world.game_over:
+            if not self._pause_overlay.visible and not self._tech_tree_overlay.visible and not self._advanced_stats_overlay.visible and not self.world.game_over:
                 self._update_keyboard_pan(dt)
                 self._update_alt_overlay()
                 self._update_ghost_building()
@@ -239,6 +263,12 @@ class Game:
                 self._sim_speed = 2.0
             elif event.key == pygame.K_3:
                 self._sim_speed = 3.0
+            elif event.key == pygame.K_F1:
+                # Toggle god mode at runtime
+                self.god_mode = not self.god_mode
+                msg = "God mode ON" if self.god_mode else "God mode OFF"
+                col = (255, 215, 0) if self.god_mode else (200, 200, 200)
+                self.notifications.push(msg, col)
 
         elif event.type == pygame.VIDEORESIZE:
             screen = pygame.display.get_surface()
@@ -345,11 +375,13 @@ class Game:
             if building is not None:
                 self._building_info.building = building
                 self._tile_info.tile = None
+                self._tile_info.has_ruin = False
             else:
                 self._building_info.building = None
                 tile = self.world.grid.get(coord)
                 self._tile_info.tile = tile
                 self._tile_info.coord = coord
+                self._tile_info.has_ruin = self.renderer.has_ruin_at(coord)
 
     def _try_place_building(self, coord) -> None:
         tile = self.world.grid[coord]
@@ -358,8 +390,8 @@ class Game:
         if tile.terrain in UNBUILDABLE:
             if not (self.build_mode == BuildingType.BRIDGE and tile.terrain == Terrain.WATER):
                 return
-        # Tech tree gate
-        if not self.tech_tree.is_building_unlocked(self.build_mode):
+        # Tech tree gate (bypassed in god mode)
+        if not self.god_mode and not self.tech_tree.is_building_unlocked(self.build_mode):
             req = TECH_REQUIREMENTS.get(self.build_mode)
             if req is not None:
                 node = TECH_NODES[req]
@@ -367,8 +399,8 @@ class Game:
                     f"Requires {node.name} research", (255, 150, 80),
                 )
             return
-        # Tier gate
-        if not self.tier_tracker.is_building_unlocked(self.build_mode):
+        # Tier gate (bypassed in god mode)
+        if not self.god_mode and not self.tier_tracker.is_building_unlocked(self.build_mode):
             from compprog_pygame.games.hex_colony.tech_tree import TIER_BUILDING_REQUIREMENTS, TIERS
             req_tier = TIER_BUILDING_REQUIREMENTS.get(self.build_mode, 0)
             tier_info = TIERS[req_tier]
@@ -386,14 +418,15 @@ class Game:
             # Can't place another path-like or wall on a path-like
             if self.build_mode in _PATH_LIKE or self.build_mode == BuildingType.WALL:
                 return
-        # Check cost (skip in sandbox mode)
-        if not self.sandbox:
+        # Check cost (skip in sandbox or god mode)
+        free_build = self.sandbox or self.god_mode
+        if not free_build:
             if self.world.building_inventory[self.build_mode] < 1:
                 return  # no stock
             self.world.building_inventory.spend(self.build_mode)
         # If building on top of a path/bridge, return it to inventory
         if existing is not None and existing.type in _PATH_LIKE:
-            if not self.sandbox:
+            if not free_build:
                 self.world.building_inventory.add(existing.type)
             self.world.buildings.remove(existing)
             tile.building = None
@@ -477,6 +510,10 @@ class Game:
     def _on_close_tech_tree(self) -> None:
         """Close the tech tree overlay (unpause is automatic — overlay consumes events)."""
         pass
+
+    def _on_open_advanced_stats(self) -> None:
+        """Open the Advanced Statistics popup."""
+        self._advanced_stats_overlay.visible = True
 
     def _on_pause_return_to_menu(self) -> None:
         """Callback from pause overlay Return to Main Menu button."""

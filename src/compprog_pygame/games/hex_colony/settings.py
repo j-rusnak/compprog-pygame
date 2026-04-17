@@ -36,3 +36,8 @@ class HexColonySettings:
 
     # Food consumption per person per second
     food_consumption: float = params.FOOD_CONSUMPTION_PER_PERSON
+
+    # Cheat/debug: bypass all tier, tech, and inventory gates.  When
+    # enabled, any building can be placed regardless of unlock state
+    # and locked content is still shown in the UI (useful for testing).
+    god_mode: bool = False

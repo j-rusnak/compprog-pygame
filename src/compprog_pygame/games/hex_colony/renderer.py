@@ -246,6 +246,14 @@ class Renderer:
         """Mark a single hex as needing redraw on the tile layer."""
         self._dirty_tiles.add(coord)
 
+    def has_ruin_at(self, coord: HexCoord) -> bool:
+        """True if any OverlayRuin was generated on the given hex."""
+        key = (coord.q, coord.r)
+        for item in self._static_overlays:
+            if isinstance(item, OverlayRuin) and item.coord == key:
+                return True
+        return False
+
     # ── Blended tile colours (two-pass smoothing) ────────────────
 
     def _ensure_blended_colors(self, world: World) -> None:

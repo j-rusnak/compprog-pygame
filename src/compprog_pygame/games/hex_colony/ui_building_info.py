@@ -29,6 +29,10 @@ from compprog_pygame.games.hex_colony.resources import (
     recipes_for_station,
 )
 from compprog_pygame.games.hex_colony.resource_icons import get_resource_icon
+from compprog_pygame.games.hex_colony.tech_tree import (
+    is_building_available,
+    is_resource_available,
+)
 from compprog_pygame.games.hex_colony.ui import (
     Fonts,
     Panel,
@@ -155,6 +159,8 @@ class BuildingInfoPanel(Panel):
         self._tech_tree_btn: pygame.Rect | None = None
         self.on_open_tech_tree: typing.Callable[[], None] | None = None
         self.tier_tracker: typing.Any = None
+        self.tech_tree: typing.Any = None
+        self.god_mode_getter: typing.Callable[[], bool] | None = None
         self._scroll: int = 0
         self._content_h: int = 0
         self._view_h: int = 0
@@ -425,7 +431,14 @@ class BuildingInfoPanel(Panel):
 
             # Building recipes (Workshop only).
             if b.type == BuildingType.WORKSHOP:
+                god = bool(
+                    self.god_mode_getter and self.god_mode_getter()
+                )
                 for craft_type in WORKSHOP_CRAFTABLE:
+                    if not god and not is_building_available(
+                        craft_type, self.tech_tree, self.tier_tracker,
+                    ):
+                        continue
                     items.append(_RecipeBtn(
                         craft_type, selected=(b.recipe == craft_type),
                     ))
@@ -433,6 +446,15 @@ class BuildingInfoPanel(Panel):
 
             # Material recipes for this station.
             station_recipes = recipes_for_station(b.type.name)
+            if not bool(
+                self.god_mode_getter and self.god_mode_getter()
+            ):
+                station_recipes = [
+                    mr for mr in station_recipes
+                    if is_resource_available(
+                        mr.output, self.tech_tree, self.tier_tracker,
+                    )
+                ]
             if station_recipes:
                 if b.type == BuildingType.WORKSHOP:
                     items.append(_Spacer(2))

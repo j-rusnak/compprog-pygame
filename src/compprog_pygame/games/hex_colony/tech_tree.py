@@ -225,3 +225,43 @@ class TierTracker:
         if req_tier is None:
             return True  # no tier restriction
         return self.current_tier >= req_tier
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Combined availability helpers (tech + tier)
+# ═══════════════════════════════════════════════════════════════════
+
+def is_building_available(
+    btype: BuildingType,
+    tech_tree: "TechTree | None",
+    tier_tracker: "TierTracker | None",
+) -> bool:
+    """True iff both tech-tree and tier requirements are satisfied."""
+    if tech_tree is not None and not tech_tree.is_building_unlocked(btype):
+        return False
+    if tier_tracker is not None and not tier_tracker.is_building_unlocked(btype):
+        return False
+    return True
+
+
+def is_resource_available(
+    res: Resource,
+    tech_tree: "TechTree | None",
+    tier_tracker: "TierTracker | None",
+) -> bool:
+    """True iff the resource is raw OR its producing station is available."""
+    from compprog_pygame.games.hex_colony.resources import (
+        MATERIAL_RECIPES,
+        RAW_RESOURCES,
+    )
+    if res in RAW_RESOURCES:
+        return True
+    recipe = MATERIAL_RECIPES.get(res)
+    if recipe is None:
+        return True
+    # recipe.station is a BuildingType enum member name
+    try:
+        btype = BuildingType[recipe.station]
+    except KeyError:
+        return True
+    return is_building_available(btype, tech_tree, tier_tracker)

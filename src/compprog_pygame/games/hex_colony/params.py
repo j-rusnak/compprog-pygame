@@ -366,14 +366,14 @@ ORE_COPPER_VEIN_COUNT_BASE: int = 2
 ORE_COPPER_VEIN_COUNT_RADIUS_DIVISOR: int = 15
 
 # Vein size range (number of tiles per vein)
-ORE_IRON_VEIN_SIZE_MIN: int = 4
-ORE_IRON_VEIN_SIZE_MAX: int = 12
+ORE_IRON_VEIN_SIZE_MIN: int = 6
+ORE_IRON_VEIN_SIZE_MAX: int = 16
 
-ORE_COPPER_VEIN_SIZE_MIN: int = 3
-ORE_COPPER_VEIN_SIZE_MAX: int = 10
+ORE_COPPER_VEIN_SIZE_MIN: int = 5
+ORE_COPPER_VEIN_SIZE_MAX: int = 14
 
 # Probability that a neighbor tile is added to the vein during BFS growth
-ORE_VEIN_NEIGHBOR_EXPAND_CHANCE: float = 0.55
+ORE_VEIN_NEIGHBOR_EXPAND_CHANCE: float = 0.65
 
 # ═══════════════════════════════════════════════════════════════════
 #  TERRAIN GENERATION THRESHOLDS

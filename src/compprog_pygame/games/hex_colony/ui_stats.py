@@ -1,95 +1,174 @@
-"""Statistics tab content for Hex Colony bottom bar.
+"""Statistics tab — concise numeric colony summary.
 
-Tracks production/consumption rates and shows a simple sparkline graph
-of resource levels over time.
+The bottom-bar Stats tab shows at-a-glance colony numbers (tier,
+population, housing, buildings, research, stockpile totals).  Detailed
+per-resource graphs and advanced analysis live in the
+``AdvancedStatsOverlay`` popup, reachable from the "Advanced Statistics"
+button rendered here.
 """
 
 from __future__ import annotations
 
-from collections import deque
 from typing import TYPE_CHECKING
 
 import pygame
 
-from compprog_pygame.games.hex_colony.resources import Resource
-from compprog_pygame.games.hex_colony.resource_icons import get_resource_icon
+from compprog_pygame.games.hex_colony.buildings import BuildingType
+from compprog_pygame.games.hex_colony.resources import (
+    PROCESSED_RESOURCES,
+    RAW_RESOURCES,
+    Resource,
+)
+from compprog_pygame.games.hex_colony.tech_tree import is_resource_available
 from compprog_pygame.games.hex_colony.ui import (
     Fonts,
     TabContent,
+    UI_ACCENT,
+    UI_BG,
+    UI_BORDER,
     UI_MUTED,
-    RESOURCE_COLORS,
-    RESOURCE_ICONS,
+    UI_OK,
+    UI_TEXT,
 )
+from compprog_pygame.games.hex_colony.ui_advanced_stats import StatsHistory
 
 if TYPE_CHECKING:
+    from compprog_pygame.games.hex_colony.tech_tree import TechTree, TierTracker
     from compprog_pygame.games.hex_colony.world import World
 
-_HISTORY_LEN = 120
-_SAMPLE_INTERVAL = 1.0
+
+_HOMELESS_COLOR = (220, 90, 90)
 
 
 class StatsTabContent(TabContent):
-    """Shows resource history as sparkline graphs."""
+    """Compact numeric dashboard; delegates graphs to the advanced popup."""
 
     def __init__(self) -> None:
-        self._history: dict[Resource, deque[float]] = {
-            r: deque(maxlen=_HISTORY_LEN) for r in Resource
-        }
-        self._last_sample: float = 0.0
-        self._tracked: list[Resource] = [
-            Resource.WOOD, Resource.STONE, Resource.FOOD,
-            Resource.FIBER, Resource.IRON, Resource.COPPER,
-        ]
+        self.history: StatsHistory = StatsHistory()
+        self.tech_tree: "TechTree | None" = None
+        self.tier_tracker: "TierTracker | None" = None
+        self.god_mode_getter: "callable | None" = None
+        self.on_open_advanced: "callable | None" = None
+        self._adv_btn: pygame.Rect = pygame.Rect(0, 0, 0, 0)
 
-    def _sample(self, world: World) -> None:
-        for res in self._tracked:
-            self._history[res].append(world.inventory[res])
+    # ── Helpers ──────────────────────────────────────────────────
+
+    def _god(self) -> bool:
+        return bool(self.god_mode_getter and self.god_mode_getter())
+
+    def _count_stock(
+        self, world: "World", group: frozenset[Resource],
+    ) -> int:
+        god = self._god()
+        total = 0.0
+        for res in group:
+            if god or is_resource_available(
+                res, self.tech_tree, self.tier_tracker,
+            ):
+                total += world.inventory[res]
+        return int(total)
+
+    # ── Drawing ──────────────────────────────────────────────────
 
     def draw_content(
-        self, surface: pygame.Surface, rect: pygame.Rect, world: World,
+        self, surface: pygame.Surface, rect: pygame.Rect, world: "World",
     ) -> None:
-        # Sample at interval
-        if world.time_elapsed - self._last_sample >= _SAMPLE_INTERVAL:
-            self._sample(world)
-            self._last_sample = world.time_elapsed
+        # Keep rolling history alive even when the popup is closed so
+        # the graphs show data from the start of the session.
+        self.history.sample(world)
 
-        # Layout: divide rect into rows for each tracked resource
-        n = len(self._tracked)
-        row_h = max(16, rect.h // max(1, n))
-        y = rect.y + 4
-        label_w = 70
-        graph_x = rect.x + label_w
-        graph_w = rect.w - label_w - 10
+        from compprog_pygame.games.hex_colony.tech_tree import TIERS
+        tier = self.tier_tracker.current_tier if self.tier_tracker else 0
+        tier_name = TIERS[tier].name if self.tier_tracker else ""
+        pop = world.population.count
+        housing = world.connected_housing()
+        homeless = max(0, pop - housing)
+        n_buildings = sum(
+            1 for b in world.buildings.buildings
+            if b.type not in (BuildingType.PATH, BuildingType.BRIDGE,
+                              BuildingType.CAMP, BuildingType.WALL)
+        )
+        idle = sum(
+            1 for p in world.population.people if p.workplace is None
+        )
+        research_count = getattr(world, "_tech_research_count", 0)
+        raw_stock = self._count_stock(world, RAW_RESOURCES)
+        processed_stock = self._count_stock(world, PROCESSED_RESOURCES)
+        time_s = int(world.time_elapsed)
 
-        for res in self._tracked:
-            color = RESOURCE_COLORS.get(res, (200, 200, 200))
-            # Icon sprite + label text
-            icon_surf = get_resource_icon(res, 14)
-            surface.blit(icon_surf, (rect.x + 6, y + 2))
-            label = Fonts.small().render(res.name.title(), True, color)
-            surface.blit(label, (rect.x + 6 + icon_surf.get_width() + 4,
-                                 y + 1))
+        # Stat cards + Advanced button
+        btn_w = 170
+        stat_area = pygame.Rect(
+            rect.x, rect.y, rect.w - btn_w - 12, rect.h,
+        )
+        pop_color = _HOMELESS_COLOR if homeless > 0 else UI_TEXT
+        stats: list[tuple[str, str, tuple[int, int, int]]] = [
+            ("Tier", f"{tier}  {tier_name}", (255, 215, 0)),
+            ("Population", f"{pop}/{housing}", pop_color),
+            ("Buildings", f"{n_buildings}", UI_TEXT),
+            ("Idle workers", f"{idle}",
+             UI_OK if idle == 0 else UI_ACCENT),
+            ("Research", f"{research_count}", UI_TEXT),
+            ("Raw stock", f"{raw_stock}", UI_TEXT),
+            ("Processed", f"{processed_stock}", UI_TEXT),
+            ("Time", _fmt_time(time_s), UI_MUTED),
+        ]
 
-            # Value
-            val = world.inventory[res]
-            val_surf = Fonts.tiny().render(f"{val:.0f}", True, UI_MUTED)
-            surface.blit(val_surf, (rect.x + 6, y + 13))
+        cols = 4
+        rows = (len(stats) + cols - 1) // cols
+        cell_w = max(90, stat_area.w // cols)
+        cell_h = max(44, stat_area.h // max(1, rows))
+        for i, (label, value, color) in enumerate(stats):
+            cx = stat_area.x + (i % cols) * cell_w
+            cy = stat_area.y + (i // cols) * cell_h
+            cell = pygame.Rect(cx + 4, cy + 2, cell_w - 8, cell_h - 4)
+            pygame.draw.rect(surface, UI_BG, cell, border_radius=4)
+            pygame.draw.rect(surface, UI_BORDER, cell, width=1, border_radius=4)
+            lbl = Fonts.tiny().render(label, True, UI_MUTED)
+            surface.blit(lbl, (cell.x + 6, cell.y + 4))
+            val = Fonts.body().render(value, True, color)
+            if val.get_width() > cell.w - 10:
+                val = Fonts.small().render(value, True, color)
+            surface.blit(val, (
+                cell.x + 6,
+                cell.bottom - val.get_height() - 4,
+            ))
 
-            # Sparkline
-            data = self._history[res]
-            if len(data) >= 2:
-                max_val = max(max(data), 1)
-                points = []
-                for i, v in enumerate(data):
-                    px = graph_x + int(i * graph_w / (_HISTORY_LEN - 1))
-                    py = y + row_h - 2 - int((v / max_val) * (row_h - 6))
-                    points.append((px, py))
-                if len(points) >= 2:
-                    pygame.draw.lines(surface, color, False, points, 1)
-
-            y += row_h
+        # Advanced Statistics button
+        self._adv_btn = pygame.Rect(
+            rect.right - btn_w - 4, rect.y + 6,
+            btn_w, rect.h - 12,
+        )
+        mouse_pos = pygame.mouse.get_pos()
+        hovered = self._adv_btn.collidepoint(mouse_pos)
+        bg = UI_ACCENT if hovered else UI_BG
+        pygame.draw.rect(surface, bg, self._adv_btn, border_radius=6)
+        pygame.draw.rect(
+            surface, UI_BORDER, self._adv_btn, width=2, border_radius=6,
+        )
+        title = Fonts.body().render("Advanced", True, UI_TEXT)
+        sub = Fonts.small().render("Statistics", True, UI_TEXT)
+        icon = Fonts.label().render("\u2261", True, UI_ACCENT)
+        cx = self._adv_btn.centerx
+        cy = self._adv_btn.centery
+        surface.blit(icon, (cx - icon.get_width() // 2, cy - 36))
+        surface.blit(title, (cx - title.get_width() // 2, cy - 6))
+        surface.blit(sub, (cx - sub.get_width() // 2, cy + 14))
 
     def handle_event(
         self, event: pygame.event.Event, rect: pygame.Rect,
     ) -> bool:
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self._adv_btn.collidepoint(event.pos):
+                if self.on_open_advanced is not None:
+                    self.on_open_advanced()
+                return True
         return False
+
+
+def _fmt_time(seconds: int) -> str:
+    m, s = divmod(seconds, 60)
+    if m >= 60:
+        h, m = divmod(m, 60)
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"

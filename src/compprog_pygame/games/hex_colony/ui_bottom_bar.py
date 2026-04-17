@@ -23,7 +23,12 @@ from typing import TYPE_CHECKING
 import pygame
 
 from compprog_pygame.games.hex_colony.buildings import BuildingType
-from compprog_pygame.games.hex_colony.resources import BuildingInventory
+from compprog_pygame.games.hex_colony.resources import (
+    BuildingInventory,
+    Resource,
+)
+from compprog_pygame.games.hex_colony.resource_icons import get_resource_icon
+from compprog_pygame.games.hex_colony.tech_tree import is_building_available
 from compprog_pygame.games.hex_colony.ui import (
     Fonts,
     Panel,
@@ -161,6 +166,17 @@ class BuildingsTabContent(TabContent):
         BuildingType.RESEARCH_CENTER: "Research",
     }
 
+    # Harvester buildings: show the sprite of the resource they yield
+    # next to the building name instead of a unicode glyph.
+    _HARVEST_ICON_RESOURCE: dict[BuildingType, Resource] = {
+        BuildingType.WOODCUTTER: Resource.WOOD,
+        BuildingType.QUARRY: Resource.STONE,
+        BuildingType.GATHERER: Resource.FIBER,
+        BuildingType.FARM: Resource.FOOD,
+        BuildingType.WELL: Resource.FOOD,
+        BuildingType.REFINERY: Resource.IRON,
+    }
+
     def __init__(self) -> None:
         self.hovered: BuildingType | str | None = None
         self.selected_building: BuildingType | None = None
@@ -168,6 +184,9 @@ class BuildingsTabContent(TabContent):
         self._on_select: "callable | None" = None
         self._on_delete_toggle: "callable | None" = None
         self.building_inventory: BuildingInventory | None = None
+        self.tech_tree = None
+        self.tier_tracker = None
+        self.god_mode_getter: "callable | None" = None
         self._active_cat: int = 0
         self._cat_tab_rects: list[pygame.Rect] = []
         self._card_rects: list[tuple[pygame.Rect, BuildingType]] = []
@@ -179,6 +198,9 @@ class BuildingsTabContent(TabContent):
     def set_on_delete_toggle(self, callback) -> None:
         self._on_delete_toggle = callback
 
+    def _god(self) -> bool:
+        return bool(self.god_mode_getter and self.god_mode_getter())
+
     # ── Drawing ──────────────────────────────────────────────────
 
     def draw_content(
@@ -187,6 +209,14 @@ class BuildingsTabContent(TabContent):
         self._draw_category_tabs(surface, rect)
 
         _, cat_types = self._CATEGORIES[self._active_cat]
+        # Hide locked buildings unless god mode is on.
+        if not self._god():
+            cat_types = [
+                bt for bt in cat_types
+                if is_building_available(
+                    bt, self.tech_tree, self.tier_tracker,
+                )
+            ]
         n_cards = len(cat_types) + 1  # +1 for delete
         card_area_y = rect.y + _CAT_TAB_H + 6
         card_area_h = rect.h - _CAT_TAB_H - 12
@@ -270,11 +300,17 @@ class BuildingsTabContent(TabContent):
 
         inner_w = rect.w - 12
 
-        # Row 1: icon + name
-        icon = Fonts.label().render(
-            self._ICON.get(btype, "?"), True,
-            self._COLOR.get(btype, UI_TEXT),
-        )
+        # Row 1: icon + name.  Harvesters show the sprite of the
+        # resource they produce; everything else uses the unicode
+        # glyph from ``_ICON``.
+        icon_res = self._HARVEST_ICON_RESOURCE.get(btype)
+        if icon_res is not None:
+            icon = get_resource_icon(icon_res, 20)
+        else:
+            icon = Fonts.label().render(
+                self._ICON.get(btype, "?"), True,
+                self._COLOR.get(btype, UI_TEXT),
+            )
         surface.blit(icon, (rect.x + 6, rect.y + 4))
         name_max = inner_w - icon.get_width() - 6
         name = render_text_clipped(
@@ -285,9 +321,15 @@ class BuildingsTabContent(TabContent):
             rect.x + 6 + icon.get_width() + 4, rect.y + 6,
         ))
 
-        # Row 2: stock count
-        stock_col = UI_TEXT if has_stock else UI_BAD
-        stock_surf = Fonts.small().render(f"x{stock}", True, stock_col)
+        # Row 2: stock count.  God mode shows "∞" since placement is
+        # free and unbounded.
+        if self._god():
+            stock_col = UI_TEXT
+            stock_text = "∞"
+        else:
+            stock_col = UI_TEXT if has_stock else UI_BAD
+            stock_text = f"x{stock}"
+        stock_surf = Fonts.small().render(stock_text, True, stock_col)
         surface.blit(stock_surf, (rect.x + 8, rect.y + 32))
 
         # Row 3: description (wrapped to width)

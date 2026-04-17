@@ -85,6 +85,7 @@ class TileInfoPanel(Panel):
         super().__init__()
         self.tile: HexTile | None = None
         self.coord: HexCoord | None = None
+        self.has_ruin: bool = False
         self._screen_w = 0
         self._screen_h = 0
 
@@ -136,6 +137,17 @@ class TileInfoPanel(Panel):
         else:
             add("No harvestable resource", UI_MUTED, Fonts.small())
         spacer()
+
+        # Ancient ruin tooltip (flavor)
+        if self.has_ruin:
+            add("Ancient Ruin", (210, 180, 140), Fonts.body())
+            ruin_desc = (
+                "A remnant of old Earth. Maybe something can "
+                "be salvaged..."
+            )
+            for wl in wrap_text(Fonts.small(), ruin_desc, inner_w):
+                add(wl, UI_MUTED, Fonts.small())
+            spacer()
 
         from compprog_pygame.games.hex_colony.procgen import IMPASSABLE
         if tile.terrain in IMPASSABLE:
