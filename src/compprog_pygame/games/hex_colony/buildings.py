@@ -24,6 +24,7 @@ class BuildingType(Enum):
     GATHERER = auto()       # harvests fiber and food from adjacent patches
     STORAGE = auto()        # extra resource storage capacity
     REFINERY = auto()       # processes iron/copper from adjacent ore veins
+    MINING_MACHINE = auto()  # fuel-powered auto-miner for adjacent iron/copper veins
     FARM = auto()           # produces food without terrain requirement
     WELL = auto()           # boosts adjacent farm output
     WALL = auto()           # defensive stone wall — connects to adjacent walls
@@ -56,6 +57,7 @@ BUILDING_COSTS: dict[BuildingType, BuildingCost] = {
     BuildingType.GATHERER: BuildingCost(_costs_from_dict(params.BUILDING_COST_GATHERER)),
     BuildingType.STORAGE: BuildingCost(_costs_from_dict(params.BUILDING_COST_STORAGE)),
     BuildingType.REFINERY: BuildingCost(_costs_from_dict(params.BUILDING_COST_REFINERY)),
+    BuildingType.MINING_MACHINE: BuildingCost(_costs_from_dict(params.BUILDING_COST_MINING_MACHINE)),
     BuildingType.FARM: BuildingCost(_costs_from_dict(params.BUILDING_COST_FARM)),
     BuildingType.WELL: BuildingCost(_costs_from_dict(params.BUILDING_COST_WELL)),
     BuildingType.WALL: BuildingCost(_costs_from_dict(params.BUILDING_COST_WALL)),
@@ -77,6 +79,7 @@ BUILDING_MAX_WORKERS: dict[BuildingType, int] = {
     BuildingType.GATHERER: params.BUILDING_MAX_WORKERS_GATHERER,
     BuildingType.STORAGE: params.BUILDING_MAX_WORKERS_STORAGE,
     BuildingType.REFINERY: params.BUILDING_MAX_WORKERS_REFINERY,
+    BuildingType.MINING_MACHINE: params.BUILDING_MAX_WORKERS_MINING_MACHINE,
     BuildingType.FARM: params.BUILDING_MAX_WORKERS_FARM,
     BuildingType.WELL: params.BUILDING_MAX_WORKERS_WELL,
     BuildingType.WALL: params.BUILDING_MAX_WORKERS_WALL,
@@ -98,6 +101,7 @@ BUILDING_HOUSING: dict[BuildingType, int] = {
     BuildingType.GATHERER: params.BUILDING_HOUSING_GATHERER,
     BuildingType.STORAGE: params.BUILDING_HOUSING_STORAGE,
     BuildingType.REFINERY: params.BUILDING_HOUSING_REFINERY,
+    BuildingType.MINING_MACHINE: params.BUILDING_HOUSING_MINING_MACHINE,
     BuildingType.FARM: params.BUILDING_HOUSING_FARM,
     BuildingType.WELL: params.BUILDING_HOUSING_WELL,
     BuildingType.WALL: params.BUILDING_HOUSING_WALL,
@@ -122,6 +126,7 @@ BUILDING_STORAGE_CAPACITY: dict[BuildingType, int] = {
     BuildingType.GATHERER: params.BUILDING_STORAGE_GATHERER,
     BuildingType.STORAGE: params.BUILDING_STORAGE_STORAGE,
     BuildingType.REFINERY: params.BUILDING_STORAGE_REFINERY,
+    BuildingType.MINING_MACHINE: params.BUILDING_STORAGE_MINING_MACHINE,
     BuildingType.FARM: params.BUILDING_STORAGE_FARM,
     BuildingType.WELL: params.BUILDING_STORAGE_WELL,
     BuildingType.WALL: params.BUILDING_STORAGE_WALL,
@@ -149,6 +154,10 @@ class Building:
     # hold Resource recipes.  ``None`` means the station is idle.
     recipe: "BuildingType | Resource | None" = None
     craft_progress: float = 0.0  # seconds of crafting work accumulated
+    # Generic "running" flag.  Currently used by MINING_MACHINE to
+    # indicate whether it has fuel + an adjacent ore vein.  Other
+    # building types may repurpose this in the future.
+    active: bool = False
 
     @property
     def max_workers(self) -> int:
@@ -207,5 +216,6 @@ BUILDING_HARVEST_RESOURCES: dict[BuildingType, set[Resource]] = {
     BuildingType.QUARRY: {Resource.STONE},
     BuildingType.GATHERER: {Resource.FIBER, Resource.FOOD},
     BuildingType.REFINERY: {Resource.IRON, Resource.COPPER},
+    BuildingType.MINING_MACHINE: {Resource.IRON, Resource.COPPER},
     BuildingType.FARM: {Resource.FOOD},
 }

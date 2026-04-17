@@ -54,13 +54,14 @@ PERSON_SPEED: float = 60.0  # pixels per second
 BUILDING_COST_CAMP: dict[str, int] = {}
 BUILDING_COST_HOUSE: dict[str, int] = {"WOOD": 12, "FIBER": 4}
 BUILDING_COST_HABITAT: dict[str, int] = {"IRON": 4, "WOOD": 8, "STONE": 6}
-BUILDING_COST_PATH: dict[str, int] = {"STONE": 2}
-BUILDING_COST_BRIDGE: dict[str, int] = {"WOOD": 6}
+BUILDING_COST_PATH: dict[str, int] = {"STONE": 1, "WOOD": 1}
+BUILDING_COST_BRIDGE: dict[str, int] = {"PLANKS": 4}
 BUILDING_COST_WOODCUTTER: dict[str, int] = {"WOOD": 10, "STONE": 5}
 BUILDING_COST_QUARRY: dict[str, int] = {"WOOD": 15, "FIBER": 5}
 BUILDING_COST_GATHERER: dict[str, int] = {"WOOD": 8, "STONE": 3}
 BUILDING_COST_STORAGE: dict[str, int] = {"WOOD": 20, "STONE": 10}
 BUILDING_COST_REFINERY: dict[str, int] = {"IRON": 8, "STONE": 15, "WOOD": 10}
+BUILDING_COST_MINING_MACHINE: dict[str, int] = {"IRON_BAR": 6, "STONE": 20, "WOOD": 10, "GEARS": 2}
 BUILDING_COST_FARM: dict[str, int] = {"WOOD": 12, "FIBER": 8, "STONE": 4}
 BUILDING_COST_WELL: dict[str, int] = {"STONE": 10, "WOOD": 6}
 BUILDING_COST_WALL: dict[str, int] = {"STONE": 8, "WOOD": 4}
@@ -84,6 +85,7 @@ BUILDING_MAX_WORKERS_QUARRY: int = 2
 BUILDING_MAX_WORKERS_GATHERER: int = 3
 BUILDING_MAX_WORKERS_STORAGE: int = 0
 BUILDING_MAX_WORKERS_REFINERY: int = 2
+BUILDING_MAX_WORKERS_MINING_MACHINE: int = 0
 BUILDING_MAX_WORKERS_FARM: int = 3
 BUILDING_MAX_WORKERS_WELL: int = 0
 BUILDING_MAX_WORKERS_WALL: int = 0
@@ -103,6 +105,7 @@ BUILDING_HOUSING_QUARRY: int = 0
 BUILDING_HOUSING_GATHERER: int = 0
 BUILDING_HOUSING_STORAGE: int = 0
 BUILDING_HOUSING_REFINERY: int = 0
+BUILDING_HOUSING_MINING_MACHINE: int = 0
 BUILDING_HOUSING_FARM: int = 0
 BUILDING_HOUSING_WELL: int = 0
 BUILDING_HOUSING_WALL: int = 0
@@ -123,6 +126,7 @@ BUILDING_STORAGE_QUARRY: int = 10
 BUILDING_STORAGE_GATHERER: int = 20
 BUILDING_STORAGE_STORAGE: int = 100
 BUILDING_STORAGE_REFINERY: int = 15
+BUILDING_STORAGE_MINING_MACHINE: int = 20
 BUILDING_STORAGE_FARM: int = 25
 BUILDING_STORAGE_WELL: int = 0
 BUILDING_STORAGE_WALL: int = 0
@@ -145,6 +149,18 @@ DELETE_REFUND_FRACTION: float = 0.5
 # Refinery: consumes iron/copper ore, produces alloy (counted as same resource)
 REFINERY_RATE: float = 0.3  # units per second per worker (faster than raw gathering)
 
+# Mining machine: fuel-powered automated ore miner for iron/copper veins.
+# Consumes a small amount of CHARCOAL per second while active.  Faster
+# than a worker-staffed refinery but stops entirely when out of fuel.
+MINING_MACHINE_RATE: float = 1.2  # ore per second (machine, not per worker)
+MINING_MACHINE_FUEL_RATE: float = 0.08  # CHARCOAL per second while active
+# Acceptable fuel resources (name -> energy multiplier).  Currently only
+# CHARCOAL is implemented; additional fuels (coal, oil) will be added
+# later and plugged in here.
+MINING_MACHINE_FUELS: dict[str, float] = {
+    "CHARCOAL": 1.0,
+}
+
 # Farm: produces food per second per worker (no terrain requirement)
 FARM_FOOD_RATE: float = 0.8
 
@@ -159,12 +175,119 @@ WELL_FARM_BONUS: float = 1.0
 WORKSHOP_CRAFT_TIME: float = 15.0
 
 # ═══════════════════════════════════════════════════════════════════
+#  INTERMEDIATE / MATERIAL RECIPES
+#  Each recipe transforms raw or processed resources into an output at
+#  one of the crafting stations (WORKSHOP, FORGE, REFINERY, ASSEMBLER).
+#  Fields:
+#    "output_amount" — units of the keyed output produced per craft
+#    "inputs"        — {resource_name: amount_consumed_per_craft}
+#    "time"          — seconds per craft (at 1x speed, 1 worker)
+#    "station"       — BuildingType name that runs the recipe
+#  Keeping these as plain str→dict keeps params.py free of enum imports.
+# ═══════════════════════════════════════════════════════════════════
+
+RECIPE_STATION_WORKSHOP: str = "WORKSHOP"
+RECIPE_STATION_FORGE: str = "FORGE"
+RECIPE_STATION_REFINERY: str = "REFINERY"
+RECIPE_STATION_ASSEMBLER: str = "ASSEMBLER"
+
+RECIPE_PLANKS: dict = {
+    "output_amount": 2,
+    "inputs": {"WOOD": 3},
+    "time": 6.0,
+    "station": RECIPE_STATION_WORKSHOP,
+}
+RECIPE_ROPE: dict = {
+    "output_amount": 1,
+    "inputs": {"FIBER": 2},
+    "time": 4.0,
+    "station": RECIPE_STATION_WORKSHOP,
+}
+RECIPE_COPPER_WIRE: dict = {
+    "output_amount": 2,
+    "inputs": {"COPPER_BAR": 1},
+    "time": 6.0,
+    "station": RECIPE_STATION_WORKSHOP,
+}
+RECIPE_IRON_BAR: dict = {
+    "output_amount": 1,
+    "inputs": {"IRON": 2},
+    "time": 8.0,
+    "station": RECIPE_STATION_FORGE,
+}
+RECIPE_COPPER_BAR: dict = {
+    "output_amount": 1,
+    "inputs": {"COPPER": 2},
+    "time": 8.0,
+    "station": RECIPE_STATION_FORGE,
+}
+RECIPE_BRICKS: dict = {
+    "output_amount": 2,
+    "inputs": {"STONE": 3},
+    "time": 6.0,
+    "station": RECIPE_STATION_REFINERY,
+}
+RECIPE_CHARCOAL: dict = {
+    "output_amount": 1,
+    "inputs": {"WOOD": 2},
+    "time": 6.0,
+    "station": RECIPE_STATION_FORGE,
+}
+RECIPE_GLASS: dict = {
+    "output_amount": 1,
+    "inputs": {"STONE": 2},
+    "time": 8.0,
+    "station": RECIPE_STATION_FORGE,
+}
+RECIPE_STEEL_BAR: dict = {
+    "output_amount": 1,
+    "inputs": {"IRON_BAR": 1, "CHARCOAL": 1},
+    "time": 10.0,
+    "station": RECIPE_STATION_FORGE,
+}
+RECIPE_GEARS: dict = {
+    "output_amount": 2,
+    "inputs": {"IRON_BAR": 1},
+    "time": 7.0,
+    "station": RECIPE_STATION_ASSEMBLER,
+}
+RECIPE_SILICON: dict = {
+    "output_amount": 1,
+    "inputs": {"GLASS": 1},
+    "time": 8.0,
+    "station": RECIPE_STATION_ASSEMBLER,
+}
+RECIPE_CIRCUIT: dict = {
+    "output_amount": 1,
+    "inputs": {"COPPER_WIRE": 2, "SILICON": 1},
+    "time": 12.0,
+    "station": RECIPE_STATION_ASSEMBLER,
+}
+
+# All material recipes, keyed by output-resource name.  resources.py
+# builds the typed MATERIAL_RECIPES registry from this dict.
+MATERIAL_RECIPE_DATA: dict[str, dict] = {
+    "PLANKS": RECIPE_PLANKS,
+    "ROPE": RECIPE_ROPE,
+    "COPPER_WIRE": RECIPE_COPPER_WIRE,
+    "IRON_BAR": RECIPE_IRON_BAR,
+    "COPPER_BAR": RECIPE_COPPER_BAR,
+    "BRICKS": RECIPE_BRICKS,
+    "CHARCOAL": RECIPE_CHARCOAL,
+    "GLASS": RECIPE_GLASS,
+    "STEEL_BAR": RECIPE_STEEL_BAR,
+    "GEARS": RECIPE_GEARS,
+    "SILICON": RECIPE_SILICON,
+    "CIRCUIT": RECIPE_CIRCUIT,
+}
+
+# ═══════════════════════════════════════════════════════════════════
 #  STARTING BUILDING INVENTORY
 #  (buildings the player starts with, placed from the building tab)
 # ═══════════════════════════════════════════════════════════════════
 
 START_BUILDINGS: dict[str, int] = {
-    "PATH": 30,
+    "PATH": 40,
     "WALL": 10,
     "BRIDGE": 4,
     "WORKSHOP": 3,
@@ -217,7 +340,7 @@ TIER_DATA: list[dict] = [
     {
         "name": "Settlement",
         "description": "Begin processing raw materials",
-        "unlocks_buildings": ["REFINERY", "WELL", "ASSEMBLER"],
+        "unlocks_buildings": ["REFINERY", "WELL", "ASSEMBLER", "MINING_MACHINE"],
         "requirements": {
             "population": 15,
             "resource_gathered": {"FOOD": 100},

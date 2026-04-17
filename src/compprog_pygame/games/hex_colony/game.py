@@ -29,6 +29,10 @@ from compprog_pygame.games.hex_colony.ui_minimap import MinimapPanel
 from compprog_pygame.games.hex_colony.ui_stats import StatsTabContent
 from compprog_pygame.games.hex_colony.ui_tech_tree import TechTreeOverlay
 from compprog_pygame.games.hex_colony.ui_advanced_stats import AdvancedStatsOverlay
+from compprog_pygame.games.hex_colony.ui_worker_priority import (
+    WorkerPriorityOverlay,
+    WorkerPriorityTabContent,
+)
 from compprog_pygame.games.hex_colony import params
 
 # Build-mode palette order
@@ -42,6 +46,7 @@ BUILDABLE = [
     BuildingType.GATHERER,
     BuildingType.STORAGE,
     BuildingType.REFINERY,
+    BuildingType.MINING_MACHINE,
     BuildingType.FARM,
     BuildingType.WELL,
     BuildingType.WORKSHOP,
@@ -89,6 +94,7 @@ class Game:
         self._minimap = MinimapPanel()
         self._tech_tree_overlay = TechTreeOverlay()
         self._advanced_stats_overlay = AdvancedStatsOverlay()
+        self._worker_priority_overlay = WorkerPriorityOverlay()
         self.ui.add_panel(self._resource_bar)
         self.ui.add_panel(self._bottom_bar)
         self.ui.add_panel(self._building_info)
@@ -97,12 +103,18 @@ class Game:
         self.ui.add_panel(self._help_overlay)
         self.ui.add_panel(self._tech_tree_overlay)
         self.ui.add_panel(self._advanced_stats_overlay)
+        self.ui.add_panel(self._worker_priority_overlay)
         self.ui.add_panel(self._pause_overlay)
         self.ui.add_panel(self._game_over_overlay)
 
         # Add Stats tab to bottom bar
         self._stats_tab = StatsTabContent()
         self._bottom_bar.add_tab("Stats", self._stats_tab)
+
+        # Worker-priority tab (opens the drag-and-drop overlay).
+        self._worker_priority_tab = WorkerPriorityTabContent()
+        self._worker_priority_tab.on_open_edit = self._on_open_worker_priority
+        self._bottom_bar.add_tab("Workers", self._worker_priority_tab)
 
         # Wire building tab -> build mode
         buildings_tab = self._bottom_bar.buildings_tab
@@ -163,7 +175,7 @@ class Game:
             for event in pygame.event.get():
                 self._handle_event(event)
 
-            if not self._pause_overlay.visible and not self._tech_tree_overlay.visible and not self._advanced_stats_overlay.visible and not self.world.game_over:
+            if not self._pause_overlay.visible and not self._tech_tree_overlay.visible and not self._advanced_stats_overlay.visible and not self._worker_priority_overlay.visible and not self.world.game_over:
                 self._update_keyboard_pan(dt)
                 self._update_alt_overlay()
                 self._update_ghost_building()
@@ -514,6 +526,10 @@ class Game:
     def _on_open_advanced_stats(self) -> None:
         """Open the Advanced Statistics popup."""
         self._advanced_stats_overlay.visible = True
+
+    def _on_open_worker_priority(self) -> None:
+        """Open the Edit Worker Priority drag-drop modal."""
+        self._worker_priority_overlay.visible = True
 
     def _on_pause_return_to_menu(self) -> None:
         """Callback from pause overlay Return to Main Menu button."""

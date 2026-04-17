@@ -75,6 +75,7 @@ _BUILDING_LABEL: dict[BuildingType, str] = {
     BuildingType.GATHERER: "Gatherer",
     BuildingType.STORAGE: "Storage",
     BuildingType.REFINERY: "Refinery",
+    BuildingType.MINING_MACHINE: "Mining Machine",
     BuildingType.FARM: "Farm",
     BuildingType.WELL: "Well",
     BuildingType.WORKSHOP: "Workshop",

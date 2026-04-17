@@ -28,6 +28,20 @@ from compprog_pygame.games.hex_colony.resources import (
     Resource,
 )
 from compprog_pygame.games.hex_colony.resource_icons import get_resource_icon
+from compprog_pygame.games.hex_colony.render_buildings import (
+    draw_assembler,
+    draw_bridge,
+    draw_forge,
+    draw_habitat,
+    draw_mining_machine,
+    draw_path,
+    draw_refinery,
+    draw_research_center,
+    draw_storage,
+    draw_wall,
+    draw_well,
+    draw_workshop,
+)
 from compprog_pygame.games.hex_colony.tech_tree import is_building_available
 from compprog_pygame.games.hex_colony.ui import (
     Fonts,
@@ -83,7 +97,8 @@ class BuildingsTabContent(TabContent):
         ("Core", [BuildingType.RESEARCH_CENTER]),
         ("Housing", [BuildingType.HABITAT]),
         ("Resource", [BuildingType.WOODCUTTER, BuildingType.QUARRY,
-                      BuildingType.GATHERER, BuildingType.FARM, BuildingType.WELL]),
+                      BuildingType.GATHERER, BuildingType.FARM, BuildingType.WELL,
+                      BuildingType.MINING_MACHINE]),
         ("Processing", [BuildingType.WORKSHOP, BuildingType.FORGE,
                         BuildingType.ASSEMBLER, BuildingType.REFINERY,
                         BuildingType.STORAGE]),
@@ -103,6 +118,7 @@ class BuildingsTabContent(TabContent):
         BuildingType.GATHERER: "\u2618",
         BuildingType.STORAGE: "\u2302",
         BuildingType.REFINERY: "\u2697",
+        BuildingType.MINING_MACHINE: "\u26cf",
         BuildingType.FARM: "\u2668",
         BuildingType.WELL: "\u25ce",
         BuildingType.WALL: "\u2588",
@@ -121,6 +137,7 @@ class BuildingsTabContent(TabContent):
         BuildingType.GATHERER: (100, 180, 80),
         BuildingType.STORAGE: (140, 120, 100),
         BuildingType.REFINERY: (90, 80, 100),
+        BuildingType.MINING_MACHINE: (95, 95, 110),
         BuildingType.FARM: (100, 160, 50),
         BuildingType.WELL: (60, 100, 180),
         BuildingType.WALL: (160, 155, 145),
@@ -139,6 +156,7 @@ class BuildingsTabContent(TabContent):
         BuildingType.GATHERER: "Gathers fiber & food",
         BuildingType.STORAGE: "Stores 100 resources",
         BuildingType.REFINERY: "Processes metals",
+        BuildingType.MINING_MACHINE: "Auto-mines ore (uses fuel)",
         BuildingType.FARM: "Grows food",
         BuildingType.WELL: "Boosts nearby farms",
         BuildingType.WALL: "Defensive wall",
@@ -158,6 +176,7 @@ class BuildingsTabContent(TabContent):
         BuildingType.GATHERER: "Gatherer",
         BuildingType.STORAGE: "Storage",
         BuildingType.REFINERY: "Refinery",
+        BuildingType.MINING_MACHINE: "Mining Machine",
         BuildingType.FARM: "Farm",
         BuildingType.WELL: "Well",
         BuildingType.WORKSHOP: "Workshop",
@@ -176,6 +195,53 @@ class BuildingsTabContent(TabContent):
         BuildingType.WELL: Resource.FOOD,
         BuildingType.REFINERY: Resource.IRON,
     }
+
+    # Procedural draw function per building type, used to render a
+    # small preview icon for the building-menu card instead of a
+    # colored square.  Building types not in this map fall back to
+    # the unicode glyph in ``_ICON``.
+    _BUILDING_DRAWERS: dict[BuildingType, "callable"] = {
+        BuildingType.HABITAT: draw_habitat,
+        BuildingType.STORAGE: draw_storage,
+        BuildingType.WORKSHOP: draw_workshop,
+        BuildingType.FORGE: draw_forge,
+        BuildingType.ASSEMBLER: draw_assembler,
+        BuildingType.RESEARCH_CENTER: draw_research_center,
+        BuildingType.WALL: draw_wall,
+        BuildingType.MINING_MACHINE: draw_mining_machine,
+        BuildingType.PATH: draw_path,
+    }
+
+    # Cache of building-sprite preview surfaces, keyed by (btype, size).
+    # Built lazily the first time a card is drawn; preview surfaces are
+    # zoom-independent so the cache never needs invalidation.
+    _preview_cache: dict[tuple[BuildingType, int], pygame.Surface] = {}
+
+    @classmethod
+    def _get_building_preview(
+        cls, btype: BuildingType, size: int,
+    ) -> pygame.Surface | None:
+        drawer = cls._BUILDING_DRAWERS.get(btype)
+        if drawer is None:
+            return None
+        key = (btype, size)
+        cached = cls._preview_cache.get(key)
+        if cached is not None:
+            return cached
+        surf = pygame.Surface((size, size), pygame.SRCALPHA)
+        # Leave some padding so tall buildings (chimneys/roofs) fit.
+        r = max(4, int(size * 0.45))
+        cx = size // 2
+        cy = int(size * 0.62)  # bias downward — most drawers stack upward
+        if btype == BuildingType.WALL:
+            drawer(surf, cx, cy, r, 1.0, [], 0, 0)
+        elif btype == BuildingType.PATH:
+            # Path preview: isolated hub centred in the icon.
+            drawer(surf, cx, size // 2, r, 1.0, [], 0, 0)
+        else:
+            drawer(surf, cx, cy, r, 1.0)
+        cls._preview_cache[key] = surf
+        return surf
 
     def __init__(self) -> None:
         self.hovered: BuildingType | str | None = None
@@ -301,16 +367,21 @@ class BuildingsTabContent(TabContent):
         inner_w = rect.w - 12
 
         # Row 1: icon + name.  Harvesters show the sprite of the
-        # resource they produce; everything else uses the unicode
-        # glyph from ``_ICON``.
+        # resource they produce; other buildings show a small
+        # procedural preview of the building itself.  Remaining
+        # types fall back to the unicode glyph from ``_ICON``.
         icon_res = self._HARVEST_ICON_RESOURCE.get(btype)
         if icon_res is not None:
             icon = get_resource_icon(icon_res, 20)
         else:
-            icon = Fonts.label().render(
-                self._ICON.get(btype, "?"), True,
-                self._COLOR.get(btype, UI_TEXT),
-            )
+            preview = self._get_building_preview(btype, 28)
+            if preview is not None:
+                icon = preview
+            else:
+                icon = Fonts.label().render(
+                    self._ICON.get(btype, "?"), True,
+                    self._COLOR.get(btype, UI_TEXT),
+                )
         surface.blit(icon, (rect.x + 6, rect.y + 4))
         name_max = inner_w - icon.get_width() - 6
         name = render_text_clipped(

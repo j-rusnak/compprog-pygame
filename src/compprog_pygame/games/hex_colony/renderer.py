@@ -77,6 +77,7 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_path,
     draw_bridge,
     draw_refinery,
+    draw_mining_machine,
     draw_farm,
     draw_well,
     draw_wall,
@@ -96,7 +97,7 @@ from compprog_pygame.games.hex_colony.sprites import sprites
 sprites.load_all()
 
 # Building types that collect resources (show range ring)
-_COLLECTION_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER, BuildingType.REFINERY}
+_COLLECTION_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER, BuildingType.REFINERY, BuildingType.MINING_MACHINE}
 
 class Renderer:
     """Draws the entire game scene."""
@@ -868,6 +869,8 @@ class Renderer:
                 draw_storage(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.REFINERY:
                 draw_refinery(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.MINING_MACHINE:
+                draw_mining_machine(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.FORGE:
                 draw_forge(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.ASSEMBLER:
@@ -1122,6 +1125,8 @@ class Renderer:
                 draw_assembler(bld_surf, cx_local, cy_local, r, zoom)
             elif btype == BuildingType.RESEARCH_CENTER:
                 draw_research_center(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.MINING_MACHINE:
+                draw_mining_machine(bld_surf, cx_local, cy_local, r, zoom)
 
             if not self.ghost_valid:
                 red_tint = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)

@@ -63,6 +63,7 @@ BUILDING_COLORS: dict[BuildingType, tuple[int, int, int]] = {
     BuildingType.GATHERER: (100, 180, 80),
     BuildingType.STORAGE: (140, 120, 100),
     BuildingType.REFINERY: (90, 80, 100),
+    BuildingType.MINING_MACHINE: (95, 95, 110),
     BuildingType.FARM: (100, 70, 40),
     BuildingType.WELL: (140, 135, 125),
     BuildingType.WALL: (160, 155, 145),

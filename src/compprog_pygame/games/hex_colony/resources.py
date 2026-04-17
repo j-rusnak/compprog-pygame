@@ -139,68 +139,26 @@ class MaterialRecipe:
 
 # All material recipes in the game.  Keyed by the output resource for
 # convenient lookup.  Each crafting station filters this by ``station``.
-MATERIAL_RECIPES: dict[Resource, MaterialRecipe] = {
-    Resource.PLANKS: MaterialRecipe(
-        output=Resource.PLANKS, output_amount=2,
-        inputs={Resource.WOOD: 3},
-        time=6.0, station=STATION_WORKSHOP,
-    ),
-    Resource.ROPE: MaterialRecipe(
-        output=Resource.ROPE, output_amount=1,
-        inputs={Resource.FIBER: 2},
-        time=4.0, station=STATION_WORKSHOP,
-    ),
-    Resource.COPPER_WIRE: MaterialRecipe(
-        output=Resource.COPPER_WIRE, output_amount=2,
-        inputs={Resource.COPPER_BAR: 1},
-        time=6.0, station=STATION_WORKSHOP,
-    ),
-    Resource.IRON_BAR: MaterialRecipe(
-        output=Resource.IRON_BAR, output_amount=1,
-        inputs={Resource.IRON: 2},
-        time=8.0, station=STATION_FORGE,
-    ),
-    Resource.COPPER_BAR: MaterialRecipe(
-        output=Resource.COPPER_BAR, output_amount=1,
-        inputs={Resource.COPPER: 2},
-        time=8.0, station=STATION_FORGE,
-    ),
-    Resource.BRICKS: MaterialRecipe(
-        output=Resource.BRICKS, output_amount=2,
-        inputs={Resource.STONE: 3},
-        time=6.0, station=STATION_REFINERY,
-    ),
-    Resource.CHARCOAL: MaterialRecipe(
-        output=Resource.CHARCOAL, output_amount=1,
-        inputs={Resource.WOOD: 2},
-        time=6.0, station=STATION_FORGE,
-    ),
-    Resource.GLASS: MaterialRecipe(
-        output=Resource.GLASS, output_amount=1,
-        inputs={Resource.STONE: 2},
-        time=8.0, station=STATION_FORGE,
-    ),
-    Resource.STEEL_BAR: MaterialRecipe(
-        output=Resource.STEEL_BAR, output_amount=1,
-        inputs={Resource.IRON_BAR: 1, Resource.CHARCOAL: 1},
-        time=10.0, station=STATION_FORGE,
-    ),
-    Resource.GEARS: MaterialRecipe(
-        output=Resource.GEARS, output_amount=2,
-        inputs={Resource.IRON_BAR: 1},
-        time=7.0, station=STATION_ASSEMBLER,
-    ),
-    Resource.SILICON: MaterialRecipe(
-        output=Resource.SILICON, output_amount=1,
-        inputs={Resource.GLASS: 1},
-        time=8.0, station=STATION_ASSEMBLER,
-    ),
-    Resource.CIRCUIT: MaterialRecipe(
-        output=Resource.CIRCUIT, output_amount=1,
-        inputs={Resource.COPPER_WIRE: 2, Resource.SILICON: 1},
-        time=12.0, station=STATION_ASSEMBLER,
-    ),
-}
+# Recipe parameters (inputs, times, output amounts, station) live in
+# :mod:`compprog_pygame.games.hex_colony.params` as string-keyed dicts
+# so params.py stays free of enum imports.
+def _build_material_recipes() -> dict[Resource, MaterialRecipe]:
+    from compprog_pygame.games.hex_colony import params
+    recipes: dict[Resource, MaterialRecipe] = {}
+    for out_name, data in params.MATERIAL_RECIPE_DATA.items():
+        output = Resource[out_name]
+        inputs = {Resource[k]: v for k, v in data["inputs"].items()}
+        recipes[output] = MaterialRecipe(
+            output=output,
+            output_amount=int(data["output_amount"]),
+            inputs=inputs,
+            time=float(data["time"]),
+            station=str(data["station"]),
+        )
+    return recipes
+
+
+MATERIAL_RECIPES: dict[Resource, MaterialRecipe] = _build_material_recipes()
 
 
 def recipes_for_station(station: str) -> list[MaterialRecipe]:

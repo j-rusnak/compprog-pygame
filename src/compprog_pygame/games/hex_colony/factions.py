@@ -35,6 +35,7 @@ FACTION_BUILDINGS: dict[Faction, frozenset[BuildingType]] = {
         BuildingType.GATHERER,
         BuildingType.STORAGE,
         BuildingType.REFINERY,
+        BuildingType.MINING_MACHINE,
         BuildingType.FARM,
         BuildingType.WELL,
         BuildingType.WALL,

@@ -473,6 +473,104 @@ def draw_refinery(surface: pygame.Surface, sx: float, sy: float, r: int, z: floa
     pygame.draw.circle(surface, (220, 120, 40), (int(sx - r * 0.15), int(sy + r * 0.1)), glow_r)
 
 
+def draw_mining_machine(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Mining machine — heavy fuel-powered drilling rig with rotating gear."""
+    if _try_sprite(surface, "buildings/mining_machine", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    hull_col = (95, 95, 110)
+    hull_dark = _darken(hull_col, 0.55)
+    hull_light = _lighten(hull_col, 1.2)
+    metal_accent = (180, 140, 60)
+
+    # Caterpillar-style base — long low treads across the tile
+    tread_w = max(4, int(r * 1.1))
+    tread_h = max(2, int(r * 0.22))
+    tread_rect = pygame.Rect(
+        isx - tread_w // 2, isy + int(r * 0.15), tread_w, tread_h,
+    )
+    pygame.draw.rect(surface, (40, 40, 48), tread_rect, border_radius=2)
+    pygame.draw.rect(surface, hull_dark, tread_rect, iz, border_radius=2)
+    # Tread lugs (little tick marks)
+    lug_count = max(4, tread_w // max(2, iz * 2))
+    for i in range(lug_count):
+        lx = tread_rect.x + (i * tread_rect.w) // lug_count + iz
+        pygame.draw.line(
+            surface, (25, 25, 30),
+            (lx, tread_rect.y + 1),
+            (lx, tread_rect.bottom - 1), max(1, iz),
+        )
+
+    # Main chassis — rectangular hull above the treads
+    body_w = max(4, int(r * 0.95))
+    body_h = max(3, int(r * 0.55))
+    body = pygame.Rect(
+        isx - body_w // 2, tread_rect.y - body_h, body_w, body_h,
+    )
+    pygame.draw.rect(surface, hull_col, body, border_radius=2)
+    pygame.draw.rect(surface, hull_light,
+                     pygame.Rect(body.x, body.y, body.w, max(1, iz)),
+                     border_radius=2)
+    pygame.draw.rect(surface, hull_dark, body, iz, border_radius=2)
+
+    # Yellow warning stripe along the lower chassis
+    stripe_y = body.bottom - max(1, int(body.h * 0.25))
+    pygame.draw.line(
+        surface, metal_accent,
+        (body.x + iz, stripe_y), (body.right - iz, stripe_y),
+        max(1, iz),
+    )
+
+    # Angled drill arm — extends forward and down to the ground
+    arm_root = (body.x + body.w // 4, body.y + body.h // 2)
+    drill_tip = (isx + int(r * 0.55), tread_rect.y + tread_rect.h // 2)
+    pygame.draw.line(
+        surface, hull_dark, arm_root, drill_tip,
+        max(2, int(r * 0.12)),
+    )
+    pygame.draw.line(
+        surface, hull_light, arm_root, drill_tip, max(1, iz),
+    )
+    # Drill bit — triangular tip with dark shaft outline
+    bit_r = max(2, int(r * 0.18))
+    bit_pts = [
+        (drill_tip[0] - bit_r, drill_tip[1] - bit_r // 2),
+        (drill_tip[0] - bit_r, drill_tip[1] + bit_r // 2),
+        (drill_tip[0] + bit_r, drill_tip[1]),
+    ]
+    pygame.draw.polygon(surface, (210, 210, 220), bit_pts)
+    pygame.draw.polygon(surface, (30, 30, 35), bit_pts, iz)
+
+    # Rotating cog on top of the chassis (purely cosmetic, static tooth
+    # pattern).  Indicates mechanical operation.
+    gear_cx = isx - int(body_w * 0.25)
+    gear_cy = body.y - max(2, int(r * 0.05))
+    gear_r = max(2, int(r * 0.2))
+    pygame.draw.circle(surface, hull_dark, (gear_cx, gear_cy), gear_r)
+    pygame.draw.circle(surface, metal_accent, (gear_cx, gear_cy), gear_r, iz)
+    # Teeth
+    import math as _math
+    for k in range(6):
+        ang = k * _math.pi / 3
+        tx = int(gear_cx + _math.cos(ang) * gear_r * 1.3)
+        ty = int(gear_cy + _math.sin(ang) * gear_r * 1.3)
+        pygame.draw.circle(
+            surface, metal_accent, (tx, ty), max(1, gear_r // 3),
+        )
+    pygame.draw.circle(
+        surface, hull_light, (gear_cx, gear_cy), max(1, gear_r // 3),
+    )
+
+    # Short exhaust stack on the rear
+    st_w = max(2, int(r * 0.12))
+    st_h = max(3, int(r * 0.28))
+    st_x = body.right - st_w - iz
+    st_y = body.y - st_h
+    pygame.draw.rect(surface, hull_dark, (st_x, st_y, st_w, st_h))
+    pygame.draw.rect(surface, (25, 25, 30), (st_x, st_y, st_w, max(1, iz)))
+
+
 def draw_farm(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
     if _try_sprite(surface, "buildings/farm", sx, sy, r, z):
         return
