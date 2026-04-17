@@ -121,19 +121,29 @@ BUILDING_STORAGE_HOUSE: int = 0
 BUILDING_STORAGE_HABITAT: int = 0
 BUILDING_STORAGE_PATH: int = 0
 BUILDING_STORAGE_BRIDGE: int = 0
-BUILDING_STORAGE_WOODCUTTER: int = 10
-BUILDING_STORAGE_QUARRY: int = 10
-BUILDING_STORAGE_GATHERER: int = 20
-BUILDING_STORAGE_STORAGE: int = 100
-BUILDING_STORAGE_REFINERY: int = 15
-BUILDING_STORAGE_MINING_MACHINE: int = 20
-BUILDING_STORAGE_FARM: int = 25
+BUILDING_STORAGE_WOODCUTTER: int = 40
+BUILDING_STORAGE_QUARRY: int = 40
+BUILDING_STORAGE_GATHERER: int = 60
+BUILDING_STORAGE_STORAGE: int = 250
+BUILDING_STORAGE_REFINERY: int = 40
+BUILDING_STORAGE_MINING_MACHINE: int = 60
+BUILDING_STORAGE_FARM: int = 60
 BUILDING_STORAGE_WELL: int = 0
 BUILDING_STORAGE_WALL: int = 0
-BUILDING_STORAGE_WORKSHOP: int = 0
-BUILDING_STORAGE_FORGE: int = 0
-BUILDING_STORAGE_ASSEMBLER: int = 0
+BUILDING_STORAGE_WORKSHOP: int = 60
+BUILDING_STORAGE_FORGE: int = 60
+BUILDING_STORAGE_ASSEMBLER: int = 60
 BUILDING_STORAGE_RESEARCH_CENTER: int = 0
+
+# ═══════════════════════════════════════════════════════════════════
+#  LOGISTICS
+# ═══════════════════════════════════════════════════════════════════
+
+# Items a single logistics worker can carry in one trip.
+LOGISTICS_CARRY_CAPACITY: int = 5
+# Worker count scaling factor — the more logistics workers, the more
+# the proximity term dominates (so swarms spread across the map).
+LOGISTICS_PROXIMITY_WORKER_FACTOR: float = 0.08
 
 # ═══════════════════════════════════════════════════════════════════
 #  BUILDING DELETE REFUND
@@ -465,15 +475,17 @@ RUINS_COUNT_MAX: int = RUINS_CLUSTERS_MAX * RUINS_PIECES_MAX
 
 # ═══════════════════════════════════════════════════════════════════
 #  RESOURCE AMOUNTS PER TILE (min, max) — set during terrain generation
+#  Approximately 5x what a single tile's former capacity was, so a few
+#  harvester buildings can sustain a long production chain.
 # ═══════════════════════════════════════════════════════════════════
 
-TILE_RESOURCE_FOREST: tuple[float, float] = (20.0, 60.0)
-TILE_RESOURCE_DENSE_FOREST: tuple[float, float] = (20.0, 60.0)
-TILE_RESOURCE_STONE_DEPOSIT: tuple[float, float] = (30.0, 80.0)
-TILE_RESOURCE_FIBER_PATCH: tuple[float, float] = (15.0, 40.0)
-TILE_RESOURCE_MOUNTAIN: tuple[float, float] = (50.0, 120.0)
-TILE_RESOURCE_IRON_VEIN: tuple[float, float] = (40.0, 100.0)
-TILE_RESOURCE_COPPER_VEIN: tuple[float, float] = (40.0, 100.0)
+TILE_RESOURCE_FOREST: tuple[float, float] = (100.0, 300.0)
+TILE_RESOURCE_DENSE_FOREST: tuple[float, float] = (100.0, 300.0)
+TILE_RESOURCE_STONE_DEPOSIT: tuple[float, float] = (150.0, 400.0)
+TILE_RESOURCE_FIBER_PATCH: tuple[float, float] = (75.0, 200.0)
+TILE_RESOURCE_MOUNTAIN: tuple[float, float] = (250.0, 600.0)
+TILE_RESOURCE_IRON_VEIN: tuple[float, float] = (200.0, 500.0)
+TILE_RESOURCE_COPPER_VEIN: tuple[float, float] = (200.0, 500.0)
 
 # ═══════════════════════════════════════════════════════════════════
 #  ORE VEIN GENERATION

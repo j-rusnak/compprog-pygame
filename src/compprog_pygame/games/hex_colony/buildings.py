@@ -158,6 +158,10 @@ class Building:
     # indicate whether it has fuel + an adjacent ore vein.  Other
     # building types may repurpose this in the future.
     active: bool = False
+    # STORAGE buildings only: which single resource this storage is
+    # dedicated to.  ``None`` means the player hasn't picked one yet
+    # (the building will neither supply nor demand).
+    stored_resource: "Resource | None" = None
 
     @property
     def max_workers(self) -> int:

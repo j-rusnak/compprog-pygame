@@ -26,6 +26,9 @@ class Task(Enum):
     HAUL = auto()         # carrying resources back to camp
     RELOCATE = auto()     # moving to a new home (house)
     COMMUTE = auto()      # walking along a path to an assigned workplace
+    LOGISTICS_IDLE = auto()   # logistics worker waiting for an assignment
+    LOGISTICS_PICKUP = auto() # logistics worker walking to a supply source
+    LOGISTICS_DELIVER = auto()# logistics worker walking to a demand dest
 
 
 @dataclass(slots=True)
@@ -51,6 +54,18 @@ class Person:
                                             # this person to go.  While
                                             # `workplace_target != workplace`
                                             # the person is commuting.
+    # Logistics state.  ``is_logistics`` is True iff the worker has been
+    # assigned to the "Logistics" slot in the worker-priority menu for
+    # the network containing their home.  A logistics worker ignores
+    # ``workplace`` / ``workplace_target`` and instead carries items
+    # between supply and demand buildings.
+    is_logistics: bool = False
+    # Current logistics pickup and drop-off buildings.  ``None`` when
+    # the worker is between jobs (LOGISTICS_IDLE).
+    logistics_src: object | None = None
+    logistics_dst: object | None = None
+    logistics_res: object | None = None  # Resource being transported
+    logistics_amount: float = 0.0        # units currently carried
 
     def snap_to_hex(self, size: int) -> None:
         """Set pixel position to centre of current hex."""
@@ -110,6 +125,14 @@ class PopulationManager:
                             else:
                                 # Target vanished or moved; clear.
                                 person.task = Task.IDLE
+                        elif person.task == Task.LOGISTICS_PICKUP:
+                            # Signal to world._update_logistics to pick
+                            # up from logistics_src on the next tick.
+                            # The world runs after population.update so
+                            # it can react to the arrived state.
+                            pass
+                        elif person.task == Task.LOGISTICS_DELIVER:
+                            pass
                 else:
                     person.px += dx / dist * step
                     person.py += dy / dist * step

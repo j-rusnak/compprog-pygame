@@ -144,7 +144,17 @@ class _TechTreeBtn:
     height: int = _LINE_H + 10
 
 
-_Item = _Line | _IconLine | _Spacer | _RecipeBtn | _MaterialRecipeBtn | _TechTreeBtn
+@dataclass
+class _StorageResBtn:
+    resource: Resource
+    selected: bool
+    height: int = _SMALL_LINE_H + 2
+
+
+_Item = (
+    _Line | _IconLine | _Spacer | _RecipeBtn | _MaterialRecipeBtn
+    | _TechTreeBtn | _StorageResBtn
+)
 
 
 class BuildingInfoPanel(Panel):
@@ -157,6 +167,7 @@ class BuildingInfoPanel(Panel):
         self._screen_h = 0
         self._recipe_rects: list[tuple[pygame.Rect, BuildingType]] = []
         self._mat_recipe_rects: list[tuple[pygame.Rect, MaterialRecipe]] = []
+        self._storage_res_rects: list[tuple[pygame.Rect, Resource]] = []
         self._tech_tree_btn: pygame.Rect | None = None
         self.on_open_tech_tree: typing.Callable[[], None] | None = None
         self.tier_tracker: typing.Any = None
@@ -213,6 +224,7 @@ class BuildingInfoPanel(Panel):
         cy = y + _PADDING - self._scroll
         self._recipe_rects = []
         self._mat_recipe_rects = []
+        self._storage_res_rects = []
         self._tech_tree_btn = None
 
         for item in items:
@@ -249,6 +261,8 @@ class BuildingInfoPanel(Panel):
                 self._draw_recipe_btn(surface, x, cy, item, world)
             elif isinstance(item, _MaterialRecipeBtn):
                 self._draw_material_recipe_btn(surface, x, cy, item, world)
+            elif isinstance(item, _StorageResBtn):
+                self._draw_storage_res_btn(surface, x, cy, item)
             elif isinstance(item, _TechTreeBtn):
                 self._draw_tech_btn(surface, x, cy)
             cy += item.height
@@ -303,6 +317,28 @@ class BuildingInfoPanel(Panel):
         )
         surface.blit(surf, (icon_x + icon_size + 4, btn_rect.y + 3))
         self._mat_recipe_rects.append((btn_rect, item.recipe))
+
+    def _draw_storage_res_btn(
+        self, surface: pygame.Surface, x: int, cy: int,
+        item: _StorageResBtn,
+    ) -> None:
+        btn_rect = pygame.Rect(
+            x + _PADDING, cy, _PANEL_W - _PADDING * 2, _SMALL_LINE_H + 2,
+        )
+        bg = UI_ACCENT if item.selected else UI_BG
+        pygame.draw.rect(surface, bg, btn_rect, border_radius=3)
+        pygame.draw.rect(surface, UI_BORDER, btn_rect, width=1, border_radius=3)
+        icon_size = 14
+        icon_surf = get_resource_icon(item.resource, icon_size)
+        icon_x = btn_rect.x + 4
+        icon_y = btn_rect.centery - icon_size // 2
+        surface.blit(icon_surf, (icon_x, icon_y))
+        label = item.resource.name.replace("_", " ").title()
+        surf = render_text_clipped(
+            Fonts.small(), label, UI_TEXT, btn_rect.w - icon_size - 12,
+        )
+        surface.blit(surf, (icon_x + icon_size + 6, btn_rect.y + 2))
+        self._storage_res_rects.append((btn_rect, item.resource))
 
     def _draw_tech_btn(self, surface: pygame.Surface, x: int, cy: int) -> None:
         btn_rect = pygame.Rect(
@@ -388,6 +424,35 @@ class BuildingInfoPanel(Panel):
                         f"{res.name.replace('_', ' ').capitalize()}: {int(amount)}",
                         RESOURCE_COLORS[res],
                     ))
+
+        # STORAGE building: let the player pick which single resource
+        # this storage is dedicated to.  Shown as a scrollable list of
+        # buttons with resource icon + name.  Clicking selects /
+        # deselects.  Only raw + processed resources are offered
+        # (buildings themselves aren't storable).
+        if b.type == BuildingType.STORAGE:
+            from compprog_pygame.games.hex_colony.resources import (
+                RAW_RESOURCES, PROCESSED_RESOURCES,
+            )
+            items.append(_Spacer())
+            current = b.stored_resource
+            line(
+                f"Stores: {current.name.replace('_',' ').title() if current else '(none selected)'}",
+                UI_ACCENT if current else UI_MUTED,
+            )
+            items.append(_Spacer(2))
+            god = bool(self.god_mode_getter and self.god_mode_getter())
+            for res in list(RAW_RESOURCES) + [
+                r for r in Resource if r in PROCESSED_RESOURCES
+            ]:
+                if not god and not is_resource_available(
+                    res, self.tech_tree, self.tier_tracker,
+                ):
+                    continue
+                items.append(_StorageResBtn(
+                    resource=res, selected=(current == res),
+                ))
+                items.append(_Spacer(2))
 
         # Crafting stations — Workshop / Forge / Refinery / Assembler.
         if b.type in (
@@ -560,5 +625,13 @@ class BuildingInfoPanel(Panel):
                         else:
                             self.building.recipe = mrec.output
                             self.building.craft_progress = 0.0
+                        return True
+            if self.building.type == BuildingType.STORAGE:
+                for btn_rect, res in self._storage_res_rects:
+                    if btn_rect.collidepoint(event.pos):
+                        if self.building.stored_resource == res:
+                            self.building.stored_resource = None
+                        else:
+                            self.building.stored_resource = res
                         return True
         return True  # consume any click inside the panel

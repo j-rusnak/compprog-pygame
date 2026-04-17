@@ -38,6 +38,10 @@ class Network:
     # Identity-set for fast ``b in network`` checks.  Populated
     # alongside ``buildings`` — callers should not mutate directly.
     _bids: set[int] = field(default_factory=set)
+    # Number of workers the player has allocated to the always-present
+    # "Logistics" slot for this network.  Survives rebuilds in the same
+    # way priority tiers do (persisted across components by id).
+    logistics_target: int = 0
 
     @property
     def name(self) -> str:
@@ -171,6 +175,10 @@ class World:
 
         # Workshop crafting
         self._update_workshops(dt)
+
+        # Logistics dispatch (runs before population.update so newly
+        # assigned paths are walked this same frame).
+        self._update_logistics(dt)
 
         # Move people
         self.population.update(dt, self, self.settings.hex_size)
@@ -328,6 +336,11 @@ class World:
                 buildings=list(comp),
                 priority=new_priority,
                 _bids=comp_ids,
+                logistics_target=max(
+                    (old_nets[pid].logistics_target for pid in parent_ids
+                     if pid in old_nets),
+                    default=0,
+                ),
             ))
 
         # Stable display order: by id ascending.
@@ -388,6 +401,46 @@ class World:
                 homeless = max(0, camp.residents - camp.housing_capacity)
                 available = max(0, available - homeless)
 
+            # ── Logistics slot (always present) ──────────────────
+            # Keep people who are already logistics in that role if
+            # possible, preferring those currently carrying cargo so
+            # we don't orphan in-flight shipments.
+            log_target = min(net.logistics_target, available)
+            already_log = [p for p in people if p.is_logistics]
+            already_log.sort(
+                key=lambda p: (p.carry_resource is None, p.id),
+            )
+            chosen_log: list = already_log[:log_target]
+            if len(chosen_log) < log_target:
+                # Promote extra people (idle first).
+                extras = [
+                    p for p in people
+                    if not p.is_logistics and p not in chosen_log
+                ]
+                extras.sort(key=lambda p: (
+                    p.workplace_target is not None, p.id,
+                ))
+                need = log_target - len(chosen_log)
+                chosen_log.extend(extras[:need])
+            chosen_log_ids = {id(p) for p in chosen_log}
+            for p in people:
+                should_be = id(p) in chosen_log_ids
+                if p.is_logistics and not should_be:
+                    # Demote: drop cargo, reset state.
+                    p.is_logistics = False
+                    p.logistics_src = None
+                    p.logistics_dst = None
+                    p.carry_resource = None
+                    p.path = []
+                    p.task = Task.IDLE
+                elif should_be and not p.is_logistics:
+                    p.is_logistics = True
+                    p.workplace = None
+                    p.workplace_target = None
+                    p.path = []
+                    p.task = Task.LOGISTICS_IDLE
+            available -= len(chosen_log)
+
             # Compute per-building target slot counts via the tiered
             # round-robin algorithm.
             target_slots: dict[int, int] = {
@@ -417,7 +470,8 @@ class World:
             b_by_id: dict[int, Building] = {
                 id(b): b for tier in net.priority for b in tier
             }
-            for p in people:
+            non_log = [p for p in people if not p.is_logistics]
+            for p in non_log:
                 tgt = p.workplace_target
                 if tgt is not None and id(tgt) in remaining_slots \
                         and remaining_slots[id(tgt)] > 0:
@@ -440,6 +494,8 @@ class World:
         from their current workplace.  Workers that lost their target
         go idle; new assignments trigger path recomputation."""
         for p in self.population.people:
+            if p.is_logistics:
+                continue
             tgt = p.workplace_target
             if tgt is None:
                 if p.workplace is not None:
@@ -488,6 +544,333 @@ class World:
                 continue
             if p.hex_pos == wp.coord:
                 wp.workers += 1
+
+    # ── Supply / demand ──────────────────────────────────────────
+
+    def _building_production_outputs(
+        self, b: "Building",
+    ) -> set[Resource]:
+        """Resources *b* is currently producing (and so supplies)."""
+        from compprog_pygame.games.hex_colony.resources import (
+            MATERIAL_RECIPES,
+        )
+        t = b.type
+        if t == BuildingType.WOODCUTTER:
+            return {Resource.WOOD}
+        if t == BuildingType.QUARRY:
+            return {Resource.STONE}
+        if t == BuildingType.GATHERER:
+            return {Resource.FIBER, Resource.FOOD}
+        if t == BuildingType.FARM:
+            return {Resource.FOOD}
+        if t == BuildingType.MINING_MACHINE:
+            return {Resource.IRON, Resource.COPPER}
+        if t == BuildingType.REFINERY and b.recipe is None:
+            return {Resource.IRON, Resource.COPPER}
+        if t in (
+            BuildingType.WORKSHOP, BuildingType.FORGE,
+            BuildingType.REFINERY, BuildingType.ASSEMBLER,
+        ):
+            if isinstance(b.recipe, Resource):
+                mrec = MATERIAL_RECIPES.get(b.recipe)
+                if mrec is not None:
+                    return {mrec.output}
+        return set()
+
+    def _building_supply(self, b: "Building") -> dict[Resource, float]:
+        """Resources currently offered as supply from *b*, with the
+        amount currently held in its storage."""
+        out: dict[Resource, float] = {}
+        # STORAGE: supplies its configured resource.
+        if b.type == BuildingType.STORAGE:
+            if b.stored_resource is not None:
+                amt = b.storage.get(b.stored_resource, 0.0)
+                if amt > 0:
+                    out[b.stored_resource] = amt
+            return out
+        # Production buildings: supply what they produce if it's in
+        # their storage.
+        producing = self._building_production_outputs(b)
+        for r in producing:
+            amt = b.storage.get(r, 0.0)
+            if amt > 0:
+                out[r] = amt
+        return out
+
+    def _building_demand(self, b: "Building") -> dict[Resource, float]:
+        """Resources *b* wants delivered, with the free space/amount
+        it can still accept."""
+        from compprog_pygame.games.hex_colony.resources import (
+            MATERIAL_RECIPES,
+        )
+        out: dict[Resource, float] = {}
+        free = self._storage_free(b)
+        if free <= 0:
+            return out
+        # STORAGE: demands its configured resource up to free space.
+        if b.type == BuildingType.STORAGE:
+            if b.stored_resource is not None:
+                out[b.stored_resource] = free
+            return out
+        # MINING_MACHINE: demands fuel.
+        if b.type == BuildingType.MINING_MACHINE:
+            for fuel_name in params.MINING_MACHINE_FUELS:
+                fr = Resource[fuel_name]
+                have = b.storage.get(fr, 0.0)
+                cap_for_fuel = min(free, b.storage_capacity * 0.4)
+                need = max(0.0, cap_for_fuel - have)
+                if need > 0.5:
+                    out[fr] = need
+            return out
+        # Crafting stations: demand recipe inputs.
+        if b.type in (
+            BuildingType.WORKSHOP, BuildingType.FORGE,
+            BuildingType.REFINERY, BuildingType.ASSEMBLER,
+        ) and isinstance(b.recipe, Resource):
+            mrec = MATERIAL_RECIPES.get(b.recipe)
+            if mrec is not None:
+                for res, amt in mrec.inputs.items():
+                    have = b.storage.get(res, 0.0)
+                    # Buffer ~3x recipe requirement on-site.
+                    target = amt * 3
+                    need = max(0.0, min(target - have, free))
+                    if need > 0.5:
+                        out[res] = need
+        return out
+
+    def _is_producer(self, b: "Building") -> bool:
+        return b.type in (
+            BuildingType.WOODCUTTER, BuildingType.QUARRY,
+            BuildingType.GATHERER, BuildingType.FARM,
+            BuildingType.MINING_MACHINE,
+        ) or (b.type in (
+            BuildingType.WORKSHOP, BuildingType.FORGE,
+            BuildingType.REFINERY, BuildingType.ASSEMBLER,
+        ) and isinstance(b.recipe, Resource))
+
+    def _is_consumer(self, b: "Building") -> bool:
+        if b.type == BuildingType.MINING_MACHINE:
+            return True
+        if b.type in (
+            BuildingType.WORKSHOP, BuildingType.FORGE,
+            BuildingType.REFINERY, BuildingType.ASSEMBLER,
+        ) and isinstance(b.recipe, Resource):
+            return True
+        return False
+
+    # ── Logistics ────────────────────────────────────────────────
+
+    def _update_logistics(self, dt: float) -> None:
+        """Advance every logistics worker one step.
+
+        State machine:
+            LOGISTICS_IDLE → pick a best (src, dst, res) job and set a
+                             path to src (task becomes LOGISTICS_PICKUP).
+            LOGISTICS_PICKUP → on arrival at src, transfer up to
+                               LOGISTICS_CARRY_CAPACITY units, then set
+                               path to dst (task LOGISTICS_DELIVER).
+            LOGISTICS_DELIVER → on arrival at dst, deposit cargo, then
+                                return to LOGISTICS_IDLE.
+        """
+        for p in self.population.people:
+            if not p.is_logistics:
+                continue
+            self._logistics_tick(p)
+
+    def _logistics_tick(self, p) -> None:
+        # Arrival is detected by "has logistics state, path empty, and
+        # hex_pos matches the expected coord".  Movement is handled
+        # later by population.update() — we just set up the next step.
+        if p.task == Task.LOGISTICS_IDLE or p.task == Task.IDLE:
+            self._logistics_find_job(p)
+            return
+
+        if p.task == Task.LOGISTICS_PICKUP:
+            src = p.logistics_src
+            if src is None or id(src) not in {id(b) for b in self.buildings.buildings}:
+                self._logistics_reset(p)
+                return
+            if p.path:
+                return  # still walking
+            if p.hex_pos != src.coord:
+                # Path broke — try to replan once.
+                path = self._find_building_path(p.hex_pos, src.coord)
+                if path:
+                    p.path = path
+                    return
+                self._logistics_reset(p)
+                return
+            # Pick up.
+            res = p.logistics_res
+            if res is None:
+                self._logistics_reset(p)
+                return
+            take = min(
+                params.LOGISTICS_CARRY_CAPACITY,
+                src.storage.get(res, 0.0),
+            )
+            if take <= 0:
+                # Supplier's empty; abandon and find something else.
+                self._logistics_reset(p)
+                return
+            src.storage[res] = src.storage.get(res, 0.0) - take
+            if src.storage[res] <= 1e-6:
+                src.storage.pop(res, None)
+            p.logistics_amount = take
+            p.carry_resource = (res, take)
+            # Set path to destination.
+            dst = p.logistics_dst
+            if dst is None:
+                # Shouldn't happen but be defensive.
+                self._logistics_reset(p)
+                return
+            path = self._find_building_path(p.hex_pos, dst.coord)
+            if not path:
+                # Lost path — drop cargo back (best effort).
+                self._deposit(src, res, take)
+                p.carry_resource = None
+                p.logistics_amount = 0.0
+                self._logistics_reset(p)
+                return
+            p.path = path
+            p.task = Task.LOGISTICS_DELIVER
+            return
+
+        if p.task == Task.LOGISTICS_DELIVER:
+            dst = p.logistics_dst
+            if dst is None or id(dst) not in {id(b) for b in self.buildings.buildings}:
+                # Destination gone.  Drop cargo at any storage we're
+                # on (best effort) or just discard to global inventory.
+                if p.logistics_res is not None and p.logistics_amount > 0:
+                    self.inventory.add(p.logistics_res, p.logistics_amount)
+                p.carry_resource = None
+                p.logistics_amount = 0.0
+                self._logistics_reset(p)
+                return
+            if p.path:
+                return
+            if p.hex_pos != dst.coord:
+                path = self._find_building_path(p.hex_pos, dst.coord)
+                if path:
+                    p.path = path
+                    return
+                # Drop to inventory as fallback.
+                if p.logistics_res is not None and p.logistics_amount > 0:
+                    self.inventory.add(p.logistics_res, p.logistics_amount)
+                p.carry_resource = None
+                p.logistics_amount = 0.0
+                self._logistics_reset(p)
+                return
+            # Deposit.
+            res = p.logistics_res
+            if res is not None and p.logistics_amount > 0:
+                deposited = self._deposit(dst, res, p.logistics_amount)
+                leftover = p.logistics_amount - deposited
+                if leftover > 0:
+                    # Dest full; push leftover to global inventory.
+                    self.inventory.add(res, leftover)
+            p.carry_resource = None
+            p.logistics_amount = 0.0
+            self._logistics_reset(p)
+            return
+
+    def _logistics_reset(self, p) -> None:
+        p.task = Task.LOGISTICS_IDLE
+        p.logistics_src = None
+        p.logistics_dst = None
+        p.logistics_res = None
+        p.path = []
+
+    def _logistics_find_job(self, p) -> None:
+        """Score every (supplier, consumer, resource) pair in *p*'s
+        network and pick the best one."""
+        if p.home is None:
+            return
+        net = self._network_of_building(p.home)
+        if net is None:
+            return
+        # Number of logistics workers in this network (>=1 since *p* is
+        # one).  Used to scale the proximity weight.
+        log_count = max(1, sum(
+            1 for q in self.population.people
+            if q.is_logistics and q.home is not None
+            and self._network_of_building(q.home) is net
+        ))
+        prox_weight = 1.0 + log_count * params.LOGISTICS_PROXIMITY_WORKER_FACTOR
+
+        # Pre-compute supply/demand per building.
+        supplies: list[tuple] = []  # (b, res, amount, fill_frac)
+        demands: list[tuple] = []   # (b, res, need, empty_frac)
+        for b in net.buildings:
+            if b.storage_capacity <= 0:
+                continue
+            sup = self._building_supply(b)
+            for r, amt in sup.items():
+                cap = max(1.0, b.storage_capacity)
+                supplies.append((b, r, amt, amt / cap))
+            dem = self._building_demand(b)
+            for r, need in dem.items():
+                cap = max(1.0, b.storage_capacity)
+                demands.append((b, r, need, need / cap))
+
+        if not supplies or not demands:
+            return
+
+        best_score = -1e9
+        best_src = best_dst = None
+        best_res = None
+        for sb, sres, samt, sfill in supplies:
+            for db, dres, dneed, dempty in demands:
+                if sres != dres or sb is db:
+                    continue
+                # Big bonuses for storage-mediated links.
+                prod_to_storage = (
+                    self._is_producer(sb) and db.type == BuildingType.STORAGE
+                )
+                storage_to_consumer = (
+                    sb.type == BuildingType.STORAGE and self._is_consumer(db)
+                )
+                link_bonus = 0.0
+                if prod_to_storage:
+                    link_bonus += 0.8
+                if storage_to_consumer:
+                    link_bonus += 0.8
+                # Distance (hex distance from worker → src → dst).
+                d_ps = p.hex_pos.distance(sb.coord)
+                d_sd = sb.coord.distance(db.coord)
+                total_d = max(1, d_ps + d_sd)
+                proximity = 1.0 / total_d
+                # Urgency from fill ratios.
+                urgency = sfill * 0.6 + dempty * 0.6
+                # Magnitude: what we can actually transport.
+                qty = min(
+                    params.LOGISTICS_CARRY_CAPACITY, samt, dneed,
+                )
+                if qty <= 0:
+                    continue
+                magnitude = min(1.0, qty / params.LOGISTICS_CARRY_CAPACITY)
+                score = (
+                    urgency * 1.0
+                    + link_bonus
+                    + proximity * prox_weight
+                    + magnitude * 0.3
+                )
+                if score > best_score:
+                    best_score = score
+                    best_src = sb
+                    best_dst = db
+                    best_res = sres
+
+        if best_src is None or best_dst is None or best_res is None:
+            return
+        path = self._find_building_path(p.hex_pos, best_src.coord)
+        if not path and p.hex_pos != best_src.coord:
+            return
+        p.logistics_src = best_src
+        p.logistics_dst = best_dst
+        p.logistics_res = best_res
+        p.path = path
+        p.task = Task.LOGISTICS_PICKUP
 
     def _check_unreachable_buildings(self) -> None:
         """Push a one-time notification for every worker-building that
@@ -680,78 +1063,193 @@ class World:
 
     # ── Production update (Farms, Refineries, Wells) ─────────────
 
+    def _storage_free(self, b: "Building") -> float:
+        """Remaining storage capacity on *b* (never negative)."""
+        return max(0.0, b.storage_capacity - b.stored_total)
+
+    def _deposit(self, b: "Building", res: Resource, amount: float) -> float:
+        """Add *amount* of *res* to ``b.storage``, capped to capacity.
+        Returns the amount actually deposited."""
+        if amount <= 0:
+            return 0.0
+        free = self._storage_free(b)
+        dep = min(amount, free)
+        if dep > 0:
+            b.storage[res] = b.storage.get(res, 0.0) + dep
+        return dep
+
+    def _harvest_from_terrain(
+        self, b: "Building", resources: set[Resource], rate_per_worker: float,
+        dt: float,
+    ) -> None:
+        """Adjacent-terrain harvester: pulls from any neighbour tile whose
+        TERRAIN_RESOURCE is in *resources* into the building's storage."""
+        from compprog_pygame.games.hex_colony.resources import TERRAIN_RESOURCE
+        if b.workers <= 0:
+            return
+        free = self._storage_free(b)
+        if free <= 0:
+            b.active = False
+            return
+        budget = rate_per_worker * b.workers * dt
+        budget = min(budget, free)
+        if budget <= 0:
+            return
+        # Round-robin through neighbour tiles that still have resource.
+        produced = False
+        for nb in b.coord.neighbors():
+            if budget <= 0:
+                break
+            tile = self.grid.get(nb)
+            if tile is None:
+                continue
+            res = TERRAIN_RESOURCE.get(tile.terrain)
+            if res is None or res not in resources:
+                continue
+            if tile.resource_amount <= 0:
+                continue
+            take = min(budget, tile.resource_amount)
+            tile.resource_amount -= take
+            self._deposit(b, res, take)
+            budget -= take
+            produced = True
+        b.active = produced
+
     def _update_production(self, dt: float) -> None:
-        """Per-frame resource production from farms and refineries."""
+        """Per-frame resource production.  All outputs go into the
+        building's own ``storage`` (halting when full)."""
+        s = self.settings
+        # Woodcutter
+        for b in self.buildings.by_type(BuildingType.WOODCUTTER):
+            self._harvest_from_terrain(
+                b, {Resource.WOOD}, s.gather_wood, dt,
+            )
+        # Quarry
+        for b in self.buildings.by_type(BuildingType.QUARRY):
+            self._harvest_from_terrain(
+                b, {Resource.STONE}, s.gather_stone, dt,
+            )
+        # Gatherer (fiber AND food from adjacent patches)
+        for b in self.buildings.by_type(BuildingType.GATHERER):
+            self._harvest_from_terrain(
+                b, {Resource.FIBER, Resource.FOOD},
+                (s.gather_fiber + s.gather_food) * 0.5, dt,
+            )
+
         # Pre-compute well locations for farm bonus
         well_coords: set[HexCoord] = set()
         for b in self.buildings.by_type(BuildingType.WELL):
             well_coords.add(b.coord)
 
-        # Farm: produces food per worker, boosted by adjacent wells
+        # Farm: produces food per worker, boosted by adjacent wells.
         for farm in self.buildings.by_type(BuildingType.FARM):
             if farm.workers <= 0:
+                continue
+            if self._storage_free(farm) <= 0:
+                farm.active = False
                 continue
             bonus = 1.0
             for nb in farm.coord.neighbors():
                 if nb in well_coords:
                     bonus += params.WELL_FARM_BONUS
-                    break  # only one well bonus
+                    break
             amount = params.FARM_FOOD_RATE * farm.workers * bonus * dt
-            self.inventory.add(Resource.FOOD, amount)
+            self._deposit(farm, Resource.FOOD, amount)
+            farm.active = True
 
-        # Refinery: produces from adjacent iron/copper veins
-        for refinery in self.buildings.by_type(BuildingType.REFINERY):
-            if refinery.workers <= 0:
-                continue
-            amount = params.REFINERY_RATE * refinery.workers * dt
-            # Check adjacent ore tiles and produce
-            for nb in refinery.coord.neighbors():
-                tile = self.grid.get(nb)
-                if tile is None:
-                    continue
-                from compprog_pygame.games.hex_colony.hex_grid import Terrain
-                if tile.terrain == Terrain.IRON_VEIN:
-                    self.inventory.add(Resource.IRON, amount)
-                elif tile.terrain == Terrain.COPPER_VEIN:
-                    self.inventory.add(Resource.COPPER, amount)
-
-        # Mining machine: automated miner.  Requires fuel (CHARCOAL
-        # for now; other fuels will be added later).  Produces
-        # iron/copper from adjacent veins while fuel is available.
+        # Refinery: if no active recipe, harvests ore from adjacent
+        # veins into its own storage.  If a recipe is set, it runs as
+        # a crafting station (handled by _update_workshops).
         from compprog_pygame.games.hex_colony.hex_grid import Terrain
+        for ref in self.buildings.by_type(BuildingType.REFINERY):
+            if ref.recipe is not None:
+                continue
+            if ref.workers <= 0:
+                continue
+            if self._storage_free(ref) <= 0:
+                ref.active = False
+                continue
+            rate = params.REFINERY_RATE * ref.workers * dt
+            for nb in ref.coord.neighbors():
+                if rate <= 0:
+                    break
+                tile = self.grid.get(nb)
+                if tile is None or tile.resource_amount <= 0:
+                    continue
+                if tile.terrain == Terrain.IRON_VEIN:
+                    take = min(rate, tile.resource_amount,
+                               self._storage_free(ref))
+                    if take > 0:
+                        tile.resource_amount -= take
+                        self._deposit(ref, Resource.IRON, take)
+                        rate -= take
+                elif tile.terrain == Terrain.COPPER_VEIN:
+                    take = min(rate, tile.resource_amount,
+                               self._storage_free(ref))
+                    if take > 0:
+                        tile.resource_amount -= take
+                        self._deposit(ref, Resource.COPPER, take)
+                        rate -= take
+            ref.active = True
+
+        # Mining machine: automated miner.  Burns CHARCOAL from its
+        # own storage, falling back to the global inventory.  Produces
+        # iron/copper from adjacent veins into its storage.
         for mm in self.buildings.by_type(BuildingType.MINING_MACHINE):
-            # Needs at least one adjacent ore tile to do useful work.
-            adjacent_ores: list[Resource] = []
+            adjacent_ores: list[tuple[HexCoord, Resource]] = []
             for nb in mm.coord.neighbors():
                 tile = self.grid.get(nb)
-                if tile is None:
+                if tile is None or tile.resource_amount <= 0:
                     continue
                 if tile.terrain == Terrain.IRON_VEIN:
-                    adjacent_ores.append(Resource.IRON)
+                    adjacent_ores.append((nb, Resource.IRON))
                 elif tile.terrain == Terrain.COPPER_VEIN:
-                    adjacent_ores.append(Resource.COPPER)
+                    adjacent_ores.append((nb, Resource.COPPER))
             if not adjacent_ores:
                 mm.active = False
                 continue
+            if self._storage_free(mm) <= 0:
+                mm.active = False
+                continue
 
-            # Try each accepted fuel in priority order; stop at the
-            # first one the stockpile has enough of.
             fuel_needed = params.MINING_MACHINE_FUEL_RATE * dt
             fuel_res: Resource | None = None
             for fuel_name in params.MINING_MACHINE_FUELS:
                 candidate = Resource[fuel_name]
-                if self.inventory[candidate] >= fuel_needed:
+                have_here = mm.storage.get(candidate, 0.0)
+                if have_here + self.inventory[candidate] >= fuel_needed:
                     fuel_res = candidate
                     break
             if fuel_res is None:
                 mm.active = False
                 continue
-
-            self.inventory.spend(fuel_res, fuel_needed)
+            # Prefer on-site fuel (delivered by logistics).
+            on_site = mm.storage.get(fuel_res, 0.0)
+            from_local = min(on_site, fuel_needed)
+            if from_local > 0:
+                mm.storage[fuel_res] = on_site - from_local
+                if mm.storage[fuel_res] <= 1e-6:
+                    mm.storage.pop(fuel_res, None)
+            rem = fuel_needed - from_local
+            if rem > 0:
+                self.inventory.spend(fuel_res, rem)
             mm.active = True
-            amount = params.MINING_MACHINE_RATE * dt
-            for ore in adjacent_ores:
-                self.inventory.add(ore, amount)
+
+            rate = params.MINING_MACHINE_RATE * dt
+            for nb, ore in adjacent_ores:
+                if rate <= 0:
+                    break
+                if self._storage_free(mm) <= 0:
+                    break
+                tile = self.grid.get(nb)
+                if tile is None:
+                    continue
+                take = min(rate, tile.resource_amount,
+                           self._storage_free(mm))
+                if take > 0:
+                    tile.resource_amount -= take
+                    self._deposit(mm, ore, take)
+                    rate -= take
 
     # ── Crafting stations (Workshop / Forge / Refinery) ──────────
 
@@ -799,6 +1297,9 @@ class World:
     def _tick_building_recipe(
         self, station, dt: float, building_costs,
     ) -> None:
+        # Building recipes still pull from the global inventory (the
+        # Workshop crafts placeable buildings as a "one-off" special
+        # case).  Material recipes go through storage.
         cost = building_costs[station.recipe]
         can_afford = all(
             self.inventory[res] >= amount
@@ -813,16 +1314,41 @@ class World:
             self.building_inventory.add(station.recipe)
             station.craft_progress = 0.0
 
+    def _station_available(
+        self, station, res: Resource, amount: float,
+    ) -> float:
+        """How much of *res* the station can draw on, counting its own
+        storage first, the global inventory second."""
+        return station.storage.get(res, 0.0) + self.inventory[res]
+
+    def _station_consume(
+        self, station, res: Resource, amount: float,
+    ) -> None:
+        """Consume *amount* of *res*, preferring the station's storage."""
+        from_local = min(station.storage.get(res, 0.0), amount)
+        if from_local > 0:
+            station.storage[res] = station.storage.get(res, 0.0) - from_local
+            if station.storage[res] <= 1e-6:
+                station.storage.pop(res, None)
+        rem = amount - from_local
+        if rem > 0:
+            self.inventory.spend(res, rem)
+
     def _tick_material_recipe(self, station, recipe, dt: float) -> None:
-        can_afford = all(
-            self.inventory[res] >= amount
-            for res, amount in recipe.inputs.items()
-        )
-        if not can_afford:
+        # Ensure there's room to deposit the next batch of output.
+        free = self._storage_free(station)
+        if free < recipe.output_amount:
+            # Halt production when output can't fit.
+            station.active = False
             return
+        # Check inputs (storage + global inventory fallback).
+        for res, amount in recipe.inputs.items():
+            if self._station_available(station, res, amount) < amount:
+                return
         station.craft_progress += dt * station.workers
+        station.active = station.workers > 0
         if station.craft_progress >= recipe.time:
             for res, amount in recipe.inputs.items():
-                self.inventory.spend(res, amount)
-            self.inventory.add(recipe.output, recipe.output_amount)
+                self._station_consume(station, res, amount)
+            self._deposit(station, recipe.output, recipe.output_amount)
             station.craft_progress = 0.0

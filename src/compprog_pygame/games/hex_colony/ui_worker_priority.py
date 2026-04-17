@@ -62,6 +62,8 @@ _TIER_GAP = 10
 _TIER_LABEL_W = 70
 _EDIT_BTN_W = 140
 _EDIT_BTN_H = 36
+_LOG_ROW_H = 38  # always-present Logistics row
+_LOG_BTN_W = 28  # +/- button width
 
 
 def _card_icon(btype: BuildingType, size: int = 28) -> pygame.Surface | None:
@@ -227,6 +229,19 @@ class WorkerPriorityTabContent(TabContent):
         prev_clip = surface.get_clip()
         surface.set_clip(list_rect)
         y = list_rect.y - self._scroll
+        # Logistics summary row (read-only in the tab).
+        if selected is not None:
+            active = sum(
+                1 for p in world.population.people
+                if p.is_logistics and p.home is not None
+                and selected.contains(p.home)
+            )
+            log_surf = Fonts.small().render(
+                f"Logistics: {active}/{selected.logistics_target}",
+                True, UI_ACCENT,
+            )
+            surface.blit(log_surf, (list_rect.x + 2, y + 2))
+            y += log_surf.get_height() + 4
         for ti, tier in enumerate(tiers):
             label_surf = Fonts.small().render(
                 f"Tier {ti + 1}", True, UI_ACCENT,
@@ -300,6 +315,9 @@ class WorkerPriorityOverlay(Panel):
         # Per-network tab bar state.
         self._selected_net_id: int | None = None
         self._net_tab_rects: list[tuple[pygame.Rect, int]] = []
+        # Logistics +/- buttons for the currently displayed network.
+        self._log_minus_rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
+        self._log_plus_rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
 
     def _current_network(self) -> "Network | None":
         if self.world is None or not self.world.networks:
@@ -404,6 +422,16 @@ class WorkerPriorityOverlay(Panel):
         self._row_rects = []
 
         y = area.y - self._scroll
+
+        # Always-present Logistics row at the top of the list.
+        if current_net is not None:
+            log_rect = pygame.Rect(area.x, y, area.w, _LOG_ROW_H)
+            self._draw_logistics_row(surface, log_rect, current_net, world)
+            y += _LOG_ROW_H + _ROW_V_GAP
+        else:
+            self._log_minus_rect = pygame.Rect(0, 0, 0, 0)
+            self._log_plus_rect = pygame.Rect(0, 0, 0, 0)
+
         for ti, tier in enumerate(tiers):
             row_rect = pygame.Rect(area.x, y, area.w, _ROW_H)
             self._draw_row(surface, row_rect, tier, ti)
@@ -507,6 +535,72 @@ class WorkerPriorityOverlay(Panel):
             rect.centery - hint.get_height() // 2,
         ))
 
+    def _draw_logistics_row(
+        self, surface: pygame.Surface, rect: pygame.Rect,
+        net: "Network", world: "World",
+    ) -> None:
+        """Draw the persistent Logistics row with +/- controls and
+        record the click rects so handle_event can adjust the target."""
+        bg = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
+        bg.fill((30, 40, 52, 200))
+        surface.blit(bg, rect.topleft)
+        pygame.draw.rect(surface, UI_ACCENT, rect, width=1, border_radius=4)
+
+        label = Fonts.body().render("Logistics", True, UI_TEXT)
+        surface.blit(label, (
+            rect.x + 12,
+            rect.centery - label.get_height() // 2,
+        ))
+
+        # Count currently-assigned logistics workers in this network.
+        active = 0
+        for p in world.population.people:
+            if not p.is_logistics or p.home is None:
+                continue
+            home_net = None
+            for n in world.networks:
+                if n.contains(p.home):
+                    home_net = n
+                    break
+            if home_net is net:
+                active += 1
+        count_text = f"{active}/{net.logistics_target}"
+        count_surf = Fonts.body().render(count_text, True, UI_TEXT)
+
+        # Lay out -   count   + from right side.
+        pad = 10
+        right = rect.right - pad
+        self._log_plus_rect = pygame.Rect(
+            right - _LOG_BTN_W,
+            rect.centery - _LOG_BTN_W // 2,
+            _LOG_BTN_W, _LOG_BTN_W,
+        )
+        right = self._log_plus_rect.left - 8
+        count_x = right - count_surf.get_width()
+        surface.blit(count_surf, (
+            count_x, rect.centery - count_surf.get_height() // 2,
+        ))
+        right = count_x - 8
+        self._log_minus_rect = pygame.Rect(
+            right - _LOG_BTN_W,
+            rect.centery - _LOG_BTN_W // 2,
+            _LOG_BTN_W, _LOG_BTN_W,
+        )
+        # Draw buttons.
+        for r, glyph in (
+            (self._log_minus_rect, "-"), (self._log_plus_rect, "+"),
+        ):
+            bg2 = pygame.Surface((r.w, r.h), pygame.SRCALPHA)
+            hovered = r.collidepoint(self._mouse_pos)
+            bg2.fill(UI_TAB_HOVER if hovered else UI_TAB_INACTIVE)
+            surface.blit(bg2, r.topleft)
+            pygame.draw.rect(surface, UI_ACCENT, r, width=2, border_radius=4)
+            g = Fonts.title().render(glyph, True, UI_TEXT)
+            surface.blit(g, (
+                r.centerx - g.get_width() // 2,
+                r.centery - g.get_height() // 2,
+            ))
+
     # ── Events ───────────────────────────────────────────────────
 
     def handle_event(self, event: pygame.event.Event) -> bool:
@@ -535,6 +629,15 @@ class WorkerPriorityOverlay(Panel):
                 self._cancel_drag()
                 self.visible = False
                 return True
+            # Logistics +/- buttons.
+            net = self._current_network()
+            if net is not None:
+                if self._log_minus_rect.collidepoint(event.pos):
+                    net.logistics_target = max(0, net.logistics_target - 1)
+                    return True
+                if self._log_plus_rect.collidepoint(event.pos):
+                    net.logistics_target += 1
+                    return True
             # Network tab click → switch active network.
             for tab_rect, net_id in self._net_tab_rects:
                 if tab_rect.collidepoint(event.pos):
