@@ -182,7 +182,7 @@ def build_overlays(
             elif terrain == Terrain.WATER:
                 items.extend(_gen_water_tile(wx, wy, hex_size, d, rng))
             elif terrain == Terrain.FIBER_PATCH:
-                items.extend(_gen_fiber_tile(wx, wy, hex_size, d, rng))
+                items.extend(_gen_fiber_tile(wx, wy, hex_size, d, grid[coord], rng))
             elif terrain == Terrain.GRASS:
                 items.extend(_gen_grass_tile(wx, wy, hex_size, rng))
             elif terrain in (Terrain.IRON_VEIN, Terrain.COPPER_VEIN):
@@ -366,22 +366,75 @@ def _gen_water_tile(
 # ── Fiber patches ────────────────────────────────────────────────
 
 def _gen_fiber_tile(
-    wx: float, wy: float, s: int, depth: int, rng: _random.Random,
+    wx: float, wy: float, s: int, depth: int,
+    tile: HexTile | None, rng: _random.Random,
 ) -> list[tuple[float, OverlayItem]]:
+    """Render a fiber/berry patch.  The sprite mix reflects what the
+    tile actually contains:
+
+    * fiber only → tall fibrous tufts (flax-like grass) so the player
+      can immediately see this tile yields fiber but no food.
+    * food only  → bushes with berries on every shrub.
+    * both       → a mix: most bushes carry berries plus a few extra
+      grass tufts to hint at the fibrous content.
+
+    Falls back to the historic mixed look when ``tile`` is None
+    (used by ruins generation, where the original patch may be gone).
+    """
     items: list[tuple[float, OverlayItem]] = []
+    has_fiber = True
+    has_food = True
+    if tile is not None:
+        has_fiber = tile.resource_amount > 0
+        has_food = tile.food_amount > 0
+        if not has_fiber and not has_food:
+            has_fiber = has_food = True
+
     n = rng.randint(4, 7) if depth >= 1 else rng.randint(3, 5)
+    if has_fiber and not has_food:
+        # Flax-style: nothing but tall grass tufts; no bushes / berries.
+        for _ in range(n + 3):
+            ox = rng.uniform(-s * 0.46, s * 0.46)
+            oy = rng.uniform(-s * 0.4, s * 0.4)
+            items.append((wy + oy, OverlayGrassTuft(
+                wx=wx + ox, wy=wy + oy,
+                h=s * rng.uniform(0.22, 0.38),
+                color=rng.choice([
+                    (170, 195, 100), (200, 210, 120), (150, 175, 80),
+                ]),
+            )))
+        return items
+
     for _ in range(n):
         ox = rng.uniform(-s * 0.44, s * 0.44)
         oy = rng.uniform(-s * 0.38, s * 0.38)
         r = s * rng.uniform(0.14, 0.26) * (1.0 + depth * 0.15)
         berry: tuple[int, int, int] | None = None
-        if rng.random() > 0.2:
-            berry = rng.choice([(200, 60, 60), (180, 50, 120), (220, 180, 40)])
+        if has_food:
+            # Force berries when this is a food-only patch; otherwise
+            # keep the historic ~80% berry rate for mixed patches.
+            if not has_fiber or rng.random() > 0.2:
+                berry = rng.choice([
+                    (200, 60, 60), (180, 50, 120), (220, 180, 40),
+                ])
         items.append((wy + oy, OverlayBush(
             wx=wx + ox, wy=wy + oy, radius=r,
             color=rng.choice([(85, 140, 42), (110, 160, 55), (70, 130, 38)]),
             berry_color=berry,
         )))
+    if has_fiber and has_food:
+        # Sprinkle a couple of grass tufts so mixed patches read as
+        # "both available" at a glance.
+        for _ in range(rng.randint(2, 4)):
+            ox = rng.uniform(-s * 0.46, s * 0.46)
+            oy = rng.uniform(-s * 0.4, s * 0.4)
+            items.append((wy + oy, OverlayGrassTuft(
+                wx=wx + ox, wy=wy + oy,
+                h=s * rng.uniform(0.18, 0.30),
+                color=rng.choice([
+                    (170, 195, 100), (200, 210, 120),
+                ]),
+            )))
     return items
 
 
@@ -434,7 +487,7 @@ def _gen_ore_tile(
                 color=rng.choice([(75, 140, 55), (65, 125, 48)]),
             )))
     elif underlying == Terrain.FIBER_PATCH:
-        items.extend(_gen_fiber_tile(wx, wy, s, 0, rng))
+        items.extend(_gen_fiber_tile(wx, wy, s, 0, None, rng))
 
     # Now place ore crystals on top
     is_iron = terrain == Terrain.IRON_VEIN

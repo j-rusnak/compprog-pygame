@@ -229,6 +229,19 @@ class Renderer:
                 item for item in self._overlays
                 if isinstance(item, OverlayRipple)
             ]
+        # Drain depleted-tile events from the simulation: strip stale
+        # overlays (trees / stones / ore crystals) from the now-grass
+        # tile and force a blended-colour rebuild so the tile blends
+        # with surrounding grass / underlying terrain.
+        depleted = getattr(world, "pending_depleted_tiles", None)
+        if depleted:
+            for coord in list(depleted):
+                self.remove_overlays_at(coord, world.settings.hex_size)
+            depleted.clear()
+            self._blended_colors = {}
+            self._edge_colors = {}
+            self._cross_cat = {}
+            self._tile_layer = None  # full rebuild on next frame
         self._ensure_blended_colors(world)
 
     def remove_overlays_at(self, coord: HexCoord, hex_size: int) -> None:

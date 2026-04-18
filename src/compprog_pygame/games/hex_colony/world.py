@@ -42,6 +42,13 @@ class Network:
     # "Logistics" slot for this network.  Survives rebuilds in the same
     # way priority tiers do (persisted across components by id).
     logistics_target: int = 0
+    # Per-building delivery-demand tiers.  Higher tiers receive
+    # logistics deliveries first; within a tier, demand is split evenly
+    # across all member buildings.  When ``demand_auto`` is True the
+    # tiers are recomputed automatically on every rebuild (non-storage
+    # buildings on tier 0, storage buildings on tier 1).
+    demand_priority: list[list[Building]] = field(default_factory=list)
+    demand_auto: bool = True
 
     @property
     def name(self) -> str:
@@ -80,6 +87,12 @@ class World:
         # research center can post per-resource demand for whatever
         # research is currently active.
         self.tech_tree: object | None = None
+        # Tiles whose terrain just changed because their resource ran
+        # out.  The renderer drains this set each frame to clear the
+        # static overlay sprites (trees, stones, ore crystals) on top
+        # of the depleted hex and refresh the blended-colour cache so
+        # the tile blends with neighbouring grass.
+        self.pending_depleted_tiles: set[HexCoord] = set()
 
     @property
     def worker_priority(self) -> list[list[Building]]:
@@ -351,11 +364,23 @@ class World:
                      if pid in old_nets),
                     default=0,
                 ),
+                # Inherit demand_auto from the surviving parent (the
+                # first entry in ``parent_ids``).  Brand-new networks
+                # default to True so newly-built colonies start with
+                # automatic demand routing.
+                demand_auto=(
+                    old_nets[parent_ids[0]].demand_auto
+                    if parent_ids and parent_ids[0] in old_nets
+                    else True
+                ),
             ))
 
         # Stable display order: by id ascending.
         new_networks.sort(key=lambda n: n.id)
         self.networks = new_networks
+        # Rebuild demand-priority tiers for every network now that the
+        # ``buildings`` lists are settled.
+        self._refresh_demand_priorities(old_nets)
 
     # ── Worker assignment & dispatch ─────────────────────────────
 
@@ -364,6 +389,83 @@ class World:
             if n.contains(b):
                 return n
         return None
+
+    def _refresh_demand_priorities(
+        self, old_nets: dict[int, Network],
+    ) -> None:
+        """Recompute ``demand_priority`` for every current network.
+
+        For ``demand_auto`` networks: tier 0 = every non-storage
+        building, tier 1 = every storage / camp building.  The auto
+        layout matches the user's "all consumers equal, storage always
+        last" rule from the spec.
+
+        For manual networks: re-use the old per-building tier indexes
+        so the player's hand-edited layout survives merges and splits.
+        Buildings new to the network slot into tier 0 (highest demand)
+        by default — they're more likely to be active producers/users
+        than passive overflow storage.
+        """
+        for net in self.networks:
+            members = list(net.buildings)
+            if not members:
+                net.demand_priority = []
+                continue
+            if net.demand_auto:
+                net.demand_priority = self._auto_demand_tiers(members)
+                continue
+            # Manual mode: try to recover prior tier index per building.
+            old_index: dict[int, int] = {}
+            for parent_net in old_nets.values():
+                for ti, tier in enumerate(parent_net.demand_priority):
+                    for b in tier:
+                        # Last-writer wins (largest tier index seen);
+                        # acceptable since merges union memberships.
+                        old_index[id(b)] = ti
+            depth = max(old_index.values(), default=-1) + 1
+            tiers: list[list[Building]] = [[] for _ in range(max(depth, 1))]
+            for b in members:
+                idx = old_index.get(id(b), 0)
+                if idx >= len(tiers):
+                    tiers.extend([] for _ in range(idx - len(tiers) + 1))
+                tiers[idx].append(b)
+            net.demand_priority = [t for t in tiers if t]
+
+    def _auto_demand_tiers(
+        self, members: list[Building],
+    ) -> list[list[Building]]:
+        """Default split: non-storage buildings on tier 0, passive
+        storage / camp on tier 1.  Roads / bridges (which have no
+        demand) and standalone walls are skipped entirely so the UI
+        doesn't fill with no-op cards."""
+        from compprog_pygame.games.hex_colony.buildings import BuildingType
+        skip = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL}
+        tier0: list[Building] = []
+        tier1: list[Building] = []
+        for b in members:
+            if b.type in skip:
+                continue
+            if b.type in (BuildingType.STORAGE, BuildingType.CAMP):
+                tier1.append(b)
+            else:
+                tier0.append(b)
+        result: list[list[Building]] = []
+        if tier0:
+            result.append(tier0)
+        if tier1:
+            result.append(tier1)
+        return result
+
+    def _demand_tier_of(
+        self, b: Building, net: Network,
+    ) -> int:
+        """Return the (0-based) tier index of ``b`` within ``net``'s
+        demand-priority list, or a large sentinel when the building
+        isn't on the demand schedule at all."""
+        for ti, tier in enumerate(net.demand_priority):
+            if b in tier:
+                return ti
+        return 1_000_000
 
     def _assign_workers(self) -> None:
         """Walk each network's priority list and assign each eligible
@@ -421,7 +523,17 @@ class World:
             b_by_id: dict[int, Building] = {
                 id(b): b for tier in net.priority for b in tier
             }
-            production_capacity = sum(b.max_workers for b in b_by_id.values())
+            # Compute a "demand factor" per producer in [min_keep, 1.0].
+            # When the network is already swimming in this resource and
+            # nothing is consuming it, the building only keeps a token
+            # worker — surplus people then promote to logistics or other
+            # buildings whose output is actually needed.
+            effective_max: dict[int, int] = {}
+            for b in b_by_id.values():
+                effective_max[id(b)] = self._effective_worker_demand(
+                    b, net,
+                )
+            production_capacity = sum(effective_max.values())
             # Reserve at least ``logistics_target`` people for logistics
             # before staffing production; everyone else first fills
             # production, and any leftover idle workers default to
@@ -438,7 +550,8 @@ class World:
                 while remaining > 0:
                     placed_any = False
                     for b in tier:
-                        if target_slots[id(b)] < b.max_workers:
+                        cap = effective_max.get(id(b), b.max_workers)
+                        if target_slots[id(b)] < cap:
                             target_slots[id(b)] += 1
                             remaining -= 1
                             placed_any = True
@@ -763,6 +876,88 @@ class World:
             return True
         return False
 
+    # ── Adaptive worker demand ──────────────────────────────────
+
+    def _building_output(self, b: "Building") -> "Resource | None":
+        """Return the resource this building produces (if any)."""
+        bt = b.type
+        if bt == BuildingType.WOODCUTTER:
+            return Resource.WOOD
+        if bt == BuildingType.QUARRY:
+            return Resource.STONE
+        if bt == BuildingType.GATHERER:
+            return Resource.FIBER
+        if bt == BuildingType.FARM:
+            return Resource.FOOD
+        if bt in (
+            BuildingType.WORKSHOP, BuildingType.FORGE,
+            BuildingType.REFINERY, BuildingType.ASSEMBLER,
+            BuildingType.MINING_MACHINE,
+        ):
+            r = b.recipe
+            return r if isinstance(r, Resource) else None
+        return None
+
+    def _network_resource_buffer(
+        self, net: "Network", res: "Resource",
+    ) -> tuple[float, float]:
+        """Return (total_stock, total_capacity) for ``res`` across all
+        buildings in ``net`` plus the global inventory."""
+        stock = float(self.inventory.get(res, 0.0))
+        cap = 0.0
+        for b in net.buildings:
+            stock += float(b.storage.get(res, 0.0))
+            cap += float(b.storage_capacity)
+        # Always allow at least one capacity-equivalent worth of buffer
+        # so brand-new networks still register pressure correctly.
+        cap = max(cap, 1.0)
+        return stock, cap
+
+    def _effective_worker_demand(
+        self, b: "Building", net: "Network",
+    ) -> int:
+        """Compute how many workers ``b`` actually warrants right now.
+
+        Returns a value in ``[min_keep, b.max_workers]``.  When the
+        building's output is already plentiful and nothing in the
+        network is consuming it, this drops to a single token worker —
+        freeing the rest for logistics or higher-need producers.
+
+        For consumers (workshops, forges, mining machines, …) we leave
+        the demand untouched; their throughput is gated by inputs, not
+        by oversupply concerns.
+        """
+        max_w = max(0, int(b.max_workers))
+        if max_w <= 1:
+            return max_w
+        out = self._building_output(b)
+        if out is None or self._is_consumer(b):
+            return max_w
+        stock, cap = self._network_resource_buffer(net, out)
+        # How many other buildings in this network consume ``out``?
+        consumers_here = 0
+        for other in net.buildings:
+            if other is b or not self._is_consumer(other):
+                continue
+            recipe = getattr(other, "recipe", None)
+            if isinstance(recipe, Resource) and recipe == out:
+                consumers_here += 1
+                continue
+            # Housing consumes food.
+            if other.housing_capacity > 0 and out == Resource.FOOD:
+                consumers_here += 1
+        # Active consumers ⇒ keep the producer fully staffed.
+        if consumers_here > 0:
+            return max_w
+        # No internal consumer: scale by stockpile pressure.
+        # 0 stock → full crew; ≥cap → single worker.
+        ratio = min(1.0, stock / cap) if cap > 0 else 0.0
+        # Quadratic falloff so we don't drop to skeleton crew until
+        # the stockpile is genuinely full.
+        scale = 1.0 - ratio * ratio
+        scaled = max(1, int(round(max_w * scale)))
+        return min(max_w, scaled)
+
     # ── Logistics ────────────────────────────────────────────────
 
     def _update_logistics(self, dt: float) -> None:
@@ -810,25 +1005,52 @@ class World:
             if res is None:
                 self._logistics_reset(p)
                 return
-            take = min(
-                params.LOGISTICS_CARRY_CAPACITY,
-                src.storage.get(res, 0.0),
-            )
+            already = p.logistics_amount or 0.0
+            free_cap = max(0.0, params.LOGISTICS_CARRY_CAPACITY - already)
+            take = min(free_cap, src.storage.get(res, 0.0))
             if take <= 0:
+                if already > 0:
+                    # Already carrying something — head to destination.
+                    dst = p.logistics_dst
+                    if dst is not None:
+                        path = self._find_building_path(p.hex_pos, dst.coord)
+                        if path:
+                            p.path = path
+                            p.task = Task.LOGISTICS_DELIVER
+                            return
                 # Supplier's empty; abandon and find something else.
                 self._logistics_reset(p)
                 return
             src.storage[res] = src.storage.get(res, 0.0) - take
             if src.storage[res] <= 1e-6:
                 src.storage.pop(res, None)
-            p.logistics_amount = take
-            p.carry_resource = (res, take)
+            p.logistics_amount = (p.logistics_amount or 0.0) + take
+            p.carry_resource = (res, p.logistics_amount)
             # Set path to destination.
             dst = p.logistics_dst
             if dst is None:
                 # Shouldn't happen but be defensive.
                 self._logistics_reset(p)
                 return
+            # ── Chained pickup ──────────────────────────────────
+            # If we still have free carry capacity, look for another
+            # supplier of the same resource that's roughly on the way
+            # to the destination.  This keeps a single worker hauling
+            # a full load instead of dispatching N workers for N units.
+            remaining_cap = params.LOGISTICS_CARRY_CAPACITY - p.logistics_amount
+            if remaining_cap > 1e-3:
+                next_src = self._find_chained_supplier(
+                    p, res, dst, remaining_cap,
+                )
+                if next_src is not None and next_src is not src:
+                    detour_path = self._find_building_path(
+                        p.hex_pos, next_src.coord,
+                    )
+                    if detour_path:
+                        p.logistics_src = next_src
+                        p.path = detour_path
+                        # Stay in PICKUP state — we'll loop back here.
+                        return
             path = self._find_building_path(p.hex_pos, dst.coord)
             if not path:
                 # Lost path — drop cargo back (best effort).
@@ -884,7 +1106,81 @@ class World:
         p.logistics_src = None
         p.logistics_dst = None
         p.logistics_res = None
+        p.logistics_amount = 0.0
+        p.carry_resource = None
         p.path = []
+
+    def _find_chained_supplier(
+        self, p, res: "Resource", dst: "Building", remaining_cap: float,
+    ) -> "Building | None":
+        """Look for another building in the same network that holds
+        ``res`` and is roughly on the way from the worker to ``dst``.
+
+        Returns the most attractive supplier or None.  Detour distance
+        from the worker's current position is capped so that chained
+        pickups stay efficient — we never want a worker zig-zagging
+        across the map to pluck a single unit.
+        """
+        net = self._network_of_building(dst)
+        if net is None:
+            return None
+        # Hex distance from the worker to the destination acts as the
+        # baseline; any candidate must keep total travel within
+        # ``baseline + max_detour``.
+        baseline = self._hex_distance(p.hex_pos, dst.coord)
+        max_detour = max(2, int(baseline * 0.5) + 2)
+        best: Building | None = None
+        best_score = -1.0
+        for cand in net.buildings:
+            if cand is p.logistics_src or cand is dst:
+                continue
+            avail = float(cand.storage.get(res, 0.0))
+            if avail <= 1e-3:
+                continue
+            d_to_cand = self._hex_distance(p.hex_pos, cand.coord)
+            d_cand_to_dst = self._hex_distance(cand.coord, dst.coord)
+            if d_to_cand + d_cand_to_dst > baseline + max_detour:
+                continue
+            haul = min(avail, remaining_cap)
+            # Higher haul, lower detour ⇒ better.
+            detour_pen = max(0, (d_to_cand + d_cand_to_dst) - baseline)
+            score = haul - 0.25 * detour_pen
+            if score > best_score:
+                best_score = score
+                best = cand
+        return best
+
+    def _hex_distance(self, a: "HexCoord", b: "HexCoord") -> int:
+        dq = a.q - b.q
+        dr = a.r - b.r
+        return (abs(dq) + abs(dr) + abs(dq + dr)) // 2
+
+    def _filter_demands_by_tier(
+        self, net: "Network",
+        demands: list[tuple],
+        supplies: list[tuple],
+    ) -> list[tuple]:
+        """Restrict the demand pool to the highest-priority tier that
+        has at least one buyer matching an available supplier.
+
+        Each entry in ``demands`` is ``(building, resource, need,
+        empty_frac)``.  When the network's demand_priority list is
+        empty (e.g. brand-new colony) we return the input unchanged.
+        """
+        tiers = net.demand_priority
+        if not tiers:
+            return demands
+        supply_res = {s[1] for s in supplies}
+        # Group demand entries by tier index.
+        by_tier: dict[int, list[tuple]] = {}
+        for d in demands:
+            ti = self._demand_tier_of(d[0], net)
+            by_tier.setdefault(ti, []).append(d)
+        for ti in sorted(by_tier):
+            bucket = by_tier[ti]
+            if any(d[1] in supply_res for d in bucket):
+                return bucket
+        return demands
 
     # ── Population growth ────────────────────────────────────────
 
@@ -979,6 +1275,16 @@ class World:
         supply_resources = {s[1] for s in supplies}
         if non_storage_demands and (non_storage_resources & supply_resources):
             demands = non_storage_demands
+
+        # Demand-priority filter: the demand-priority tab lets the
+        # player rank consumers into tiers.  We always try to satisfy
+        # the highest-occupied tier first; only if no buyer in that
+        # tier wants any resource we have do we fall through to the
+        # next tier.  Within a tier all buildings share the score so
+        # logistics ends up balanced across equal-priority destinations.
+        tiered_demands = self._filter_demands_by_tier(net, demands, supplies)
+        if tiered_demands:
+            demands = tiered_demands
 
         best_score = -1e9
         best_src = best_dst = None
@@ -1133,6 +1439,8 @@ class World:
                     continue
                 tile = self.grid.get(nb)
                 if tile is None:
+                    continue
+                if tile.building is not None:
                     continue
                 if Resource.FOOD in wanted and tile.food_amount > 0:
                     has_tile = True
@@ -1525,6 +1833,11 @@ class World:
             tile = self.grid.get(nb)
             if tile is None:
                 continue
+            # A path / wall / bridge or any other building sitting on a
+            # resource tile makes that tile uncollectable — the
+            # resource is preserved, just sealed off.
+            if tile.building is not None:
+                continue
             # Try food harvest from food_amount on fiber/berry patches
             if Resource.FOOD in resources and tile.food_amount > 0:
                 take = min(budget, tile.food_amount)
@@ -1548,7 +1861,12 @@ class World:
         b.active = produced
 
     def _maybe_deplete_tile(self, tile: "HexTile") -> None:
-        """Convert a tile to grass once all its resources are exhausted."""
+        """Convert a tile to grass once all its resources are exhausted.
+
+        Records the change in :attr:`pending_depleted_tiles` so the
+        renderer can strip the now-stale overlay sprites (trees,
+        stones, ore crystals) and re-blend the tile colour next frame.
+        """
         if tile.terrain == Terrain.GRASS or tile.terrain == Terrain.WATER:
             return
         if tile.resource_amount <= 0 and tile.food_amount <= 0:
@@ -1557,6 +1875,7 @@ class World:
                 tile.underlying_terrain = None
             else:
                 tile.terrain = Terrain.GRASS
+            self.pending_depleted_tiles.add(tile.coord)
 
     def _update_production(self, dt: float) -> None:
         """Per-frame resource production.  All outputs go into the
@@ -1632,6 +1951,8 @@ class World:
                 tile = self.grid.get(nb)
                 if tile is None or tile.resource_amount <= 0:
                     continue
+                if tile.building is not None:
+                    continue
                 if tile.terrain == Terrain.IRON_VEIN:
                     take = min(rate, tile.resource_amount,
                                self._storage_free(ref))
@@ -1662,6 +1983,8 @@ class World:
                     continue
                 tile = self.grid.get(nb)
                 if tile is None or tile.resource_amount <= 0:
+                    continue
+                if tile.building is not None:
                     continue
                 if tile.terrain == Terrain.IRON_VEIN:
                     adjacent_ores.append((nb, Resource.IRON))

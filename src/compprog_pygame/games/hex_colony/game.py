@@ -33,6 +33,10 @@ from compprog_pygame.games.hex_colony.ui_worker_priority import (
     WorkerPriorityOverlay,
     WorkerPriorityTabContent,
 )
+from compprog_pygame.games.hex_colony.ui_demand_priority import (
+    DemandPriorityOverlay,
+    DemandPriorityTabContent,
+)
 from compprog_pygame.games.hex_colony import params
 
 # Build-mode palette order
@@ -99,6 +103,7 @@ class Game:
         self._tech_tree_overlay = TechTreeOverlay()
         self._advanced_stats_overlay = AdvancedStatsOverlay()
         self._worker_priority_overlay = WorkerPriorityOverlay()
+        self._demand_priority_overlay = DemandPriorityOverlay()
         self.ui.add_panel(self._resource_bar)
         self.ui.add_panel(self._bottom_bar)
         self.ui.add_panel(self._building_info)
@@ -108,6 +113,7 @@ class Game:
         self.ui.add_panel(self._tech_tree_overlay)
         self.ui.add_panel(self._advanced_stats_overlay)
         self.ui.add_panel(self._worker_priority_overlay)
+        self.ui.add_panel(self._demand_priority_overlay)
         self.ui.add_panel(self._pause_overlay)
         self.ui.add_panel(self._game_over_overlay)
 
@@ -115,6 +121,12 @@ class Game:
         self._worker_priority_tab = WorkerPriorityTabContent()
         self._worker_priority_tab.on_open_edit = self._on_open_worker_priority
         self._bottom_bar.add_tab("Workers", self._worker_priority_tab)
+
+        # Demand-priority tab (opens its own drag-and-drop overlay).
+        self._demand_priority_tab = DemandPriorityTabContent()
+        self._demand_priority_tab.on_open_edit = self._on_open_demand_priority
+        self._demand_priority_tab.on_toggle_auto = self._on_toggle_demand_auto
+        self._bottom_bar.add_tab("Demand", self._demand_priority_tab)
 
         # Add Stats tab to bottom bar
         self._stats_tab = StatsTabContent()
@@ -459,8 +471,11 @@ class Game:
         # Place building
         building = self.world.buildings.place(self.build_mode, coord)
         tile.building = building
-        # Clear overlays on the tile so building is visible
-        self.renderer.remove_overlays_at(coord, self.settings.hex_size)
+        # Clear overlays on the tile so building is visible — but keep
+        # them under paths/bridges so the player still sees the tree /
+        # ore / fiber sprite under the path tile.
+        if self.build_mode not in _PATH_LIKE:
+            self.renderer.remove_overlays_at(coord, self.settings.hex_size)
         self._minimap.invalidate()
         # Record to blueprint if recording
         if self.blueprints.is_recording:
@@ -635,6 +650,26 @@ class Game:
     def _on_open_worker_priority(self) -> None:
         """Open the Edit Worker Priority drag-drop modal."""
         self._worker_priority_overlay.visible = True
+
+    def _on_open_demand_priority(self) -> None:
+        """Open the Edit Resource Demand drag-drop modal."""
+        self._demand_priority_overlay.visible = True
+
+    def _on_toggle_demand_auto(self, net_id: int | None) -> None:
+        """Bottom-bar Auto button: flip the selected network's auto
+        flag.  When turning auto back on, immediately recompute the
+        tier layout so the player sees the change without waiting for
+        the next network rebuild."""
+        if net_id is None:
+            return
+        for n in self.world.networks:
+            if n.id == net_id:
+                n.demand_auto = not n.demand_auto
+                if n.demand_auto:
+                    n.demand_priority = self.world._auto_demand_tiers(
+                        list(n.buildings),
+                    )
+                return
 
     def _on_pause_return_to_menu(self) -> None:
         """Callback from pause overlay Return to Main Menu button."""

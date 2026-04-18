@@ -65,8 +65,20 @@ class StatsHistory:
     def sample(self, world: "World") -> None:
         if world.time_elapsed - self._last_sample < SAMPLE_INTERVAL:
             return
+        # Sum the world inventory plus every building's local storage so
+        # the stockpile graph reflects everything the colony currently
+        # holds — not just what's been delivered into the central pool.
+        # Without this, slow producers (e.g. food at 0.45/s) appear as a
+        # flat zero line because their output sits in the building's
+        # storage until logistics relocates it.
+        per_res: dict[Resource, float] = {r: 0.0 for r in Resource}
+        for r in Resource:
+            per_res[r] = float(world.inventory[r])
+        for b in world.buildings.buildings:
+            for r, amt in b.storage.items():
+                per_res[r] = per_res.get(r, 0.0) + float(amt)
         for res in Resource:
-            self._history[res].append(float(world.inventory[res]))
+            self._history[res].append(per_res[res])
         self._population.append(float(world.population.count))
         self._last_sample = world.time_elapsed
 
