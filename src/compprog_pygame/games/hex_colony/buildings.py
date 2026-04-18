@@ -165,6 +165,11 @@ class Building:
     # GATHERER only: which resource to gather.  ``None`` means both
     # food and fiber (legacy behaviour).
     gatherer_output: "Resource | None" = None
+    # QUARRY only: which resource to mine.  ``None`` means stone only
+    # (default behaviour).  Can be set to IRON or COPPER to slowly
+    # mine ore from adjacent veins at a fraction of the mining-machine
+    # rate.
+    quarry_output: "Resource | None" = None
     # Dwellings only: seconds accumulated toward the next birth.
     reproduction_timer: float = 0.0
 
@@ -222,7 +227,7 @@ class BuildingManager:
 # Resources each production building can harvest
 BUILDING_HARVEST_RESOURCES: dict[BuildingType, set[Resource]] = {
     BuildingType.WOODCUTTER: {Resource.WOOD},
-    BuildingType.QUARRY: {Resource.STONE},
+    BuildingType.QUARRY: {Resource.STONE, Resource.IRON, Resource.COPPER},
     BuildingType.GATHERER: {Resource.FIBER, Resource.FOOD},
     BuildingType.REFINERY: {Resource.IRON, Resource.COPPER},
     BuildingType.MINING_MACHINE: {Resource.IRON, Resource.COPPER},

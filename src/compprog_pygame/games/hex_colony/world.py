@@ -791,6 +791,8 @@ class World:
         if t == BuildingType.WOODCUTTER:
             return {Resource.WOOD}
         if t == BuildingType.QUARRY:
+            if b.quarry_output is not None:
+                return {b.quarry_output}
             return {Resource.STONE}
         if t == BuildingType.GATHERER:
             if b.gatherer_output is not None:
@@ -1555,6 +1557,13 @@ class World:
                     wanted = {Resource.FIBER, Resource.FOOD}
                 else:
                     wanted = {b.gatherer_output}
+            # Quarry's effective wanted set depends on the player's
+            # selection (stone by default, or iron/copper ore).
+            if b.type == BuildingType.QUARRY:
+                if b.quarry_output is None:
+                    wanted = {Resource.STONE}
+                else:
+                    wanted = {b.quarry_output}
             has_tile = False
             for nb in _hex_range(b.coord, params.COLLECTION_RADIUS):
                 if nb == b.coord:
@@ -2008,11 +2017,16 @@ class World:
             self._harvest_from_terrain(
                 b, {Resource.WOOD}, s.gather_wood, dt,
             )
-        # Quarry
+        # Quarry: mines stone by default, or iron/copper ore if selected.
         for b in self.buildings.by_type(BuildingType.QUARRY):
-            self._harvest_from_terrain(
-                b, {Resource.STONE}, s.gather_stone, dt,
-            )
+            if b.quarry_output is None:
+                self._harvest_from_terrain(
+                    b, {Resource.STONE}, s.gather_stone, dt,
+                )
+            else:
+                self._harvest_from_terrain(
+                    b, {b.quarry_output}, params.QUARRY_ORE_RATE, dt,
+                )
         # Gatherer: produce only the user-selected resource, or both
         for b in self.buildings.by_type(BuildingType.GATHERER):
             if b.gatherer_output == Resource.FOOD:

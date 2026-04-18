@@ -33,6 +33,11 @@ GATHER_RATE_FOOD: float = 0.15
 GATHER_RATE_IRON: float = 0.24
 GATHER_RATE_COPPER: float = 0.24
 
+# Quarry ore mining rate (per worker per second).  Intended to be
+# much slower than the mining machine so the quarry serves as an
+# early-game fallback for copper/iron.
+QUARRY_ORE_RATE: float = 0.12  # MINING_MACHINE_RATE / 10
+
 # ═══════════════════════════════════════════════════════════════════
 #  RESOURCE CONSUMPTION
 # ═══════════════════════════════════════════════════════════════════

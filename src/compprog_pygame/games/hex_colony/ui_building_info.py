@@ -145,9 +145,17 @@ class _GathererOutputBtn:
     height: int = _SMALL_LINE_H + 2
 
 
+@dataclass
+class _QuarryOutputBtn:
+    resource: Resource | None  # None means stone (default)
+    selected: bool
+    height: int = _SMALL_LINE_H + 2
+
+
 _Item = (
     _Line | _IconLine | _Spacer | _RecipeBtn | _MaterialRecipeBtn
     | _TechTreeBtn | _StorageResBtn | _GathererOutputBtn
+    | _QuarryOutputBtn
 )
 
 
@@ -163,6 +171,7 @@ class BuildingInfoPanel(Panel):
         self._mat_recipe_rects: list[tuple[pygame.Rect, MaterialRecipe]] = []
         self._storage_res_rects: list[tuple[pygame.Rect, Resource]] = []
         self._gatherer_output_rects: list[tuple[pygame.Rect, Resource | None]] = []
+        self._quarry_output_rects: list[tuple[pygame.Rect, Resource | None]] = []
         self._tech_tree_btn: pygame.Rect | None = None
         self.on_open_tech_tree: typing.Callable[[], None] | None = None
         self.tier_tracker: typing.Any = None
@@ -186,6 +195,7 @@ class BuildingInfoPanel(Panel):
             self._recipe_rects = []
             self._mat_recipe_rects = []
             self._gatherer_output_rects = []
+            self._quarry_output_rects = []
             self._tech_tree_btn = None
             return
 
@@ -222,6 +232,7 @@ class BuildingInfoPanel(Panel):
         self._mat_recipe_rects = []
         self._storage_res_rects = []
         self._gatherer_output_rects = []
+        self._quarry_output_rects = []
         self._tech_tree_btn = None
 
         for item in items:
@@ -268,6 +279,8 @@ class BuildingInfoPanel(Panel):
                 self._draw_storage_res_btn(surface, x, cy, item)
             elif isinstance(item, _GathererOutputBtn):
                 self._draw_gatherer_output_btn(surface, x, cy, item)
+            elif isinstance(item, _QuarryOutputBtn):
+                self._draw_quarry_output_btn(surface, x, cy, item)
             elif isinstance(item, _TechTreeBtn):
                 self._draw_tech_btn(surface, x, cy)
             cy += item.height
@@ -373,6 +386,40 @@ class BuildingInfoPanel(Panel):
             )
             surface.blit(surf, (btn_rect.x + 6, btn_rect.y + 2))
         self._gatherer_output_rects.append((btn_rect, item.resource))
+
+    def _draw_quarry_output_btn(
+        self, surface: pygame.Surface, x: int, cy: int,
+        item: _QuarryOutputBtn,
+    ) -> None:
+        btn_rect = pygame.Rect(
+            x + _PADDING, cy, _PANEL_W - _PADDING * 2, _SMALL_LINE_H + 2,
+        )
+        bg = UI_ACCENT if item.selected else UI_BG
+        pygame.draw.rect(surface, bg, btn_rect, border_radius=3)
+        pygame.draw.rect(surface, UI_BORDER, btn_rect, width=1, border_radius=3)
+        if item.resource is not None:
+            icon_size = 14
+            icon_surf = get_resource_icon(item.resource, icon_size)
+            icon_x = btn_rect.x + 4
+            icon_y = btn_rect.centery - icon_size // 2
+            surface.blit(icon_surf, (icon_x, icon_y))
+            label = item.resource.name.replace("_", " ").title()
+            surf = render_text_clipped(
+                Fonts.small(), label, UI_TEXT, btn_rect.w - icon_size - 12,
+            )
+            surface.blit(surf, (icon_x + icon_size + 6, btn_rect.y + 2))
+        else:
+            icon_size = 14
+            icon_surf = get_resource_icon(Resource.STONE, icon_size)
+            icon_x = btn_rect.x + 4
+            icon_y = btn_rect.centery - icon_size // 2
+            surface.blit(icon_surf, (icon_x, icon_y))
+            label = "Stone (default)"
+            surf = render_text_clipped(
+                Fonts.small(), label, UI_TEXT, btn_rect.w - icon_size - 12,
+            )
+            surface.blit(surf, (icon_x + icon_size + 6, btn_rect.y + 2))
+        self._quarry_output_rects.append((btn_rect, item.resource))
 
     def _draw_tech_btn(self, surface: pygame.Surface, x: int, cy: int) -> None:
         btn_rect = pygame.Rect(
@@ -620,6 +667,26 @@ class BuildingInfoPanel(Panel):
             ))
             items.append(_Spacer(2))
 
+        # QUARRY building: let the player pick stone, iron, or copper.
+        if b.type == BuildingType.QUARRY:
+            items.append(_Spacer())
+            current = b.quarry_output
+            if current is None:
+                label = "Stone"
+            else:
+                label = current.name.replace("_", " ").title()
+            line(f"Mining: {label}", UI_ACCENT)
+            items.append(_Spacer(2))
+            items.append(_QuarryOutputBtn(
+                resource=None, selected=(current is None),
+            ))
+            items.append(_Spacer(2))
+            for res in [Resource.IRON, Resource.COPPER]:
+                items.append(_QuarryOutputBtn(
+                    resource=res, selected=(current == res),
+                ))
+                items.append(_Spacer(2))
+
         # Crafting stations — Workshop / Forge / Refinery / Assembler.
         if b.type in (
             BuildingType.WORKSHOP,
@@ -810,5 +877,10 @@ class BuildingInfoPanel(Panel):
                 for btn_rect, res in self._gatherer_output_rects:
                     if btn_rect.collidepoint(event.pos):
                         self.building.gatherer_output = res
+                        return True
+            if self.building.type == BuildingType.QUARRY:
+                for btn_rect, res in self._quarry_output_rects:
+                    if btn_rect.collidepoint(event.pos):
+                        self.building.quarry_output = res
                         return True
         return True  # consume any click inside the panel

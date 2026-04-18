@@ -169,8 +169,11 @@ class StatsHistory:
             # Raw harvesters
             if t == BuildingType.WOODCUTTER and res == Resource.WOOD:
                 total += s.gather_wood * b.workers
-            elif t == BuildingType.QUARRY and res == Resource.STONE:
-                total += s.gather_stone * b.workers
+            elif t == BuildingType.QUARRY:
+                if b.quarry_output is None and res == Resource.STONE:
+                    total += s.gather_stone * b.workers
+                elif b.quarry_output is not None and res == b.quarry_output:
+                    total += params.QUARRY_ORE_RATE * b.workers
             elif t == BuildingType.GATHERER:
                 if b.gatherer_output == Resource.FOOD and res == Resource.FOOD:
                     total += s.gather_food * b.workers
