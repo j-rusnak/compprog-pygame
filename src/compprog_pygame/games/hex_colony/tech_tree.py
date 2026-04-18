@@ -70,7 +70,15 @@ class TechTree:
     def __init__(self) -> None:
         self.researched: set[str] = set()
         self.current_research: str | None = None
-        self.research_progress: float = 0.0  # seconds elapsed
+        self.research_progress: float = 0.0  # seconds elapsed on the
+                                             # currently active node
+        # Saved state for nodes the player started but switched away
+        # from.  Each entry is {"progress": float, "consumed":
+        # {Resource: float}} so they can resume exactly where they
+        # left off (with the resources they already paid retained).
+        self._saved: dict[str, dict] = {}
+        # Resources already consumed for the active node.
+        self._consumed: dict[Resource, float] = {}
 
     @property
     def researched_count(self) -> int:
@@ -89,28 +97,156 @@ class TechTree:
         return all(p in self.researched for p in node.prerequisites)
 
     def start_research(self, key: str) -> None:
-        """Begin researching a tech node (resets progress)."""
+        """Begin researching a tech node.
+
+        Switching mid-research preserves the previous node's progress
+        and consumed resources under :attr:`_saved` so it can be
+        resumed later.  If *key* was previously paused, its saved
+        state is restored.
+        """
+        # Save the currently active node's state (if any).
+        if (self.current_research is not None
+                and self.current_research != key):
+            self._saved[self.current_research] = {
+                "progress": self.research_progress,
+                "consumed": dict(self._consumed),
+            }
+        # Restore *key*'s state if it was paused, else start fresh.
+        if key == self.current_research:
+            return
+        saved = self._saved.pop(key, None)
+        if saved is not None:
+            self.research_progress = float(saved.get("progress", 0.0))
+            self._consumed = dict(saved.get("consumed", {}))
+        else:
+            self.research_progress = 0.0
+            self._consumed = {}
         self.current_research = key
-        self.research_progress = 0.0
 
     def cancel_research(self) -> None:
+        # Preserve progress under _saved so the player can resume.
+        if self.current_research is not None:
+            self._saved[self.current_research] = {
+                "progress": self.research_progress,
+                "consumed": dict(self._consumed),
+            }
         self.current_research = None
         self.research_progress = 0.0
+        self._consumed = {}
 
-    def update(self, dt: float) -> str | None:
-        """Advance research by *dt* seconds.  Returns the key if completed."""
+    def update(self, dt: float, world: object | None = None) -> str | None:
+        """Advance research by *dt* seconds, consuming resources from
+        the Research Center's on-site storage (preferred) and the
+        global inventory (fallback) as work happens.
+
+        * Requires at least one Research Center building to be placed
+          AND staffed by at least one worker (when *world* is provided).
+        * Progress is scaled by the total worker count across all
+          Research Centers, so two staffed centers research at twice
+          the rate of one.
+        * Each tick attempts to advance ``effective_dt`` seconds of
+          work and consumes a proportional share of each input.  If
+          a required input is short, progress is throttled to the
+          worst-case available ratio.
+        * Returns the tech key when fully completed.
+        """
         if self.current_research is None:
             return None
         node = TECH_NODES.get(self.current_research)
         if node is None:
             self.current_research = None
             return None
-        self.research_progress += dt
+        # Gate on a built and staffed Research Center.
+        rc_list: list = []
+        worker_total = 0
+        if world is not None:
+            from compprog_pygame.games.hex_colony.buildings import (
+                BuildingType,
+            )
+            rc_list = list(world.buildings.by_type(
+                BuildingType.RESEARCH_CENTER,
+            ))
+            if not rc_list:
+                return None
+            worker_total = sum(rc.workers for rc in rc_list)
+            if worker_total <= 0:
+                # Has the building but nobody to run it.
+                return None
+
+        # Effective time advanced this tick scales with worker count.
+        worker_factor = max(1, worker_total) if world is not None else 1
+        effective_dt = dt * worker_factor
+
+        time_left = max(0.0, node.time - self.research_progress)
+        if time_left <= 0:
+            target_progress = node.time
+        else:
+            target_progress = min(
+                node.time, self.research_progress + effective_dt,
+            )
+
+        # How much of each input we'd need to reach target_progress.
+        inv = world.inventory if world is not None else None
+        for res, total_amount in node.cost.items():
+            already = self._consumed.get(res, 0.0)
+            needed_total = (target_progress / node.time) * total_amount
+            need_now = max(0.0, needed_total - already)
+            if need_now <= 0:
+                continue
+            if inv is None:
+                # No inventory available — pretend cost is free.
+                self._consumed[res] = needed_total
+                continue
+            took = 0.0
+            # Prefer pulling from any Research Center's on-site
+            # storage first (logistics fills it up like a workshop).
+            for rc in rc_list:
+                if took >= need_now:
+                    break
+                have_here = rc.storage.get(res, 0.0)
+                if have_here <= 0:
+                    continue
+                pull = min(need_now - took, have_here)
+                rc.storage[res] = have_here - pull
+                if rc.storage[res] <= 1e-6:
+                    rc.storage.pop(res, None)
+                took += pull
+            # Fall back to the global inventory for the remainder.
+            if took < need_now:
+                rem = need_now - took
+                avail = inv[res]
+                pull = min(rem, avail)
+                if pull > 0:
+                    inv.spend(res, pull)
+                    took += pull
+            if took > 0:
+                self._consumed[res] = already + took
+
+        # Actual progress is the minimum consumed / total_cost ratio,
+        # multiplied by node.time.
+        if node.cost:
+            min_ratio = 1.0
+            for res, total_amount in node.cost.items():
+                if total_amount <= 0:
+                    continue
+                ratio = self._consumed.get(res, 0.0) / total_amount
+                if ratio < min_ratio:
+                    min_ratio = ratio
+            self.research_progress = min(node.time, min_ratio * node.time)
+        else:
+            # Free research — just advance.
+            self.research_progress = target_progress
+
+        # Mark research centers active so renderers / stats reflect it.
+        for rc in rc_list:
+            rc.active = True
+
         if self.research_progress >= node.time:
             completed = self.current_research
             self.researched.add(completed)
             self.current_research = None
             self.research_progress = 0.0
+            self._consumed = {}
             return completed
         return None
 

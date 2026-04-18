@@ -76,6 +76,10 @@ class World:
         # Optional NotificationManager plugged in by game.py for
         # one-time toasts like "No workers can reach X".
         self.notifications: object | None = None
+        # Optional TechTree reference plugged in by game.py so the
+        # research center can post per-resource demand for whatever
+        # research is currently active.
+        self.tech_tree: object | None = None
 
     @property
     def worker_priority(self) -> list[list[Building]]:
@@ -407,53 +411,27 @@ class World:
                 homeless = max(0, camp.residents - camp.housing_capacity)
                 available = max(0, available - homeless)
 
-            # ── Logistics slot (always present) ──────────────────
-            # Keep people who are already logistics in that role if
-            # possible, preferring those currently carrying cargo so
-            # we don't orphan in-flight shipments.
-            log_target = min(net.logistics_target, available)
-            already_log = [p for p in people if p.is_logistics]
-            already_log.sort(
-                key=lambda p: (p.carry_resource is None, p.id),
-            )
-            chosen_log: list = already_log[:log_target]
-            if len(chosen_log) < log_target:
-                # Promote extra people (idle first).
-                extras = [
-                    p for p in people
-                    if not p.is_logistics and p not in chosen_log
-                ]
-                extras.sort(key=lambda p: (
-                    p.workplace_target is not None, p.id,
-                ))
-                need = log_target - len(chosen_log)
-                chosen_log.extend(extras[:need])
-            chosen_log_ids = {id(p) for p in chosen_log}
-            for p in people:
-                should_be = id(p) in chosen_log_ids
-                if p.is_logistics and not should_be:
-                    # Demote: drop cargo, reset state.
-                    p.is_logistics = False
-                    p.logistics_src = None
-                    p.logistics_dst = None
-                    p.carry_resource = None
-                    p.path = []
-                    p.task = Task.IDLE
-                elif should_be and not p.is_logistics:
-                    p.is_logistics = True
-                    p.workplace = None
-                    p.workplace_target = None
-                    p.path = []
-                    p.task = Task.LOGISTICS_IDLE
-            available -= len(chosen_log)
-
-            # Compute per-building target slot counts via the tiered
-            # round-robin algorithm.
+            # ── Compute production slot demand ───────────────────
+            # Round-robin tiered fill so higher-tier buildings are
+            # always staffed before lower ones.
             target_slots: dict[int, int] = {
                 id(b): 0
                 for tier in net.priority for b in tier
             }
-            remaining = available
+            b_by_id: dict[int, Building] = {
+                id(b): b for tier in net.priority for b in tier
+            }
+            production_capacity = sum(b.max_workers for b in b_by_id.values())
+            # Reserve at least ``logistics_target`` people for logistics
+            # before staffing production; everyone else first fills
+            # production, and any leftover idle workers default to
+            # logistics (Task 6: idle → logistics).
+            log_min = max(0, min(net.logistics_target, available))
+            prod_pool = max(0, available - log_min)
+            prod_to_assign = min(prod_pool, production_capacity)
+            log_count = available - prod_to_assign
+
+            remaining = prod_to_assign
             for tier in net.priority:
                 if remaining <= 0:
                     break
@@ -469,31 +447,95 @@ class World:
                     if not placed_any:
                         break
 
-            # Reconcile targets with people.  First pass: respect
-            # existing assignments that still have an open slot.
+            # ── Decide who goes where ────────────────────────────
+            # 1) Try to keep each existing non-logistics worker at
+            #    their current target if that slot is still open.
+            # 2) Try to keep each existing logistics worker as
+            #    logistics if there are still logistics seats free.
+            # 3) Fill remaining production slots from the leftover
+            #    pool (priority: people whose home is closer; stable
+            #    by ``id``).  Promote anyone past production capacity
+            #    to logistics.
             remaining_slots = dict(target_slots)
-            unassigned: list = []
-            b_by_id: dict[int, Building] = {
-                id(b): b for tier in net.priority for b in tier
-            }
-            non_log = [p for p in people if not p.is_logistics]
-            for p in non_log:
+            keep_workers: dict[int, Building] = {}      # person id → bldg
+            keep_logistics: set[int] = set()
+            leftover: list = []
+
+            # Stable order: existing logistics carrying cargo first
+            # (avoid orphaning shipments), then others by id.
+            people_sorted = sorted(
+                people,
+                key=lambda p: (
+                    not (p.is_logistics and p.carry_resource is not None),
+                    p.id,
+                ),
+            )
+
+            log_seats = log_count
+            for p in people_sorted:
                 tgt = p.workplace_target
-                if tgt is not None and id(tgt) in remaining_slots \
-                        and remaining_slots[id(tgt)] > 0:
+                if (tgt is not None and id(tgt) in remaining_slots
+                        and remaining_slots[id(tgt)] > 0):
+                    keep_workers[id(p)] = tgt
                     remaining_slots[id(tgt)] -= 1
+                elif p.is_logistics and log_seats > 0:
+                    keep_logistics.add(id(p))
+                    log_seats -= 1
                 else:
-                    p.workplace_target = None
-                    unassigned.append(p)
-            # Fill remaining slots with unassigned people, preserving
-            # priority order (tiers top→bottom, cards left→right).
-            ui = 0
+                    leftover.append(p)
+
+            # Fill the remaining production slots (in priority order)
+            # from the leftover pool.
+            li = 0
             for tier in net.priority:
                 for b in tier:
-                    while remaining_slots.get(id(b), 0) > 0 and ui < len(unassigned):
-                        unassigned[ui].workplace_target = b
+                    while (remaining_slots.get(id(b), 0) > 0
+                           and li < len(leftover)):
+                        keep_workers[id(leftover[li])] = b
                         remaining_slots[id(b)] -= 1
-                        ui += 1
+                        li += 1
+
+            # Anyone still unassigned (li.. ) becomes logistics.
+            for p in leftover[li:]:
+                keep_logistics.add(id(p))
+
+            # ── Apply state changes in one pass ─────────────────
+            for p in people:
+                want_workplace = keep_workers.get(id(p))
+                want_logistics = id(p) in keep_logistics
+                if want_workplace is not None:
+                    # Production worker.
+                    if p.is_logistics:
+                        p.is_logistics = False
+                        p.logistics_src = None
+                        p.logistics_dst = None
+                        p.carry_resource = None
+                        p.path = []
+                        p.task = Task.IDLE
+                    if p.workplace_target is not want_workplace:
+                        p.workplace_target = want_workplace
+                elif want_logistics:
+                    if not p.is_logistics:
+                        p.is_logistics = True
+                        p.workplace = None
+                        p.workplace_target = None
+                        p.path = []
+                        p.task = Task.LOGISTICS_IDLE
+                    elif p.task == Task.IDLE:
+                        # Stale logistics that lost their state.
+                        p.task = Task.LOGISTICS_IDLE
+                else:
+                    # No slot at all — go idle (rare; only if camp is
+                    # over capacity and we deliberately excluded them).
+                    if p.is_logistics:
+                        p.is_logistics = False
+                        p.logistics_src = None
+                        p.logistics_dst = None
+                        p.carry_resource = None
+                    p.workplace_target = None
+                    p.workplace = None
+                    p.path = []
+                    p.task = Task.IDLE
 
     def _dispatch_commuters(self) -> None:
         """Give each person a COMMUTE path when their target differs
@@ -587,7 +629,13 @@ class World:
 
     def _building_supply(self, b: "Building") -> dict[Resource, float]:
         """Resources currently offered as supply from *b*, with the
-        amount currently held in its storage."""
+        amount currently held in its storage.
+
+        STORAGE buildings only supply their configured resource.  Every
+        other building offers any resource it currently holds *except*
+        ones it is itself demanding (so logistics workers don't shuttle
+        recipe inputs out of a workshop they were just delivered to).
+        """
         out: dict[Resource, float] = {}
         # STORAGE: supplies its configured resource.
         if b.type == BuildingType.STORAGE:
@@ -596,12 +644,11 @@ class World:
                 if amt > 0:
                     out[b.stored_resource] = amt
             return out
-        # Production buildings: supply what they produce if it's in
-        # their storage.
-        producing = self._building_production_outputs(b)
-        for r in producing:
-            amt = b.storage.get(r, 0.0)
-            if amt > 0:
+        # All other buildings: anything in storage that isn't on their
+        # own demand list is fair game as supply.
+        demanded = set(self._building_demand(b).keys())
+        for r, amt in b.storage.items():
+            if amt > 0 and r not in demanded:
                 out[r] = amt
         return out
 
@@ -640,7 +687,10 @@ class World:
                 if need > 0.5:
                     out[fr] = need
             return out
-        # Crafting stations: demand recipe inputs.
+        # Crafting stations: demand recipe inputs, with each input
+        # capped at exactly twice the recipe requirement so a refinery
+        # / workshop / forge / assembler reserves a dedicated input
+        # slot per ingredient.
         if b.type in (
             BuildingType.WORKSHOP, BuildingType.FORGE,
             BuildingType.REFINERY, BuildingType.ASSEMBLER,
@@ -649,11 +699,42 @@ class World:
             if mrec is not None:
                 for res, amt in mrec.inputs.items():
                     have = b.storage.get(res, 0.0)
-                    # Buffer ~3x recipe requirement on-site.
-                    target = amt * 3
-                    need = max(0.0, min(target - have, free))
+                    target = amt * 2
+                    need = max(0.0, target - have)
                     if need > 0.5:
                         out[res] = need
+        # Research center: demands the outstanding cost of the
+        # currently-active research, capped per-resource at 2x the
+        # remaining requirement so logistics keeps it fed without
+        # over-stuffing.
+        if b.type == BuildingType.RESEARCH_CENTER:
+            tt = self.tech_tree
+            if tt is not None and getattr(tt, "current_research", None):
+                from compprog_pygame.games.hex_colony.tech_tree import (
+                    TECH_NODES,
+                )
+                node = TECH_NODES.get(tt.current_research)
+                if node is not None:
+                    consumed = getattr(tt, "_consumed", {}) or {}
+                    for res, total_amt in node.cost.items():
+                        already = consumed.get(res, 0.0)
+                        remaining = max(0.0, total_amt - already)
+                        if remaining <= 0:
+                            continue
+                        target = min(remaining, total_amt) * 2
+                        # Spread across all research centers — each
+                        # building only requests its share so multiple
+                        # centers don't all hoard the full amount.
+                        rc_count = max(1, len(
+                            self.buildings.by_type(
+                                BuildingType.RESEARCH_CENTER,
+                            )
+                        ))
+                        per_building = target / rc_count
+                        have = b.storage.get(res, 0.0)
+                        need = max(0.0, per_building - have)
+                        if need > 0.5:
+                            out[res] = need
         return out
 
     def _is_producer(self, b: "Building") -> bool:
@@ -674,6 +755,10 @@ class World:
             BuildingType.REFINERY, BuildingType.ASSEMBLER,
         ) and isinstance(b.recipe, Resource):
             return True
+        if b.type == BuildingType.RESEARCH_CENTER:
+            tt = self.tech_tree
+            if tt is not None and getattr(tt, "current_research", None):
+                return True
         if b.housing_capacity > 0:
             return True
         return False
@@ -883,6 +968,18 @@ class World:
         if not supplies or not demands:
             return
 
+        # Storage destinations only count as a fallback: if any
+        # non-storage demand can be satisfied by some supplier, ignore
+        # storage entirely so crafting/research/mining inputs always
+        # take priority over filling up a storage building.
+        non_storage_demands = [
+            d for d in demands if d[0].type != BuildingType.STORAGE
+        ]
+        non_storage_resources = {d[1] for d in non_storage_demands}
+        supply_resources = {s[1] for s in supplies}
+        if non_storage_demands and (non_storage_resources & supply_resources):
+            demands = non_storage_demands
+
         best_score = -1e9
         best_src = best_dst = None
         best_res = None
@@ -890,16 +987,14 @@ class World:
             for db, dres, dneed, dempty in demands:
                 if sres != dres or sb is db:
                     continue
-                # Big bonuses for storage-mediated links.
-                prod_to_storage = (
-                    self._is_producer(sb) and db.type == BuildingType.STORAGE
-                )
+                # Bonus for storage→consumer (feeding stockpiles back
+                # into the production chain).  We deliberately do NOT
+                # bonus producer→storage anymore — non-storage demands
+                # are filtered above so storage is a true fallback.
                 storage_to_consumer = (
                     sb.type == BuildingType.STORAGE and self._is_consumer(db)
                 )
                 link_bonus = 0.0
-                if prod_to_storage:
-                    link_bonus += 0.8
                 if storage_to_consumer:
                     link_bonus += 0.8
                 # Distance (hex distance from worker → src → dst).
@@ -993,6 +1088,61 @@ class World:
             for b in net.buildings:
                 if BUILDING_MAX_WORKERS.get(b.type, 0) <= 0:
                     continue
+                result.add(id(b))
+        return result
+
+    def starved_producers(self) -> set[int]:
+        """Return ``id(b)`` for every harvest building that has at
+        least one worker assigned but no harvestable tile in range —
+        i.e. its resource patch ran dry and there is nothing else
+        nearby to switch to.  Used by the renderer to flag the
+        building with the same red "!" marker as unreachable ones.
+        """
+        from compprog_pygame.games.hex_colony.buildings import (
+            BUILDING_HARVEST_RESOURCES,
+        )
+        from compprog_pygame.games.hex_colony.resources import (
+            TERRAIN_RESOURCE,
+        )
+        from compprog_pygame.games.hex_colony.supply_chain import _hex_range
+        result: set[int] = set()
+        for b in self.buildings.buildings:
+            if b.workers <= 0:
+                continue
+            # Crafting refinery (with a recipe) is not a harvester.
+            if (b.type == BuildingType.REFINERY
+                    and b.recipe is not None):
+                continue
+            wanted = BUILDING_HARVEST_RESOURCES.get(b.type)
+            if not wanted:
+                continue
+            # Farm produces food without consuming a tile resource —
+            # never starves on the map.
+            if b.type == BuildingType.FARM:
+                continue
+            # Gatherer's effective wanted set depends on the player's
+            # selection.
+            if b.type == BuildingType.GATHERER:
+                if b.gatherer_output is None:
+                    wanted = {Resource.FIBER, Resource.FOOD}
+                else:
+                    wanted = {b.gatherer_output}
+            has_tile = False
+            for nb in _hex_range(b.coord, params.COLLECTION_RADIUS):
+                if nb == b.coord:
+                    continue
+                tile = self.grid.get(nb)
+                if tile is None:
+                    continue
+                if Resource.FOOD in wanted and tile.food_amount > 0:
+                    has_tile = True
+                    break
+                tres = TERRAIN_RESOURCE.get(tile.terrain)
+                if (tres is not None and tres in wanted
+                        and tile.resource_amount > 0):
+                    has_tile = True
+                    break
+            if not has_tile:
                 result.add(id(b))
         return result
 
@@ -1144,12 +1294,21 @@ class World:
 
     def find_path_route(
         self, start: HexCoord, end: HexCoord,
-    ) -> list[HexCoord]:
-        """BFS shortest hex-route over tiles where a PATH may be placed.
+        *, allow_bridges: bool = False, bridge_stock: int = 0,
+    ) -> list[tuple[HexCoord, BuildingType]]:
+        """BFS shortest path from *start* to *end* over placeable tiles.
 
-        Returns the list of coords from immediately after *start* up to
-        and including *end*.  Empty list if no route exists, the start
-        equals end, or end is unreachable / unbuildable.
+        Returns a list of ``(coord, BuildingType.PATH | BRIDGE)`` pairs
+        from immediately after *start* up to and including *end* — the
+        building type indicates what to place on each tile (PATH for
+        land, BRIDGE for water).  Existing PATH/BRIDGE tiles in the
+        route are reported with their existing type so callers can skip
+        them rather than spending stock.
+
+        Bridges are only considered when ``allow_bridges`` is True
+        (i.e. the player has unlocked them).  If the optimal route
+        requires more bridges than ``bridge_stock`` allows, the
+        function falls back to a land-only route.
         """
         from compprog_pygame.games.hex_colony.procgen import UNBUILDABLE
         if start == end:
@@ -1158,7 +1317,7 @@ class World:
             return []
         _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE}
 
-        def passable(coord: HexCoord) -> bool:
+        def passable_land(coord: HexCoord) -> bool:
             tile = self.grid.get(coord)
             if tile is None:
                 return False
@@ -1169,48 +1328,161 @@ class World:
                 return False
             return True
 
-        if not passable(end):
-            return []
+        def passable_water(coord: HexCoord) -> bool:
+            tile = self.grid.get(coord)
+            if tile is None:
+                return False
+            if tile.terrain != Terrain.WATER:
+                return False
+            b = tile.building
+            if b is not None and b.type != BuildingType.BRIDGE:
+                return False
+            return True
 
-        visited: set[HexCoord] = {start}
-        parent: dict[HexCoord, HexCoord] = {}
-        queue: deque[HexCoord] = deque([start])
-        found = False
-        while queue:
-            cur = queue.popleft()
-            if cur == end:
-                found = True
-                break
-            for nb in cur.neighbors():
-                if nb in visited:
-                    continue
-                if not passable(nb):
-                    continue
-                visited.add(nb)
-                parent[nb] = cur
-                queue.append(nb)
-        if not found:
+        def step_type(coord: HexCoord) -> BuildingType:
+            tile = self.grid.get(coord)
+            if tile is not None and tile.building is not None and tile.building.type in _PATH_LIKE:
+                return tile.building.type
+            if tile is not None and tile.terrain == Terrain.WATER:
+                return BuildingType.BRIDGE
+            return BuildingType.PATH
+
+        def bfs(allow_water: bool) -> list[HexCoord]:
+            visited: set[HexCoord] = {start}
+            parent: dict[HexCoord, HexCoord] = {}
+            queue: deque[HexCoord] = deque([start])
+            found = False
+            while queue:
+                cur = queue.popleft()
+                if cur == end:
+                    found = True
+                    break
+                for nb in cur.neighbors():
+                    if nb in visited:
+                        continue
+                    if passable_land(nb):
+                        pass
+                    elif allow_water and passable_water(nb):
+                        pass
+                    else:
+                        continue
+                    visited.add(nb)
+                    parent[nb] = cur
+                    queue.append(nb)
+            if not found:
+                return []
+            route: list[HexCoord] = []
+            cur = end
+            while cur != start:
+                route.append(cur)
+                cur = parent[cur]
+            route.reverse()
+            return route
+
+        # Helper to validate end is acceptable for the chosen mode.
+        end_is_water = (
+            self.grid.get(end) is not None
+            and self.grid[end].terrain == Terrain.WATER
+        )
+
+        # Try the optimal route first (water allowed if bridges are
+        # unlocked).  If the resulting bridge count exceeds the
+        # player's stock, fall back to a land-only route.
+        bridge_route: list[HexCoord] = []
+        if allow_bridges and (passable_land(end) or passable_water(end)):
+            bridge_route = bfs(allow_water=True)
+            if bridge_route:
+                bridges_needed = sum(
+                    1 for c in bridge_route if step_type(c) == BuildingType.BRIDGE
+                    and (self.grid[c].building is None
+                         or self.grid[c].building.type != BuildingType.BRIDGE)
+                )
+                if bridges_needed <= bridge_stock or bridge_stock < 0:
+                    return [(c, step_type(c)) for c in bridge_route]
+
+        # Land-only fallback.
+        if end_is_water:
             return []
-        route: list[HexCoord] = []
-        cur = end
-        while cur != start:
-            route.append(cur)
-            cur = parent[cur]
-        route.reverse()
-        return route
+        if not passable_land(end):
+            return []
+        land_route = bfs(allow_water=False)
+        if not land_route:
+            return []
+        return [(c, BuildingType.PATH) for c in land_route]
 
     # ── Production update (Farms, Refineries, Wells) ─────────────
 
     def _storage_free(self, b: "Building") -> float:
-        """Remaining storage capacity on *b* (never negative)."""
-        return max(0.0, b.storage_capacity - b.stored_total)
+        """Remaining storage capacity on *b* (never negative).
+
+        For crafting stations with reserved input slots (Task 7),
+        the input reservations are *added* to the building's nominal
+        capacity so output can always grow up to ``storage_capacity``
+        and inputs always have their full 2x recipe slot — they don't
+        compete for the same pool.
+        """
+        caps = self._input_caps(b)
+        if not caps:
+            return max(0.0, b.storage_capacity - b.stored_total)
+        # Effective output capacity = nominal capacity.
+        # Effective input capacity = sum(caps), tracked per-resource.
+        input_held = sum(b.storage.get(r, 0.0) for r in caps)
+        output_held = b.stored_total - input_held
+        return max(0.0, b.storage_capacity - output_held)
+
+    def _input_caps(self, b: "Building") -> dict[Resource, float]:
+        """Per-resource cap for crafting station inputs (2x recipe).
+
+        Returns an empty dict for buildings that don't have per-input
+        caps (and so use the regular total ``storage_capacity``).
+        Research Centers also use per-input caps for their active
+        research's cost (treated as recipe inputs).
+        """
+        from compprog_pygame.games.hex_colony.resources import (
+            MATERIAL_RECIPES,
+        )
+        if b.type in (
+            BuildingType.WORKSHOP, BuildingType.FORGE,
+            BuildingType.REFINERY, BuildingType.ASSEMBLER,
+        ) and isinstance(b.recipe, Resource):
+            mrec = MATERIAL_RECIPES.get(b.recipe)
+            if mrec is not None:
+                return {r: float(amt * 2) for r, amt in mrec.inputs.items()}
+        if b.type == BuildingType.RESEARCH_CENTER:
+            tt = self.tech_tree
+            if tt is not None and getattr(tt, "current_research", None):
+                from compprog_pygame.games.hex_colony.tech_tree import (
+                    TECH_NODES,
+                )
+                node = TECH_NODES.get(tt.current_research)
+                if node is not None:
+                    rc_count = max(1, len(
+                        self.buildings.by_type(
+                            BuildingType.RESEARCH_CENTER,
+                        )
+                    ))
+                    return {
+                        r: float(amt * 2 / rc_count)
+                        for r, amt in node.cost.items()
+                    }
+        return {}
 
     def _deposit(self, b: "Building", res: Resource, amount: float) -> float:
         """Add *amount* of *res* to ``b.storage``, capped to capacity.
-        Returns the amount actually deposited."""
+        Returns the amount actually deposited.
+
+        For crafting station inputs, each ingredient is capped at
+        exactly 2x the recipe requirement so input slots stay
+        physically separated from output storage.
+        """
         if amount <= 0:
             return 0.0
-        free = self._storage_free(b)
+        # Per-resource cap for inputs.
+        caps = self._input_caps(b)
+        if res in caps:
+            free = max(0.0, caps[res] - b.storage.get(res, 0.0))
+        else:
+            free = self._storage_free(b)
         dep = min(amount, free)
         if dep > 0:
             b.storage[res] = b.storage.get(res, 0.0) + dep
@@ -1220,10 +1492,16 @@ class World:
         self, b: "Building", resources: set[Resource], rate_per_worker: float,
         dt: float,
     ) -> None:
-        """Adjacent-terrain harvester: pulls from any neighbour tile whose
-        TERRAIN_RESOURCE is in *resources* into the building's storage.
-        Also harvests food from fiber/berry patch food_amount."""
+        """Adjacent-terrain harvester: pulls from any tile within
+        :data:`params.COLLECTION_RADIUS` whose ``TERRAIN_RESOURCE`` is
+        in *resources* into the building's storage.  Always retargets
+        to whichever in-range tile still has resources, so a depleted
+        tile never softlocks the building.
+
+        Also harvests food from fiber/berry patch ``food_amount``.
+        """
         from compprog_pygame.games.hex_colony.resources import TERRAIN_RESOURCE
+        from compprog_pygame.games.hex_colony.supply_chain import _hex_range
         if b.workers <= 0:
             return
         free = self._storage_free(b)
@@ -1234,11 +1512,16 @@ class World:
         budget = min(budget, free)
         if budget <= 0:
             return
-        # Round-robin through neighbour tiles that still have resource.
+        # Walk every tile in collection range (skipping the building's
+        # own hex) and pull from the first one with resource.  This
+        # guarantees automatic retargeting: when a tile depletes, the
+        # next call lands on a different tile without intervention.
         produced = False
-        for nb in b.coord.neighbors():
+        for nb in _hex_range(b.coord, params.COLLECTION_RADIUS):
             if budget <= 0:
                 break
+            if nb == b.coord:
+                continue
             tile = self.grid.get(nb)
             if tile is None:
                 continue
@@ -1326,10 +1609,11 @@ class World:
             self._deposit(farm, Resource.FOOD, amount)
             farm.active = True
 
-        # Refinery: if no active recipe, harvests ore from adjacent
+        # Refinery: if no active recipe, harvests ore from in-range
         # veins into its own storage.  If a recipe is set, it runs as
         # a crafting station (handled by _update_workshops).
         from compprog_pygame.games.hex_colony.hex_grid import Terrain
+        from compprog_pygame.games.hex_colony.supply_chain import _hex_range
         for ref in self.buildings.by_type(BuildingType.REFINERY):
             if ref.recipe is not None:
                 continue
@@ -1340,9 +1624,11 @@ class World:
                 continue
             rate = params.REFINERY_RATE * ref.workers * dt
             produced = False
-            for nb in ref.coord.neighbors():
+            for nb in _hex_range(ref.coord, params.COLLECTION_RADIUS):
                 if rate <= 0:
                     break
+                if nb == ref.coord:
+                    continue
                 tile = self.grid.get(nb)
                 if tile is None or tile.resource_amount <= 0:
                     continue
@@ -1371,7 +1657,9 @@ class World:
         # iron/copper from adjacent veins into its storage.
         for mm in self.buildings.by_type(BuildingType.MINING_MACHINE):
             adjacent_ores: list[tuple[HexCoord, Resource]] = []
-            for nb in mm.coord.neighbors():
+            for nb in _hex_range(mm.coord, params.COLLECTION_RADIUS):
+                if nb == mm.coord:
+                    continue
                 tile = self.grid.get(nb)
                 if tile is None or tile.resource_amount <= 0:
                     continue

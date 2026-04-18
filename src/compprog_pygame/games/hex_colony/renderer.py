@@ -971,6 +971,10 @@ class Renderer:
             ids = world.unreachable_buildings()
         except AttributeError:
             return
+        try:
+            ids = ids | world.starved_producers()
+        except AttributeError:
+            pass
         if not ids:
             return
         zoom = camera.zoom

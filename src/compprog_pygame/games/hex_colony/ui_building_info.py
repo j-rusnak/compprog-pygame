@@ -47,6 +47,7 @@ from compprog_pygame.games.hex_colony.ui import (
     UI_TEXT,
     draw_panel_bg,
     render_text_clipped,
+    set_tooltip,
     wrap_text,
 )
 
@@ -260,6 +261,12 @@ class BuildingInfoPanel(Panel):
                 icon_x = x + _PADDING + 4
                 icon_y = cy + (item.height - icon_size) // 2
                 surface.blit(icon_surf, (icon_x, icon_y))
+                # Tooltip when hovering over the icon itself.
+                icon_rect = pygame.Rect(icon_x, icon_y, icon_size, icon_size)
+                if icon_rect.collidepoint(pygame.mouse.get_pos()):
+                    set_tooltip(
+                        item.resource.name.replace("_", " ").title(),
+                    )
                 max_w = _PANEL_W - _PADDING * 2 - icon_size - 8
                 if max_scroll > 0:
                     max_w -= _SCROLLBAR_W + 4
@@ -454,17 +461,130 @@ class BuildingInfoPanel(Panel):
         if b.max_workers > 0:
             line(f"Workers: {b.workers}/{b.max_workers}")
 
-        # Storage
+        # Storage.  For crafting stations with an active material
+        # recipe, split the display into "Inputs" and "Outputs" so
+        # the per-ingredient capacity (2x recipe amount) is visible
+        # alongside the produced item.
         if b.storage_capacity > 0:
             items.append(_Spacer())
-            line(f"Storage: {int(b.stored_total)}/{b.storage_capacity}")
-            for res, amount in b.storage.items():
-                if amount > 0:
+            split = (
+                b.type in (
+                    BuildingType.WORKSHOP, BuildingType.FORGE,
+                    BuildingType.REFINERY, BuildingType.ASSEMBLER,
+                )
+                and isinstance(b.recipe, Resource)
+            )
+            if split:
+                mrec = MATERIAL_RECIPES.get(b.recipe)
+            else:
+                mrec = None
+
+            if split and mrec is not None:
+                input_set = set(mrec.inputs.keys())
+                output_res = mrec.output
+                input_held = sum(
+                    b.storage.get(r, 0.0) for r in mrec.inputs
+                )
+                output_held = b.stored_total - input_held
+                line(
+                    f"Output: {int(output_held)}/{b.storage_capacity}"
+                )
+                # Inputs section — always show every required ingredient
+                # so the player can see a 0/N slot before logistics
+                # delivers any.
+                line("Inputs:", UI_MUTED, Fonts.small())
+                for res, req_amt in mrec.inputs.items():
+                    have = int(b.storage.get(res, 0.0))
+                    cap = req_amt * 2
                     items.append(_IconLine(
                         res,
-                        f"{res.name.replace('_', ' ').capitalize()}: {int(amount)}",
+                        f"{res.name.replace('_', ' ').capitalize()}: {have}/{cap}",
                         RESOURCE_COLORS[res],
                     ))
+                # Outputs section — what this station produces.
+                line("Outputs:", UI_MUTED, Fonts.small())
+                out_have = int(b.storage.get(output_res, 0.0))
+                items.append(_IconLine(
+                    output_res,
+                    f"{output_res.name.replace('_', ' ').capitalize()}: {out_have}",
+                    RESOURCE_COLORS[output_res],
+                ))
+                # Any other stored resources (legacy buffer, etc.).
+                others = [
+                    (r, a) for r, a in b.storage.items()
+                    if a > 0 and r not in input_set and r != output_res
+                ]
+                if others:
+                    line("Other:", UI_MUTED, Fonts.small())
+                    for res, amount in others:
+                        items.append(_IconLine(
+                            res,
+                            f"{res.name.replace('_', ' ').capitalize()}: {int(amount)}",
+                            RESOURCE_COLORS[res],
+                        ))
+            else:
+                line(f"Storage: {int(b.stored_total)}/{b.storage_capacity}")
+                # For consumer buildings whose inputs are NOT served by
+                # the recipe-split branch above (Mining Machine fuels;
+                # Research Center research costs), enumerate every
+                # required input with a have/cap line so the player
+                # can see deliveries arrive in real time.
+                input_rows: list[tuple[Resource, float, float]] = []
+                if b.type == BuildingType.MINING_MACHINE:
+                    cap_for_fuel = b.storage_capacity * 0.4
+                    for fuel_name in params.MINING_MACHINE_FUELS:
+                        fr = Resource[fuel_name]
+                        input_rows.append(
+                            (fr, b.storage.get(fr, 0.0), cap_for_fuel),
+                        )
+                elif (b.type == BuildingType.RESEARCH_CENTER
+                      and self.tech_tree is not None
+                      and getattr(self.tech_tree, "current_research", None)):
+                    from compprog_pygame.games.hex_colony.tech_tree import (
+                        TECH_NODES,
+                    )
+                    node = TECH_NODES.get(self.tech_tree.current_research)
+                    consumed = getattr(self.tech_tree, "_consumed", {}) or {}
+                    if node is not None:
+                        for res, total_amt in node.cost.items():
+                            already = consumed.get(res, 0.0)
+                            remaining = max(0.0, total_amt - already)
+                            input_rows.append(
+                                (res, b.storage.get(res, 0.0), remaining),
+                            )
+
+                if input_rows:
+                    line("Inputs:", UI_MUTED, Fonts.small())
+                    input_set = {r for r, _, _ in input_rows}
+                    for res, have, cap in input_rows:
+                        items.append(_IconLine(
+                            res,
+                            f"{res.name.replace('_',' ').capitalize()}: "
+                            f"{int(have)}/{int(cap)}",
+                            RESOURCE_COLORS[res],
+                        ))
+                    other_lines = [
+                        (r, a) for r, a in b.storage.items()
+                        if a > 0 and r not in input_set
+                    ]
+                    if other_lines:
+                        line("Other:", UI_MUTED, Fonts.small())
+                        for res, amount in other_lines:
+                            items.append(_IconLine(
+                                res,
+                                f"{res.name.replace('_',' ').capitalize()}: "
+                                f"{int(amount)}",
+                                RESOURCE_COLORS[res],
+                            ))
+                else:
+                    for res, amount in b.storage.items():
+                        if amount > 0:
+                            items.append(_IconLine(
+                                res,
+                                f"{res.name.replace('_', ' ').capitalize()}: "
+                                f"{int(amount)}",
+                                RESOURCE_COLORS[res],
+                            ))
 
         # STORAGE building: let the player pick which single resource
         # this storage is dedicated to.  Shown as a scrollable list of

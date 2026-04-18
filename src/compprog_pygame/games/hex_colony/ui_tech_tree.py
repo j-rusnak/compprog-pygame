@@ -29,6 +29,7 @@ from compprog_pygame.games.hex_colony.ui import (
     draw_button,
     draw_titled_panel,
     render_text_clipped,
+    set_tooltip,
 )
 
 if TYPE_CHECKING:
@@ -211,6 +212,7 @@ class TechTreeOverlay(Panel):
             # Cost + time
             cost_y = ny + _NODE_H - 22
             cost_x = nx + 6
+            mx_pos, my_pos = pygame.mouse.get_pos()
             for res, amount in node.cost.items():
                 col = RESOURCE_COLORS[res]
                 icon_surf = get_resource_icon(res, 14)
@@ -219,6 +221,14 @@ class TechTreeOverlay(Panel):
                 if cost_x + chunk_w > nx + _NODE_W - 40:
                     break
                 surface.blit(icon_surf, (cost_x, cost_y + 2))
+                # Hover tooltip on the icon itself
+                icon_rect = pygame.Rect(
+                    cost_x, cost_y + 2,
+                    icon_surf.get_width(), icon_surf.get_height(),
+                )
+                if (self._viewport.collidepoint((mx_pos, my_pos))
+                        and icon_rect.collidepoint((mx_pos, my_pos))):
+                    set_tooltip(res.name.replace("_", " ").title())
                 surface.blit(amt_surf, (cost_x + icon_surf.get_width() + 2,
                                         cost_y))
                 cost_x += chunk_w + 6

@@ -111,14 +111,14 @@ class Game:
         self.ui.add_panel(self._pause_overlay)
         self.ui.add_panel(self._game_over_overlay)
 
-        # Add Stats tab to bottom bar
-        self._stats_tab = StatsTabContent()
-        self._bottom_bar.add_tab("Stats", self._stats_tab)
-
         # Worker-priority tab (opens the drag-and-drop overlay).
         self._worker_priority_tab = WorkerPriorityTabContent()
         self._worker_priority_tab.on_open_edit = self._on_open_worker_priority
         self._bottom_bar.add_tab("Workers", self._worker_priority_tab)
+
+        # Add Stats tab to bottom bar
+        self._stats_tab = StatsTabContent()
+        self._bottom_bar.add_tab("Stats", self._stats_tab)
 
         # Wire building tab -> build mode
         buildings_tab = self._bottom_bar.buildings_tab
@@ -160,6 +160,10 @@ class Game:
         self._tech_tree_overlay.on_close = self._on_close_tech_tree
         self._tech_tree_overlay.tech_tree = self.tech_tree
 
+        # Let the world reach the tech tree (used by Research Center
+        # demand / supply logistics).
+        self.world.tech_tree = self.tech_tree
+
         # Wire game-over overlay callbacks
         self._game_over_overlay.on_return_to_menu = self._on_pause_return_to_menu
         self._game_over_overlay.on_quit = self._on_pause_quit
@@ -185,7 +189,7 @@ class Game:
                 self._update_ghost_building()
                 self.world.update(dt * self._sim_speed)
                 # Research progress
-                completed = self.tech_tree.update(dt * self._sim_speed)
+                completed = self.tech_tree.update(dt * self._sim_speed, self.world)
                 if completed:
                     from compprog_pygame.games.hex_colony.tech_tree import TECH_NODES
                     node = TECH_NODES[completed]
@@ -471,10 +475,11 @@ class Game:
         """Path chain placement.
 
         First click places a single PATH and sets the chain anchor.
-        Subsequent click computes the BFS route from the anchor to the
-        clicked tile, places paths along it (truncated by inventory),
-        and moves the anchor to the last placed tile so the chain can
-        continue.
+        Subsequent click computes the route from the anchor to the
+        clicked tile (using bridges for water crossings if the player
+        has them unlocked and in stock), places the appropriate
+        building type on each tile (truncated by inventory), and moves
+        the anchor to the last placed tile so the chain can continue.
         """
         if self._path_anchor is None:
             if self._try_place_building(coord):
@@ -487,7 +492,21 @@ class Game:
             self.renderer.path_preview = []
             return
 
-        route = self.world.find_path_route(self._path_anchor, coord)
+        bridges_unlocked = (
+            self.god_mode
+            or (self.tech_tree.is_building_unlocked(BuildingType.BRIDGE)
+                and self.tier_tracker.is_building_unlocked(BuildingType.BRIDGE))
+        )
+        free_build = self.sandbox or self.god_mode
+        bridge_stock = (
+            10 ** 9 if free_build
+            else self.world.building_inventory[BuildingType.BRIDGE]
+        )
+        route = self.world.find_path_route(
+            self._path_anchor, coord,
+            allow_bridges=bridges_unlocked,
+            bridge_stock=bridge_stock,
+        )
         if not route:
             # Unreachable / unbuildable target — restart chain here.
             if self._try_place_building(coord):
@@ -497,32 +516,45 @@ class Game:
                 self.renderer.path_preview = []
             return
 
-        free_build = self.sandbox or self.god_mode
-        if free_build:
-            stock = len(route)
-        else:
-            stock = self.world.building_inventory[BuildingType.PATH]
+        path_stock = (
+            10 ** 9 if free_build
+            else self.world.building_inventory[BuildingType.PATH]
+        )
+        bridge_stock_left = bridge_stock
 
         placed = 0
         last_placed: HexCoord | None = None
-        for step in route:
-            tile = self.world.grid.get(step)
-            if tile is None:
-                break
-            if tile.building is not None:
-                # Already a path/bridge here — skip without spending.
-                last_placed = step
-                continue
-            if not free_build and stock - placed <= 0:
-                break
-            if self._try_place_building(step, silent=True):
-                placed += 1
-                last_placed = step
-            else:
-                break
+        original_mode = self.build_mode
+        try:
+            for step, btype in route:
+                tile = self.world.grid.get(step)
+                if tile is None:
+                    break
+                if tile.building is not None:
+                    # Already a path/bridge here — skip without spending.
+                    last_placed = step
+                    continue
+                if btype == BuildingType.BRIDGE:
+                    if bridge_stock_left <= 0:
+                        break
+                else:
+                    if path_stock <= 0:
+                        break
+                self.build_mode = btype
+                if self._try_place_building(step, silent=True):
+                    placed += 1
+                    last_placed = step
+                    if btype == BuildingType.BRIDGE:
+                        bridge_stock_left -= 1
+                    else:
+                        path_stock -= 1
+                else:
+                    break
+        finally:
+            self.build_mode = original_mode
 
         if placed > 0:
-            label = "path" if placed == 1 else "paths"
+            label = "tile" if placed == 1 else "tiles"
             self.notifications.push(f"Built {placed} {label}")
         if last_placed is not None:
             self._path_anchor = last_placed
@@ -676,23 +708,39 @@ class Game:
                 and self._path_anchor is not None
                 and self.renderer.ghost_coord is not None
                 and self.renderer.ghost_coord != self._path_anchor):
+            bridges_unlocked = (
+                self.god_mode
+                or (self.tech_tree.is_building_unlocked(BuildingType.BRIDGE)
+                    and self.tier_tracker.is_building_unlocked(BuildingType.BRIDGE))
+            )
+            free_build = self.sandbox or self.god_mode
+            bridge_stock = (
+                10 ** 9 if free_build
+                else self.world.building_inventory[BuildingType.BRIDGE]
+            )
             route = self.world.find_path_route(
                 self._path_anchor, self.renderer.ghost_coord,
+                allow_bridges=bridges_unlocked,
+                bridge_stock=bridge_stock,
             )
             if route:
-                free_build = self.sandbox or self.god_mode
                 if free_build:
-                    self.renderer.path_preview = route
+                    self.renderer.path_preview = [c for c, _ in route]
                 else:
-                    stock = self.world.building_inventory[BuildingType.PATH]
+                    path_stock = self.world.building_inventory[BuildingType.PATH]
+                    bridge_stock_left = bridge_stock
                     preview: list[HexCoord] = []
-                    needed = 0
-                    for step in route:
+                    for step, btype in route:
                         tile = self.world.grid.get(step)
                         if tile is not None and tile.building is None:
-                            if needed >= stock:
-                                break
-                            needed += 1
+                            if btype == BuildingType.BRIDGE:
+                                if bridge_stock_left <= 0:
+                                    break
+                                bridge_stock_left -= 1
+                            else:
+                                if path_stock <= 0:
+                                    break
+                                path_stock -= 1
                         preview.append(step)
                     self.renderer.path_preview = preview
             else:

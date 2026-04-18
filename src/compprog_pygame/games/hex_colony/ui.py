@@ -165,6 +165,9 @@ class UIManager:
         for panel in self._panels:
             if panel.visible:
                 panel.draw(surface, world)
+        # Render any tooltip set by panels during draw (drawn last so
+        # it always appears on top of other UI elements).
+        _draw_pending_tooltip(surface)
 
     def hit_test(self, pos: tuple[int, int]) -> bool:
         for panel in reversed(self._panels):
@@ -174,6 +177,46 @@ class UIManager:
 
 
 # ── TabContent base class ────────────────────────────────────────
+
+
+# ── Tooltip system (set by any panel during draw) ────────────────
+
+_pending_tooltip: str | None = None
+
+
+def set_tooltip(text: str) -> None:
+    """Schedule a tooltip to be drawn at end-of-frame at the cursor."""
+    global _pending_tooltip
+    _pending_tooltip = text
+
+
+def _draw_pending_tooltip(surface: pygame.Surface) -> None:
+    global _pending_tooltip
+    text = _pending_tooltip
+    _pending_tooltip = None
+    if not text:
+        return
+    font = Fonts.small()
+    pad_x, pad_y = 6, 3
+    text_surf = font.render(text, True, UI_TEXT)
+    box_w = text_surf.get_width() + pad_x * 2
+    box_h = text_surf.get_height() + pad_y * 2
+    mx, my = pygame.mouse.get_pos()
+    sw, sh = surface.get_size()
+    # Place above the cursor with a small gap; flip below if it would
+    # clip off the top of the screen.
+    bx = mx + 14
+    by = my - box_h - 8
+    if by < 2:
+        by = my + 18
+    bx = max(2, min(bx, sw - box_w - 2))
+    box = pygame.Rect(bx, by, box_w, box_h)
+    bg = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+    bg.fill((20, 24, 28, 235))
+    surface.blit(bg, box.topleft)
+    pygame.draw.rect(surface, UI_BORDER, box, width=1, border_radius=3)
+    surface.blit(text_surf, (bx + pad_x, by + pad_y))
+
 
 class TabContent(ABC):
     """Content drawn inside a tab of the ``BottomBar``."""

@@ -92,7 +92,7 @@ BUILDING_MAX_WORKERS_WALL: int = 0
 BUILDING_MAX_WORKERS_WORKSHOP: int = 2
 BUILDING_MAX_WORKERS_FORGE: int = 2
 BUILDING_MAX_WORKERS_ASSEMBLER: int = 2
-BUILDING_MAX_WORKERS_RESEARCH_CENTER: int = 0
+BUILDING_MAX_WORKERS_RESEARCH_CENTER: int = 2
 
 # Housing capacity (number of people that can live here; 0 = not a dwelling)
 BUILDING_HOUSING_CAMP: int = 10
@@ -133,7 +133,7 @@ BUILDING_STORAGE_WALL: int = 0
 BUILDING_STORAGE_WORKSHOP: int = 60
 BUILDING_STORAGE_FORGE: int = 60
 BUILDING_STORAGE_ASSEMBLER: int = 60
-BUILDING_STORAGE_RESEARCH_CENTER: int = 0
+BUILDING_STORAGE_RESEARCH_CENTER: int = 80
 
 # ═══════════════════════════════════════════════════════════════════
 #  LOGISTICS
@@ -351,7 +351,9 @@ TIER_DATA: list[dict] = [
     {
         "name": "Foothold",
         "description": "Secure basic resource production",
-        "unlocks_buildings": ["BRIDGE", "FARM"],
+        # Bridges and Farms are unlocked via the tech tree instead;
+        # tier 1 just gates higher-tier infrastructure.
+        "unlocks_buildings": [],
         "requirements": {
             "population": 8,
             "buildings_placed": 6,
@@ -361,7 +363,8 @@ TIER_DATA: list[dict] = [
     {
         "name": "Settlement",
         "description": "Begin processing raw materials",
-        "unlocks_buildings": ["REFINERY", "WELL", "ASSEMBLER", "MINING_MACHINE"],
+        # Refineries and Wells are unlocked via the tech tree.
+        "unlocks_buildings": ["ASSEMBLER", "MINING_MACHINE"],
         "requirements": {
             "population": 15,
             "resource_gathered": {"FOOD": 100},

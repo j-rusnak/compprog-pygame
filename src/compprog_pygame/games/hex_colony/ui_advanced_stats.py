@@ -77,7 +77,12 @@ class StatsHistory:
         return self._population
 
     def rate(self, res: Resource, window_s: int) -> float:
-        """Average units/sec change over the last *window_s* samples."""
+        """Average units/sec *net stockpile change* over the last
+        ``window_s`` samples (production minus consumption / hauls).
+
+        This is a coarse signal — for the actual current production
+        rate, use :meth:`production_rate` which queries live buildings.
+        """
         data = self._history[res]
         if len(data) < 2:
             return 0.0
@@ -85,6 +90,115 @@ class StatsHistory:
         recent = list(data)[-n:]
         delta = recent[-1] - recent[0]
         return delta / max(1, (n - 1) * SAMPLE_INTERVAL)
+
+    def production_rate(self, world: "World", res: Resource) -> float:
+        """Live units/sec produced by all currently-working production
+        buildings for *res*.  Counts only buildings whose ``active``
+        flag is set this tick (so stalled producers contribute 0).
+
+        Crafting stations contribute ``output_amount / time * workers``
+        when their recipe outputs *res*; gatherers/farms/refineries
+        contribute their per-worker rate × workers (× any bonus).
+        """
+        from compprog_pygame.games.hex_colony import params
+        from compprog_pygame.games.hex_colony.buildings import BuildingType
+        from compprog_pygame.games.hex_colony.hex_grid import Terrain
+        from compprog_pygame.games.hex_colony.resources import (
+            MATERIAL_RECIPES,
+        )
+
+        s = world.settings
+        total = 0.0
+        for b in world.buildings.buildings:
+            if not getattr(b, "active", False) or b.workers <= 0:
+                continue
+            t = b.type
+            # Raw harvesters
+            if t == BuildingType.WOODCUTTER and res == Resource.WOOD:
+                total += s.gather_wood * b.workers
+            elif t == BuildingType.QUARRY and res == Resource.STONE:
+                total += s.gather_stone * b.workers
+            elif t == BuildingType.GATHERER:
+                if b.gatherer_output == Resource.FOOD and res == Resource.FOOD:
+                    total += s.gather_food * b.workers
+                elif b.gatherer_output == Resource.FIBER and res == Resource.FIBER:
+                    total += s.gather_fiber * b.workers
+                elif b.gatherer_output is None and res in (
+                    Resource.FOOD, Resource.FIBER,
+                ):
+                    total += (s.gather_fiber + s.gather_food) * 0.25 * b.workers
+            elif t == BuildingType.FARM and res == Resource.FOOD:
+                bonus = 1.0
+                wells = {
+                    w.coord for w in world.buildings.by_type(BuildingType.WELL)
+                }
+                for nb in b.coord.neighbors():
+                    if nb in wells:
+                        bonus += params.WELL_FARM_BONUS
+                        break
+                total += params.FARM_FOOD_RATE * b.workers * bonus
+            elif t == BuildingType.REFINERY and b.recipe is None:
+                # Adjacency-mining mode (no recipe).
+                for nb in b.coord.neighbors():
+                    tile = world.grid.get(nb)
+                    if tile is None or tile.resource_amount <= 0:
+                        continue
+                    if (tile.terrain == Terrain.IRON_VEIN
+                            and res == Resource.IRON):
+                        total += params.REFINERY_RATE * b.workers
+                        break
+                    if (tile.terrain == Terrain.COPPER_VEIN
+                            and res == Resource.COPPER):
+                        total += params.REFINERY_RATE * b.workers
+                        break
+            elif t == BuildingType.MINING_MACHINE:
+                # Mining machine doesn't use workers, but it's active.
+                for nb in b.coord.neighbors():
+                    tile = world.grid.get(nb)
+                    if tile is None or tile.resource_amount <= 0:
+                        continue
+                    if (tile.terrain == Terrain.IRON_VEIN
+                            and res == Resource.IRON):
+                        total += params.MINING_MACHINE_RATE
+                        break
+                    if (tile.terrain == Terrain.COPPER_VEIN
+                            and res == Resource.COPPER):
+                        total += params.MINING_MACHINE_RATE
+                        break
+            elif t in (
+                BuildingType.WORKSHOP, BuildingType.FORGE,
+                BuildingType.REFINERY, BuildingType.ASSEMBLER,
+            ) and isinstance(b.recipe, Resource):
+                mrec = MATERIAL_RECIPES.get(b.recipe)
+                if mrec is not None and mrec.output == res and mrec.time > 0:
+                    total += (mrec.output_amount / mrec.time) * b.workers
+        return total
+
+    def consumption_rate(self, world: "World", res: Resource) -> float:
+        """Live units/sec *consumed* by currently-working crafting
+        stations using *res* as a recipe input."""
+        from compprog_pygame.games.hex_colony.buildings import BuildingType
+        from compprog_pygame.games.hex_colony.resources import (
+            MATERIAL_RECIPES,
+        )
+        total = 0.0
+        for b in world.buildings.buildings:
+            if not getattr(b, "active", False) or b.workers <= 0:
+                continue
+            if b.type not in (
+                BuildingType.WORKSHOP, BuildingType.FORGE,
+                BuildingType.REFINERY, BuildingType.ASSEMBLER,
+            ):
+                continue
+            if not isinstance(b.recipe, Resource):
+                continue
+            mrec = MATERIAL_RECIPES.get(b.recipe)
+            if mrec is None or mrec.time <= 0:
+                continue
+            amt = mrec.inputs.get(res)
+            if amt:
+                total += (amt / mrec.time) * b.workers
+        return total
 
 
 # ── Time windows offered in the UI ───────────────────────────────
@@ -339,27 +453,44 @@ class AdvancedStatsOverlay(Panel):
             recent = list(data)[-n:]
             if recent:
                 max_val = max(max_val, max(recent))
+        # Round the y-axis upward to a nice round number so labels are
+        # readable across all scales.
+        max_val = _nice_ceiling(max_val)
 
-        # Grid lines (4 horizontal)
-        for i in range(1, 4):
-            gy = graph_rect.y + int(graph_rect.h * i / 4)
-            pygame.draw.line(
-                surface, (55, 60, 72),
-                (graph_rect.x + 2, gy),
-                (graph_rect.right - 2, gy), 1,
+        # Grid lines (4 horizontal) with value labels.
+        plot_x = graph_rect.x + 44
+        plot_w = graph_rect.right - plot_x - 4
+        plot_h = graph_rect.h - 8
+        for i in range(0, 5):
+            frac = i / 4.0
+            gy = graph_rect.bottom - 4 - int(plot_h * frac)
+            if 0 < i < 4:
+                pygame.draw.line(
+                    surface, (55, 60, 72),
+                    (plot_x, gy), (graph_rect.right - 2, gy), 1,
+                )
+            lbl = Fonts.tiny().render(
+                _fmt_axis(max_val * frac), True, UI_MUTED,
             )
+            surface.blit(lbl, (
+                plot_x - lbl.get_width() - 4,
+                gy - lbl.get_height() // 2,
+            ))
 
-        # Y-axis labels (max / 0)
-        top_lbl = Fonts.tiny().render(f"{int(max_val)}", True, UI_MUTED)
-        surface.blit(top_lbl, (graph_rect.x + 4, graph_rect.y + 2))
-        zero_lbl = Fonts.tiny().render("0", True, UI_MUTED)
-        surface.blit(zero_lbl, (
-            graph_rect.x + 4, graph_rect.bottom - zero_lbl.get_height() - 2,
+        # X-axis time labels (window start → "now")
+        x_lbl_now = Fonts.tiny().render("now", True, UI_MUTED)
+        x_lbl_start = Fonts.tiny().render(
+            f"-{_fmt_window_secs(window_s)}", True, UI_MUTED,
+        )
+        surface.blit(x_lbl_start, (plot_x, graph_rect.bottom - 14))
+        surface.blit(x_lbl_now, (
+            graph_rect.right - x_lbl_now.get_width() - 4,
+            graph_rect.bottom - 14,
         ))
 
         # Plot each selected resource
         legend_y = graph_rect.y + 4
-        legend_x = graph_rect.right - 140
+        legend_x = graph_rect.right - 170
         for res in selected:
             data = self.history.resource(res)
             if len(data) < 2:
@@ -368,9 +499,6 @@ class AdvancedStatsOverlay(Panel):
             recent = list(data)[-n:]
             color = RESOURCE_COLORS.get(res, (200, 200, 200))
             points: list[tuple[int, int]] = []
-            plot_x = graph_rect.x + 28
-            plot_w = graph_rect.right - plot_x - 4
-            plot_h = graph_rect.h - 8
             for i, v in enumerate(recent):
                 px = plot_x + int(i * plot_w / max(1, n - 1))
                 py = (
@@ -381,11 +509,16 @@ class AdvancedStatsOverlay(Panel):
             if len(points) >= 2:
                 pygame.draw.lines(surface, color, False, points, 2)
 
-            # Legend entry
+            # Legend entry: icon + name + live production rate.
+            prod = self.history.production_rate(world, res)
+            cons = self.history.consumption_rate(world, res)
+            net = prod - cons
             icon_surf = get_resource_icon(res, 12)
             surface.blit(icon_surf, (legend_x, legend_y))
             name_surf = Fonts.tiny().render(
-                res.name.replace("_", " ").title(), True, color,
+                f"{res.name.replace('_', ' ').title()}  "
+                f"{net:+.2f}/s",
+                True, color,
             )
             surface.blit(name_surf, (legend_x + 16, legend_y + 1))
             legend_y += 16
@@ -406,10 +539,16 @@ class AdvancedStatsOverlay(Panel):
             dt = (len(recent) - 1) * SAMPLE_INTERVAL
             if dt > 0:
                 pop_rate = (recent[-1] - recent[0]) / dt * 60.0
+        # Live total production rate across selected resources.
+        live_prod = sum(
+            self.history.production_rate(world, r) for r in self._selected
+        )
         stats: list[tuple[str, str, tuple[int, int, int]]] = [
             ("Population", f"{world.population.count}", UI_ACCENT),
             ("Pop/min", f"{pop_rate:+.1f}",
              UI_OK if pop_rate >= 0 else (220, 90, 90)),
+            ("Prod/s", f"{live_prod:.2f}",
+             UI_OK if live_prod > 0 else UI_MUTED),
             ("Time", _fmt_time(int(world.time_elapsed)), UI_TEXT),
             ("Window", _WINDOWS[self._window_idx][0], UI_MUTED),
         ]
@@ -464,3 +603,43 @@ def _fmt_time(seconds: int) -> str:
         h, m = divmod(m, 60)
         return f"{h}:{m:02d}:{s:02d}"
     return f"{m:02d}:{s:02d}"
+
+
+def _fmt_window_secs(s: int) -> str:
+    if s < 60:
+        return f"{s}s"
+    m = s // 60
+    return f"{m}m"
+
+
+def _fmt_axis(v: float) -> str:
+    """Compact label for graph axis ticks."""
+    if v >= 10000:
+        return f"{v / 1000:.0f}k"
+    if v >= 1000:
+        return f"{v / 1000:.1f}k"
+    if v >= 10:
+        return f"{int(v)}"
+    if v >= 1:
+        return f"{v:.1f}"
+    return f"{v:.2f}"
+
+
+def _nice_ceiling(v: float) -> float:
+    """Round *v* up to a "nice" power-of-ten multiple (1, 2, 5 × 10^k)
+    so the graph axis labels are readable."""
+    import math
+    if v <= 0:
+        return 1.0
+    exp = math.floor(math.log10(v))
+    base = 10 ** exp
+    frac = v / base
+    if frac <= 1:
+        nice = 1
+    elif frac <= 2:
+        nice = 2
+    elif frac <= 5:
+        nice = 5
+    else:
+        nice = 10
+    return float(nice * base)

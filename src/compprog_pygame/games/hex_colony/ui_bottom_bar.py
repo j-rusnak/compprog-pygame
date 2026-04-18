@@ -586,6 +586,7 @@ class BottomBar(Panel):
         self._tab_rects: list[pygame.Rect] = []
         self._hover_tab: int = -1
         self._content_rect = pygame.Rect(0, 0, 0, 0)
+        self._close_rect = pygame.Rect(0, 0, 0, 0)
         self._create_default_tabs()
 
     @property
@@ -673,6 +674,33 @@ class BottomBar(Panel):
                 surface, self._content_rect, world,
             )
 
+        # Close button (only when a tab is open).  Drawn on top of the
+        # content so it stays clickable; sits in the upper-right corner
+        # of the content area.
+        if self._active >= 0:
+            sz = 22
+            self._close_rect = pygame.Rect(
+                self._content_rect.right - sz - 6,
+                self._content_rect.top + 6,
+                sz, sz,
+            )
+            mouse = pygame.mouse.get_pos()
+            hover = self._close_rect.collidepoint(mouse)
+            bg_col = (60, 20, 20, 230) if hover else (34, 34, 40, 200)
+            bg = pygame.Surface((sz, sz), pygame.SRCALPHA)
+            bg.fill(bg_col)
+            surface.blit(bg, self._close_rect.topleft)
+            pygame.draw.rect(
+                surface, (200, 80, 80), self._close_rect,
+                width=2, border_radius=4,
+            )
+            icon = _get_red_x_icon(sz - 8)
+            surface.blit(icon, (
+                self._close_rect.x + 4, self._close_rect.y + 4,
+            ))
+        else:
+            self._close_rect = pygame.Rect(0, 0, 0, 0)
+
     def handle_event(self, event: pygame.event.Event) -> bool:
         if event.type == pygame.MOUSEMOTION:
             self._hover_tab = -1
@@ -687,6 +715,11 @@ class BottomBar(Panel):
                 return True
 
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self._active >= 0 and self._close_rect.collidepoint(event.pos):
+                self._active = -1
+                sw, sh = pygame.display.get_surface().get_size()
+                self.layout(sw, sh)
+                return True
             for idx, tr in enumerate(self._tab_rects):
                 if tr.collidepoint(event.pos):
                     if idx == self._active:
