@@ -352,6 +352,7 @@ def _carve_rivers(
                 continue
             tile.terrain = Terrain.WATER
             tile.resource_amount = 0.0
+            tile.food_amount = 0.0
             carved_river_tiles.add(coord)
 
 
@@ -434,6 +435,7 @@ def _generate_ore_veins(
             else:
                 lo, hi = params.TILE_RESOURCE_COPPER_VEIN
             tile.resource_amount = rng.uniform(lo, hi)
+            tile.food_amount = 0.0
             vein_tiles.append(cur)
             placed.add(cur)
 
@@ -559,6 +561,8 @@ def generate_terrain(seed: str, settings: HexColonySettings) -> HexGrid:
             if tile is not None:
                 tile.terrain = Terrain.GRASS
                 tile.resource_amount = 0.0
+                tile.food_amount = 0.0
+                tile.underlying_terrain = None
     _soften_clearing_fringe(grid, origin, SAFE_RADIUS)
 
     # --- Pass 6b: guarantee starter resource clusters near spawn ----
@@ -658,6 +662,9 @@ def _stamp_cluster(
             continue
         tile.terrain = terrain
         tile.resource_amount = rng.uniform(lo, hi)
+        if terrain == Terrain.FIBER_PATCH:
+            flo, fhi = params.TILE_RESOURCE_BERRY_PATCH
+            tile.food_amount = rng.uniform(flo, fhi)
         placed.add(cur)
         for nb in cur.neighbors():
             if nb not in placed:
@@ -810,6 +817,7 @@ def _expand_lakes(grid: HexGrid, rng: _random.Random,
                 if e < elev_gate and rng.random() < 0.45:
                     tile.terrain = Terrain.WATER
                     tile.resource_amount = 0.0
+                    tile.food_amount = 0.0
 
 
 def _ring_mountains_with_stone(grid: HexGrid, rng: _random.Random) -> None:
@@ -831,6 +839,7 @@ def _ring_mountains_with_stone(grid: HexGrid, rng: _random.Random) -> None:
             if rng.random() < 0.75:
                 tile.terrain = Terrain.STONE_DEPOSIT
                 tile.resource_amount = rng.uniform(30, 80)
+                tile.food_amount = 0.0
 
 
 # ── Connectivity guarantee ───────────────────────────────────────
@@ -930,6 +939,7 @@ def _carve_path_to_border(
     if tile is not None and not _is_passable(tile.terrain):
         tile.terrain = Terrain.GRASS
         tile.resource_amount = 0.0
+        tile.food_amount = 0.0
 
     # Compute reachability once; only re-check after actually carving a tile.
     _excluded = safe_tiles - {start}
@@ -964,6 +974,7 @@ def _carve_path_to_border(
         if t is not None and not _is_passable(t.terrain):
             t.terrain = Terrain.GRASS
             t.resource_amount = 0.0
+            t.food_amount = 0.0
             # Only recheck reachability when the grid actually changed
             if _flood_passable(grid, start, _excluded) & border_tiles:
                 return

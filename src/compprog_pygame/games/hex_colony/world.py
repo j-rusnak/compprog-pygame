@@ -122,9 +122,12 @@ class World:
             Resource.IRON: float(params.START_IRON),
             Resource.COPPER: float(params.START_COPPER),
         }
-        camp.storage_capacity = sum(
-            v * m for v in (s.start_wood, s.start_fiber, s.start_stone, s.start_food)
-        ) + params.START_IRON + params.START_COPPER
+        camp.storage_capacity = max(
+            params.BUILDING_STORAGE_CAMP,
+            sum(v * m for v in (s.start_wood, s.start_fiber,
+                                s.start_stone, s.start_food))
+            + params.START_IRON + params.START_COPPER,
+        )
 
     def _init_resources(self) -> None:
         s = self.settings
@@ -1139,6 +1142,63 @@ class World:
                 queue.append((nb, new_path))
         return []
 
+    def find_path_route(
+        self, start: HexCoord, end: HexCoord,
+    ) -> list[HexCoord]:
+        """BFS shortest hex-route over tiles where a PATH may be placed.
+
+        Returns the list of coords from immediately after *start* up to
+        and including *end*.  Empty list if no route exists, the start
+        equals end, or end is unreachable / unbuildable.
+        """
+        from compprog_pygame.games.hex_colony.procgen import UNBUILDABLE
+        if start == end:
+            return []
+        if end not in self.grid:
+            return []
+        _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE}
+
+        def passable(coord: HexCoord) -> bool:
+            tile = self.grid.get(coord)
+            if tile is None:
+                return False
+            if tile.terrain in UNBUILDABLE:
+                return False
+            b = tile.building
+            if b is not None and b.type not in _PATH_LIKE:
+                return False
+            return True
+
+        if not passable(end):
+            return []
+
+        visited: set[HexCoord] = {start}
+        parent: dict[HexCoord, HexCoord] = {}
+        queue: deque[HexCoord] = deque([start])
+        found = False
+        while queue:
+            cur = queue.popleft()
+            if cur == end:
+                found = True
+                break
+            for nb in cur.neighbors():
+                if nb in visited:
+                    continue
+                if not passable(nb):
+                    continue
+                visited.add(nb)
+                parent[nb] = cur
+                queue.append(nb)
+        if not found:
+            return []
+        route: list[HexCoord] = []
+        cur = end
+        while cur != start:
+            route.append(cur)
+            cur = parent[cur]
+        route.reverse()
+        return route
+
     # ── Production update (Farms, Refineries, Wells) ─────────────
 
     def _storage_free(self, b: "Building") -> float:
@@ -1279,6 +1339,7 @@ class World:
                 ref.active = False
                 continue
             rate = params.REFINERY_RATE * ref.workers * dt
+            produced = False
             for nb in ref.coord.neighbors():
                 if rate <= 0:
                     break
@@ -1292,6 +1353,8 @@ class World:
                         tile.resource_amount -= take
                         self._deposit(ref, Resource.IRON, take)
                         rate -= take
+                        produced = True
+                        self._maybe_deplete_tile(tile)
                 elif tile.terrain == Terrain.COPPER_VEIN:
                     take = min(rate, tile.resource_amount,
                                self._storage_free(ref))
@@ -1299,7 +1362,9 @@ class World:
                         tile.resource_amount -= take
                         self._deposit(ref, Resource.COPPER, take)
                         rate -= take
-            ref.active = True
+                        produced = True
+                        self._maybe_deplete_tile(tile)
+            ref.active = produced
 
         # Mining machine: automated miner.  Burns CHARCOAL from its
         # own storage, falling back to the global inventory.  Produces
@@ -1359,6 +1424,7 @@ class World:
                     tile.resource_amount -= take
                     self._deposit(mm, ore, take)
                     rate -= take
+                    self._maybe_deplete_tile(tile)
 
     # ── Crafting stations (Workshop / Forge / Refinery) ──────────
 

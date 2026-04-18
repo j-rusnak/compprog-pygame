@@ -26,12 +26,12 @@ CAMP_STORAGE_MULTIPLIER: int = 2
 #  RESOURCE GATHERING (units per second per worker)
 # ═══════════════════════════════════════════════════════════════════
 
-GATHER_RATE_WOOD: float = 0.1
-GATHER_RATE_FIBER: float = 0.08
-GATHER_RATE_STONE: float = 0.06
-GATHER_RATE_FOOD: float = 0.05
-GATHER_RATE_IRON: float = 0.08
-GATHER_RATE_COPPER: float = 0.08
+GATHER_RATE_WOOD: float = 0.3
+GATHER_RATE_FIBER: float = 0.24
+GATHER_RATE_STONE: float = 0.18
+GATHER_RATE_FOOD: float = 0.15
+GATHER_RATE_IRON: float = 0.24
+GATHER_RATE_COPPER: float = 0.24
 
 # ═══════════════════════════════════════════════════════════════════
 #  RESOURCE CONSUMPTION
@@ -116,7 +116,7 @@ BUILDING_HOUSING_RESEARCH_CENTER: int = 0
 
 # Storage capacity (max total resources stored; 0 = none)
 # Camp capacity is set dynamically at placement time.
-BUILDING_STORAGE_CAMP: int = 0
+BUILDING_STORAGE_CAMP: int = 300
 BUILDING_STORAGE_HOUSE: int = 50
 BUILDING_STORAGE_HABITAT: int = 50
 BUILDING_STORAGE_PATH: int = 0

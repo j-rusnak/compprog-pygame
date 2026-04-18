@@ -134,6 +134,9 @@ class Renderer:
         self.ghost_coord: HexCoord | None = None  # snapped hex coord
         self.ghost_valid: bool = False  # whether placement is valid
 
+        # Glowing-green chain placement preview for paths
+        self.path_preview: list[HexCoord] = []
+
         # Reusable overlay surface for per-hex alpha blits
         self._hex_overlay: pygame.Surface | None = None
         self._hex_overlay_size: tuple[int, int] = (0, 0)
@@ -198,6 +201,8 @@ class Renderer:
         self._draw_unreachable_markers(surface, world, camera)
         if self.show_resource_overlay:
             self._draw_resource_overlay(surface, world, camera)
+        if self.path_preview:
+            self._draw_path_preview(surface, camera, world.settings.hex_size)
         if self.ghost_building is not None and self.ghost_coord is not None:
             self._draw_ghost_building(surface, world, camera)
         if self.selected_hex is not None:
@@ -1035,6 +1040,46 @@ class Renderer:
             overlay = self._get_hex_overlay(w, h)
             shifted = [(px - min_x, py - min_y) for px, py in corners_screen]
             pygame.draw.polygon(overlay, (255, 255, 100, 30), shifted)
+            surface.blit(overlay, (min_x, min_y), area=(0, 0, w, h))
+
+    # ── Glowing path-placement preview ───────────────────────────
+
+    def _draw_path_preview(
+        self, surface: pygame.Surface, camera: Camera, size: int,
+    ) -> None:
+        """Draw a glowing-green overlay on every coord in path_preview."""
+        zoom = camera.zoom
+        cam_x, cam_y = camera.x, camera.y
+        sw, sh = surface.get_size()
+        half_sw, half_sh = sw * 0.5, sh * 0.5
+        pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 250)
+        fill_alpha = int(70 + 50 * pulse)
+        edge_alpha = int(200 + 50 * pulse)
+        fill_color = (90, 255, 120, fill_alpha)
+        edge_color = (160, 255, 170, edge_alpha)
+        edge_w = max(1, int(2 * zoom))
+        for coord in self.path_preview:
+            wx, wy = self._get_pixel(coord, size)
+            corners_world = self._get_corners(coord, wx, wy, size)
+            corners_screen = [
+                ((cx - cam_x) * zoom + half_sw,
+                 (cy - cam_y) * zoom + half_sh)
+                for cx, cy in corners_world
+            ]
+            xs = [p[0] for p in corners_screen]
+            ys = [p[1] for p in corners_screen]
+            min_x, max_x = int(min(xs)) - 2, int(max(xs)) + 2
+            min_y, max_y = int(min(ys)) - 2, int(max(ys)) + 2
+            w = max_x - min_x
+            h = max_y - min_y
+            if w <= 0 or h <= 0:
+                continue
+            if max_x < 0 or max_y < 0 or min_x > sw or min_y > sh:
+                continue
+            overlay = self._get_hex_overlay(w, h)
+            shifted = [(px - min_x, py - min_y) for px, py in corners_screen]
+            pygame.draw.polygon(overlay, fill_color, shifted)
+            pygame.draw.polygon(overlay, edge_color, shifted, width=edge_w)
             surface.blit(overlay, (min_x, min_y), area=(0, 0, w, h))
 
     # ── Alt resource overlay ─────────────────────────────────────

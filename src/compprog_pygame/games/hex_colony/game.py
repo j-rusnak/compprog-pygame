@@ -72,6 +72,9 @@ class Game:
         self.god_mode: bool = self.settings.god_mode
         self._build_dragging = False
         self._delete_dragging = False
+        # Anchor for path chain placement: after first PATH click, the
+        # second click places paths along the BFS route between them.
+        self._path_anchor: HexCoord | None = None
         self._hint_font = pygame.font.Font(None, 26)
         self._sim_speed: float = 1.0  # 1x, 2x, or 3x
         self._drag_button: int = 0  # which mouse button started camera drag
@@ -292,7 +295,9 @@ class Game:
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1:  # left click
                 self._on_left_click(event.pos)
-                if self.build_mode is not None:
+                # PATH uses click-to-anchor chain placement; no drag.
+                if (self.build_mode is not None
+                        and self.build_mode != BuildingType.PATH):
                     self._build_dragging = True
                 elif self.delete_mode:
                     self._delete_dragging = True
@@ -379,7 +384,10 @@ class Game:
         if self.delete_mode:
             self._try_delete_building(coord)
         elif self.build_mode is not None:
-            self._try_place_building(coord)
+            if self.build_mode == BuildingType.PATH:
+                self._handle_path_click(coord)
+            else:
+                self._try_place_building(coord)
         else:
             # Select tile
             self.renderer.selected_hex = coord
@@ -396,46 +404,47 @@ class Game:
                 self._tile_info.coord = coord
                 self._tile_info.has_ruin = self.renderer.has_ruin_at(coord)
 
-    def _try_place_building(self, coord) -> None:
+    def _try_place_building(self, coord, silent: bool = False) -> bool:
         tile = self.world.grid[coord]
         # Can't build on unbuildable terrain (water, mountain) — except bridges on water
         from compprog_pygame.games.hex_colony.procgen import UNBUILDABLE
         if tile.terrain in UNBUILDABLE:
             if not (self.build_mode == BuildingType.BRIDGE and tile.terrain == Terrain.WATER):
-                return
+                return False
         # Tech tree gate (bypassed in god mode)
         if not self.god_mode and not self.tech_tree.is_building_unlocked(self.build_mode):
             req = TECH_REQUIREMENTS.get(self.build_mode)
-            if req is not None:
+            if req is not None and not silent:
                 node = TECH_NODES[req]
                 self.notifications.push(
                     f"Requires {node.name} research", (255, 150, 80),
                 )
-            return
+            return False
         # Tier gate (bypassed in god mode)
         if not self.god_mode and not self.tier_tracker.is_building_unlocked(self.build_mode):
             from compprog_pygame.games.hex_colony.tech_tree import TIER_BUILDING_REQUIREMENTS, TIERS
             req_tier = TIER_BUILDING_REQUIREMENTS.get(self.build_mode, 0)
             tier_info = TIERS[req_tier]
-            self.notifications.push(
-                f"Requires Tier {req_tier}: {tier_info.name}", (255, 150, 80),
-            )
-            return
+            if not silent:
+                self.notifications.push(
+                    f"Requires Tier {req_tier}: {tier_info.name}", (255, 150, 80),
+                )
+            return False
         # Check existing building
         existing = tile.building
         _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE}
         if existing is not None:
             # Can only build on top of a path/bridge (not wall, camp, or other buildings)
             if existing.type not in _PATH_LIKE:
-                return
+                return False
             # Can't place another path-like or wall on a path-like
             if self.build_mode in _PATH_LIKE or self.build_mode == BuildingType.WALL:
-                return
+                return False
         # Check cost (skip in sandbox or god mode)
         free_build = self.sandbox or self.god_mode
         if not free_build:
             if self.world.building_inventory[self.build_mode] < 1:
-                return  # no stock
+                return False  # no stock
             self.world.building_inventory.spend(self.build_mode)
         # If building on top of a path/bridge, return it to inventory
         if existing is not None and existing.type in _PATH_LIKE:
@@ -453,8 +462,71 @@ class Game:
         if self.blueprints.is_recording:
             self.blueprints.record_building(coord, self.build_mode)
         # Notification
-        self.notifications.push(f"Built {self.build_mode.name.replace('_', ' ').title()}")
+        if not silent:
+            self.notifications.push(f"Built {self.build_mode.name.replace('_', ' ').title()}")
         self.world.mark_housing_dirty()
+        return True
+
+    def _handle_path_click(self, coord) -> None:
+        """Path chain placement.
+
+        First click places a single PATH and sets the chain anchor.
+        Subsequent click computes the BFS route from the anchor to the
+        clicked tile, places paths along it (truncated by inventory),
+        and moves the anchor to the last placed tile so the chain can
+        continue.
+        """
+        if self._path_anchor is None:
+            if self._try_place_building(coord):
+                self._path_anchor = coord
+            return
+
+        if coord == self._path_anchor:
+            # Re-clicking the anchor cancels the chain.
+            self._path_anchor = None
+            self.renderer.path_preview = []
+            return
+
+        route = self.world.find_path_route(self._path_anchor, coord)
+        if not route:
+            # Unreachable / unbuildable target — restart chain here.
+            if self._try_place_building(coord):
+                self._path_anchor = coord
+            else:
+                self._path_anchor = None
+                self.renderer.path_preview = []
+            return
+
+        free_build = self.sandbox or self.god_mode
+        if free_build:
+            stock = len(route)
+        else:
+            stock = self.world.building_inventory[BuildingType.PATH]
+
+        placed = 0
+        last_placed: HexCoord | None = None
+        for step in route:
+            tile = self.world.grid.get(step)
+            if tile is None:
+                break
+            if tile.building is not None:
+                # Already a path/bridge here — skip without spending.
+                last_placed = step
+                continue
+            if not free_build and stock - placed <= 0:
+                break
+            if self._try_place_building(step, silent=True):
+                placed += 1
+                last_placed = step
+            else:
+                break
+
+        if placed > 0:
+            label = "path" if placed == 1 else "paths"
+            self.notifications.push(f"Built {placed} {label}")
+        if last_placed is not None:
+            self._path_anchor = last_placed
+        self.renderer.path_preview = []
 
     def _try_delete_building(self, coord) -> None:
         """Delete a building at the given coordinate, refunding half its cost."""
@@ -578,7 +650,13 @@ class Game:
             self.renderer.ghost_building = None
             self.renderer.ghost_coord = None
             self.renderer.ghost_valid = False
+            self.renderer.path_preview = []
+            self._path_anchor = None
             return
+
+        # Switching to a non-PATH build mode cancels any path chain.
+        if self.build_mode != BuildingType.PATH:
+            self._path_anchor = None
 
         self.renderer.ghost_building = self.build_mode
         mx, my = pygame.mouse.get_pos()
@@ -592,6 +670,35 @@ class Game:
         else:
             self.renderer.ghost_coord = None
             self.renderer.ghost_valid = False
+
+        # Path chain preview
+        if (self.build_mode == BuildingType.PATH
+                and self._path_anchor is not None
+                and self.renderer.ghost_coord is not None
+                and self.renderer.ghost_coord != self._path_anchor):
+            route = self.world.find_path_route(
+                self._path_anchor, self.renderer.ghost_coord,
+            )
+            if route:
+                free_build = self.sandbox or self.god_mode
+                if free_build:
+                    self.renderer.path_preview = route
+                else:
+                    stock = self.world.building_inventory[BuildingType.PATH]
+                    preview: list[HexCoord] = []
+                    needed = 0
+                    for step in route:
+                        tile = self.world.grid.get(step)
+                        if tile is not None and tile.building is None:
+                            if needed >= stock:
+                                break
+                            needed += 1
+                        preview.append(step)
+                    self.renderer.path_preview = preview
+            else:
+                self.renderer.path_preview = []
+        else:
+            self.renderer.path_preview = []
 
     def _can_place_at(self, coord) -> bool:
         """Check if the current build_mode can be placed at coord."""

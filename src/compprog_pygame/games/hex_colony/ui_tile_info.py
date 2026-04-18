@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import pygame
 
 from compprog_pygame.games.hex_colony.hex_grid import HexCoord, HexTile, Terrain
-from compprog_pygame.games.hex_colony.resources import TERRAIN_RESOURCE
+from compprog_pygame.games.hex_colony.resources import TERRAIN_RESOURCE, Resource
 from compprog_pygame.games.hex_colony.resource_icons import get_resource_icon
 from compprog_pygame.games.hex_colony.ui import (
     Fonts,
@@ -136,6 +136,16 @@ class TileInfoPanel(Panel):
                 add("  Depleted", UI_BAD, Fonts.body())
         else:
             add("No harvestable resource", UI_MUTED, Fonts.small())
+
+        # Food on fiber/berry patches
+        if tile.food_amount > 0:
+            food_color = RESOURCE_COLORS.get(Resource.FOOD, UI_TEXT)
+            if resource is None:
+                add("Resource:", UI_MUTED, Fonts.small())
+            add(f"  Food",
+                food_color, Fonts.body(), icon_res=Resource.FOOD)
+            add(f"  Remaining: {int(tile.food_amount)}", UI_TEXT,
+                Fonts.body())
         spacer()
 
         # Ancient ruin tooltip (flavor)
