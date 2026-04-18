@@ -775,6 +775,22 @@ class Renderer:
         # Also track non-path buildings that need a path disc underneath
         buildings_needing_path: set[HexCoord] = set()
         _PATH_TYPES = {BuildingType.PATH, BuildingType.BRIDGE}
+        # Non-path buildings adjacent to other non-path buildings also
+        # get an implicit path disc so neighbouring buildings visually
+        # connect (workers can step directly between them, so it should
+        # not look like they're running on grass).
+        _IMPLICIT_PATH_SKIP = {
+            BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL,
+        }
+        for building in world.buildings.buildings:
+            if building.type in _IMPLICIT_PATH_SKIP:
+                continue
+            for nb_coord in building.coord.neighbors():
+                nb_building = world.buildings.at(nb_coord)
+                if (nb_building is not None
+                        and nb_building.type not in _IMPLICIT_PATH_SKIP):
+                    buildings_needing_path.add(building.coord)
+                    break
         for building in world.buildings.buildings:
             if building.type not in _PATH_TYPES:
                 continue
@@ -843,11 +859,16 @@ class Renderer:
             if r < 2:
                 pygame.draw.circle(surface, _PATH_BASE, (int(sx), int(sy)), max(1, r))
                 continue
-            # Gather path neighbours for the under-building path disc
+            # Gather neighbours that should anchor the under-building
+            # path disc: real paths/bridges and other non-path/wall
+            # buildings (so adjacent buildings visually connect).
             nb_positions_b: list[tuple[float, float]] = []
             for nb_coord in coord.neighbors():
                 nb_building = world.buildings.at(nb_coord)
-                if nb_building is not None and nb_building.type == BuildingType.PATH:
+                if nb_building is None:
+                    continue
+                if (nb_building.type in _PATH_TYPES
+                        or nb_building.type not in _IMPLICIT_PATH_SKIP):
                     nwx, nwy = self._get_pixel(nb_coord, size)
                     nsx = (nwx - cam_x) * zoom + half_sw
                     nsy = (nwy - cam_y) * zoom + half_sh
@@ -1181,6 +1202,31 @@ class Renderer:
                     shifted = [(px - min_x, py - min_y) for px, py in corners_screen]
                     pygame.draw.polygon(ov, overlay_col, shifted)
                     surface.blit(ov, (min_x, min_y), area=(0, 0, w, h))
+
+                # Building production / storage sprite overlay: draw a
+                # large copy of the resource sprite this building is
+                # producing (or storing) so the player can read the
+                # production chain at a glance.
+                if building is not None:
+                    icon_res = None
+                    if building.type == BuildingType.STORAGE:
+                        icon_res = building.stored_resource
+                    else:
+                        icon_res = world._building_output(building)
+                    if icon_res is not None:
+                        icon_size = max(8, int(size * zoom * 1.1))
+                        from compprog_pygame.games.hex_colony.resource_icons import (
+                            get_resource_icon,
+                        )
+                        icon = get_resource_icon(icon_res, icon_size)
+                        if icon is not None:
+                            cx = (wx - cam_x) * zoom + half_sw
+                            cy = (wy - cam_y) * zoom + half_sh
+                            surface.blit(
+                                icon,
+                                (int(cx - icon.get_width() / 2),
+                                 int(cy - icon.get_height() / 2)),
+                            )
 
     # ── Ghost building preview ───────────────────────────────────
 

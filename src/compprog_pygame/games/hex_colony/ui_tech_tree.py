@@ -37,8 +37,8 @@ if TYPE_CHECKING:
     from compprog_pygame.games.hex_colony.world import World
 
 
-_NODE_W = 180
-_NODE_H = 82
+_NODE_W = 200
+_NODE_H = 116
 _NODE_GAP_X = 56
 _NODE_GAP_Y = 40
 _GRAPH_MARGIN = 40
@@ -239,6 +239,39 @@ class TechTreeOverlay(Panel):
                 nx + _NODE_W - time_surf.get_width() - 6, cost_y,
             ))
 
+            # ── Unlocks row (building previews + hover-cost tooltip) ──
+            if node.unlocks:
+                unlock_y = ny + 46
+                lbl_surf = Fonts.tiny().render("Unlocks:", True, UI_MUTED)
+                surface.blit(lbl_surf, (nx + 6, unlock_y))
+                ux = nx + 6 + lbl_surf.get_width() + 4
+                uy = unlock_y - 2
+                for unlock_bt in node.unlocks:
+                    preview = _get_unlock_preview(unlock_bt, 18)
+                    if preview is None:
+                        # Fallback: render the building type's name letter.
+                        text = unlock_bt.name[:2].title()
+                        ph = Fonts.tiny().render(text, True, UI_TEXT)
+                        preview_rect = pygame.Rect(ux, uy, 18, 18)
+                        pygame.draw.rect(
+                            surface, (45, 50, 60), preview_rect,
+                            border_radius=3,
+                        )
+                        surface.blit(ph, (
+                            preview_rect.centerx - ph.get_width() // 2,
+                            preview_rect.centery - ph.get_height() // 2,
+                        ))
+                    else:
+                        preview_rect = pygame.Rect(ux, uy, 18, 18)
+                        surface.blit(preview, preview_rect.topleft)
+                    if (self._viewport.collidepoint((mx_pos, my_pos))
+                            and preview_rect.collidepoint(
+                                (mx_pos, my_pos))):
+                        set_tooltip(_unlock_tooltip(unlock_bt))
+                    ux += 22
+                    if ux > nx + _NODE_W - 22:
+                        break
+
         surface.set_clip(prev_clip)
 
         # Scroll hint
@@ -306,3 +339,27 @@ class TechTreeOverlay(Panel):
         self.visible = False
         if self.on_close is not None:
             self.on_close()
+
+
+# ── Helpers for the unlocks row ───────────────────────────────────
+
+def _get_unlock_preview(btype, size: int):
+    """Return a small preview surface for *btype*, or None if unavailable."""
+    from compprog_pygame.games.hex_colony.ui_bottom_bar import (
+        BuildingsTabContent,
+    )
+    return BuildingsTabContent._get_building_preview(btype, size)
+
+
+def _unlock_tooltip(btype) -> str:
+    """Return a one-line tooltip describing *btype* and its build cost."""
+    from compprog_pygame.games.hex_colony.buildings import BUILDING_COSTS
+    name = btype.name.replace("_", " ").title()
+    cost = BUILDING_COSTS.get(btype)
+    if cost is None or not cost.costs:
+        return f"{name} — Free"
+    parts = [
+        f"{amt} {res.name.replace('_', ' ').title()}"
+        for res, amt in cost.costs.items()
+    ]
+    return f"{name} — " + ", ".join(parts)

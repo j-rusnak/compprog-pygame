@@ -598,7 +598,6 @@ class BottomBar(Panel):
 
     def _create_default_tabs(self) -> None:
         self.add_tab("Buildings", BuildingsTabContent())
-        self.add_tab("Info", InfoTabContent())
 
     def add_tab(self, label: str, content: TabContent) -> None:
         self._tabs.append(_Tab(label=label, content=content))

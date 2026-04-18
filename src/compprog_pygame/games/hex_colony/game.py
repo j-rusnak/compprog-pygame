@@ -37,6 +37,10 @@ from compprog_pygame.games.hex_colony.ui_demand_priority import (
     DemandPriorityOverlay,
     DemandPriorityTabContent,
 )
+from compprog_pygame.games.hex_colony.ui_supply_priority import (
+    SupplyPriorityOverlay,
+    SupplyPriorityTabContent,
+)
 from compprog_pygame.games.hex_colony import params
 
 # Build-mode palette order
@@ -104,6 +108,7 @@ class Game:
         self._advanced_stats_overlay = AdvancedStatsOverlay()
         self._worker_priority_overlay = WorkerPriorityOverlay()
         self._demand_priority_overlay = DemandPriorityOverlay()
+        self._supply_priority_overlay = SupplyPriorityOverlay()
         self.ui.add_panel(self._resource_bar)
         self.ui.add_panel(self._bottom_bar)
         self.ui.add_panel(self._building_info)
@@ -114,6 +119,7 @@ class Game:
         self.ui.add_panel(self._advanced_stats_overlay)
         self.ui.add_panel(self._worker_priority_overlay)
         self.ui.add_panel(self._demand_priority_overlay)
+        self.ui.add_panel(self._supply_priority_overlay)
         self.ui.add_panel(self._pause_overlay)
         self.ui.add_panel(self._game_over_overlay)
 
@@ -128,9 +134,19 @@ class Game:
         self._demand_priority_tab.on_toggle_auto = self._on_toggle_demand_auto
         self._bottom_bar.add_tab("Demand", self._demand_priority_tab)
 
+        # Supply-priority tab (mirrors the demand one).
+        self._supply_priority_tab = SupplyPriorityTabContent()
+        self._supply_priority_tab.on_open_edit = self._on_open_supply_priority
+        self._supply_priority_tab.on_toggle_auto = self._on_toggle_supply_auto
+        self._bottom_bar.add_tab("Supply", self._supply_priority_tab)
+
         # Add Stats tab to bottom bar
         self._stats_tab = StatsTabContent()
         self._bottom_bar.add_tab("Stats", self._stats_tab)
+
+        # Info tab goes last.
+        from compprog_pygame.games.hex_colony.ui_bottom_bar import InfoTabContent
+        self._bottom_bar.add_tab("Info", InfoTabContent())
 
         # Wire building tab -> build mode
         buildings_tab = self._bottom_bar.buildings_tab
@@ -489,16 +505,21 @@ class Game:
     def _handle_path_click(self, coord) -> None:
         """Path chain placement.
 
-        First click places a single PATH and sets the chain anchor.
-        Subsequent click computes the route from the anchor to the
+        First click sets the chain anchor (no path placed yet —
+        a green preview shows the hypothetical route).
+        Second click computes the route from the anchor to the
         clicked tile (using bridges for water crossings if the player
         has them unlocked and in stock), places the appropriate
-        building type on each tile (truncated by inventory), and moves
-        the anchor to the last placed tile so the chain can continue.
+        building type on each tile along the route *including the
+        anchor*, truncated by inventory, and moves the anchor to the
+        last placed tile so the chain can continue.
         """
         if self._path_anchor is None:
-            if self._try_place_building(coord):
-                self._path_anchor = coord
+            # First click — just set the anchor, don't place anything.
+            tile = self.world.grid.get(coord)
+            if tile is None:
+                return
+            self._path_anchor = coord
             return
 
         if coord == self._path_anchor:
@@ -523,13 +544,26 @@ class Game:
             bridge_stock=bridge_stock,
         )
         if not route:
-            # Unreachable / unbuildable target — restart chain here.
-            if self._try_place_building(coord):
+            # Unreachable / unbuildable target — move anchor here.
+            tile = self.world.grid.get(coord)
+            if tile is not None:
                 self._path_anchor = coord
             else:
                 self._path_anchor = None
                 self.renderer.path_preview = []
             return
+
+        # Prepend the anchor tile itself to the route so it gets
+        # placed as well (unless it already has a building).
+        anchor_tile = self.world.grid.get(self._path_anchor)
+        if (anchor_tile is not None
+                and anchor_tile.building is None):
+            from compprog_pygame.games.hex_colony.hex_grid import Terrain
+            if anchor_tile.terrain == Terrain.WATER:
+                anchor_btype = BuildingType.BRIDGE
+            else:
+                anchor_btype = BuildingType.PATH
+            route = [(self._path_anchor, anchor_btype)] + list(route)
 
         path_stock = (
             10 ** 9 if free_build
@@ -671,6 +705,22 @@ class Game:
                     )
                 return
 
+    def _on_open_supply_priority(self) -> None:
+        """Open the Edit Resource Supply drag-drop modal."""
+        self._supply_priority_overlay.visible = True
+
+    def _on_toggle_supply_auto(self, net_id: int | None) -> None:
+        if net_id is None:
+            return
+        for n in self.world.networks:
+            if n.id == net_id:
+                n.supply_auto = not n.supply_auto
+                if n.supply_auto:
+                    n.supply_priority = self.world._auto_supply_tiers(
+                        list(n.buildings),
+                    )
+                return
+
     def _on_pause_return_to_menu(self) -> None:
         """Callback from pause overlay Return to Main Menu button."""
         self.running = False
@@ -759,13 +809,19 @@ class Game:
                 bridge_stock=bridge_stock,
             )
             if route:
+                # Prepend anchor tile so preview includes it.
+                anchor_tile = self.world.grid.get(self._path_anchor)
+                full_route = []
+                if anchor_tile is not None and anchor_tile.building is None:
+                    full_route.append((self._path_anchor, BuildingType.PATH))
+                full_route.extend(route)
                 if free_build:
-                    self.renderer.path_preview = [c for c, _ in route]
+                    self.renderer.path_preview = [c for c, _ in full_route]
                 else:
                     path_stock = self.world.building_inventory[BuildingType.PATH]
                     bridge_stock_left = bridge_stock
                     preview: list[HexCoord] = []
-                    for step, btype in route:
+                    for step, btype in full_route:
                         tile = self.world.grid.get(step)
                         if tile is not None and tile.building is None:
                             if btype == BuildingType.BRIDGE:
@@ -780,6 +836,11 @@ class Game:
                     self.renderer.path_preview = preview
             else:
                 self.renderer.path_preview = []
+        elif (self.build_mode == BuildingType.PATH
+              and self._path_anchor is not None):
+            # Show anchor tile highlighted even before a second point
+            # is chosen, so the player sees where the chain starts.
+            self.renderer.path_preview = [self._path_anchor]
         else:
             self.renderer.path_preview = []
 

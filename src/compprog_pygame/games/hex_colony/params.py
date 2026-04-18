@@ -53,22 +53,22 @@ PERSON_SPEED: float = 60.0  # pixels per second
 
 BUILDING_COST_CAMP: dict[str, int] = {}
 BUILDING_COST_HOUSE: dict[str, int] = {"WOOD": 12, "FIBER": 4}
-BUILDING_COST_HABITAT: dict[str, int] = {"IRON": 4, "WOOD": 8, "STONE": 6}
+BUILDING_COST_HABITAT: dict[str, int] = {"WOOD": 12, "STONE": 10, "FIBER": 4}
 BUILDING_COST_PATH: dict[str, int] = {"STONE": 1, "WOOD": 1}
 BUILDING_COST_BRIDGE: dict[str, int] = {"PLANKS": 4}
 BUILDING_COST_WOODCUTTER: dict[str, int] = {"WOOD": 10, "STONE": 5}
 BUILDING_COST_QUARRY: dict[str, int] = {"WOOD": 15, "FIBER": 5}
 BUILDING_COST_GATHERER: dict[str, int] = {"WOOD": 8, "STONE": 3}
 BUILDING_COST_STORAGE: dict[str, int] = {"WOOD": 20, "STONE": 10}
-BUILDING_COST_REFINERY: dict[str, int] = {"IRON": 8, "STONE": 15, "WOOD": 10}
+BUILDING_COST_REFINERY: dict[str, int] = {"STONE": 20, "WOOD": 15, "FIBER": 5}
 BUILDING_COST_MINING_MACHINE: dict[str, int] = {"IRON_BAR": 6, "STONE": 20, "WOOD": 10, "GEARS": 2}
 BUILDING_COST_FARM: dict[str, int] = {"WOOD": 12, "FIBER": 8, "STONE": 4}
 BUILDING_COST_WELL: dict[str, int] = {"STONE": 10, "WOOD": 6}
 BUILDING_COST_WALL: dict[str, int] = {"STONE": 8, "WOOD": 4}
-BUILDING_COST_WORKSHOP: dict[str, int] = {}
+BUILDING_COST_WORKSHOP: dict[str, int] = {"WOOD": 25, "STONE": 15, "FIBER": 5}
 BUILDING_COST_FORGE: dict[str, int] = {"STONE": 20, "WOOD": 10}
 BUILDING_COST_ASSEMBLER: dict[str, int] = {"IRON_BAR": 8, "COPPER_BAR": 4, "PLANKS": 6, "BRICKS": 6}
-BUILDING_COST_RESEARCH_CENTER: dict[str, int] = {}
+BUILDING_COST_RESEARCH_CENTER: dict[str, int] = {"PLANKS": 8, "STONE": 15, "FIBER": 6}
 
 # ═══════════════════════════════════════════════════════════════════
 #  BUILDING CAPACITY
@@ -194,6 +194,36 @@ WELL_FARM_BONUS: float = 1.0
 
 # Time in seconds (at 1x speed) to craft one building
 WORKSHOP_CRAFT_TIME: float = 15.0
+
+# ═══════════════════════════════════════════════════════════════════
+#  BUILDING RECIPES
+#  Defines which crafting station can produce each placeable building.
+#  Each entry maps a BuildingType name to the station BuildingType name
+#  that crafts it.  Buildings not listed here cannot be crafted (e.g.
+#  CAMP, HOUSE).  The crafting cost is the building's own
+#  BUILDING_COST_* entry above, consumed from the station's local
+#  storage / global inventory during crafting.
+#  The craft time for all entries is WORKSHOP_CRAFT_TIME above.
+# ═══════════════════════════════════════════════════════════════════
+
+BUILDING_RECIPE_STATION: dict[str, str] = {
+    "HABITAT":          "WORKSHOP",
+    "PATH":             "WORKSHOP",
+    "BRIDGE":           "WORKSHOP",
+    "WALL":             "WORKSHOP",
+    "WOODCUTTER":       "WORKSHOP",
+    "QUARRY":           "WORKSHOP",
+    "GATHERER":         "WORKSHOP",
+    "STORAGE":          "WORKSHOP",
+    "REFINERY":         "WORKSHOP",
+    "FARM":             "WORKSHOP",
+    "WELL":             "WORKSHOP",
+    "WORKSHOP":         "WORKSHOP",
+    "FORGE":            "FORGE",
+    "MINING_MACHINE":   "ASSEMBLER",
+    "ASSEMBLER":        "FORGE",
+    "RESEARCH_CENTER":  "WORKSHOP",
+}
 
 # ═══════════════════════════════════════════════════════════════════
 #  INTERMEDIATE / MATERIAL RECIPES

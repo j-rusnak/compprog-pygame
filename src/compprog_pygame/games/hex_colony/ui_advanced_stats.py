@@ -59,6 +59,21 @@ class StatsHistory:
         self._history: dict[Resource, deque[float]] = {
             r: deque(maxlen=HISTORY_LEN) for r in Resource
         }
+        # Per-sample production / consumption rates and running totals.
+        self._prod_history: dict[Resource, deque[float]] = {
+            r: deque(maxlen=HISTORY_LEN) for r in Resource
+        }
+        self._cons_history: dict[Resource, deque[float]] = {
+            r: deque(maxlen=HISTORY_LEN) for r in Resource
+        }
+        self._total_prod: dict[Resource, float] = {r: 0.0 for r in Resource}
+        self._total_cons: dict[Resource, float] = {r: 0.0 for r in Resource}
+        self._total_prod_history: dict[Resource, deque[float]] = {
+            r: deque(maxlen=HISTORY_LEN) for r in Resource
+        }
+        self._total_cons_history: dict[Resource, deque[float]] = {
+            r: deque(maxlen=HISTORY_LEN) for r in Resource
+        }
         self._population: deque[float] = deque(maxlen=HISTORY_LEN)
         self._last_sample: float = -1.0
 
@@ -79,11 +94,37 @@ class StatsHistory:
                 per_res[r] = per_res.get(r, 0.0) + float(amt)
         for res in Resource:
             self._history[res].append(per_res[res])
+            prod = self.production_rate(world, res)
+            cons = self.consumption_rate(world, res)
+            self._prod_history[res].append(prod)
+            self._cons_history[res].append(cons)
+            self._total_prod[res] += prod * SAMPLE_INTERVAL
+            self._total_cons[res] += cons * SAMPLE_INTERVAL
+            self._total_prod_history[res].append(self._total_prod[res])
+            self._total_cons_history[res].append(self._total_cons[res])
         self._population.append(float(world.population.count))
         self._last_sample = world.time_elapsed
 
     def resource(self, res: Resource) -> deque[float]:
         return self._history[res]
+
+    def prod_series(self, res: Resource) -> deque[float]:
+        return self._prod_history[res]
+
+    def cons_series(self, res: Resource) -> deque[float]:
+        return self._cons_history[res]
+
+    def total_prod_series(self, res: Resource) -> deque[float]:
+        return self._total_prod_history[res]
+
+    def total_cons_series(self, res: Resource) -> deque[float]:
+        return self._total_cons_history[res]
+
+    def total_prod(self, res: Resource) -> float:
+        return self._total_prod[res]
+
+    def total_cons(self, res: Resource) -> float:
+        return self._total_cons[res]
 
     def population(self) -> deque[float]:
         return self._population
@@ -262,12 +303,16 @@ class AdvancedStatsOverlay(Panel):
         self._close_rect = pygame.Rect(0, 0, 0, 0)
         self._row_rects: list[tuple[pygame.Rect, Resource]] = []
         self._window_rects: list[tuple[pygame.Rect, int]] = []
+        self._mode_rects: list[tuple[pygame.Rect, str]] = []
 
         # Default: track a handful of common resources.
         self._selected: set[Resource] = {
             Resource.WOOD, Resource.STONE, Resource.FOOD, Resource.IRON,
         }
         self._window_idx: int = 1  # 2m
+        # Stat display mode (graph + filter):
+        # "stockpile" | "prod_rate" | "cons_rate" | "total_prod" | "total_cons"
+        self._mode: str = "stockpile"
         self.on_close: "callable | None" = None
 
     def layout(self, screen_w: int, screen_h: int) -> None:
@@ -281,17 +326,64 @@ class AdvancedStatsOverlay(Panel):
         return bool(self.god_mode_getter and self.god_mode_getter())
 
     def _visible_resources(self) -> list[Resource]:
-        """Resources to show in the picker list, respecting tier/tech gates."""
+        """Resources to show in the picker list, respecting tier/tech gates
+        and the active stat-mode (only resources that can ever produce
+        the metric appear)."""
         god = self._god()
         out: list[Resource] = []
         for res in list(RAW_RESOURCES) + [
             r for r in Resource if r in PROCESSED_RESOURCES
         ]:
-            if god or is_resource_available(
+            if not god and not is_resource_available(
                 res, self.tech_tree, self.tier_tracker,
             ):
-                out.append(res)
+                continue
+            if not self._mode_relevant(res):
+                continue
+            out.append(res)
         return out
+
+    def _mode_relevant(self, res: Resource) -> bool:
+        """Return True if *res* is meaningful for the current stat mode.
+
+        Only relevant when the history is populated; until then we
+        permit everything so the picker isn't empty on game start.
+        """
+        if self._mode == "stockpile":
+            return True
+        h = self.history
+        if h is None:
+            return True
+        if self._mode in ("prod_rate", "total_prod"):
+            return _series_has_value(h.prod_series(res)) or h.total_prod(res) > 0
+        if self._mode in ("cons_rate", "total_cons"):
+            return _series_has_value(h.cons_series(res)) or h.total_cons(res) > 0
+        return True
+
+    def _series_for(self, res: Resource) -> "deque[float] | None":
+        h = self.history
+        if h is None:
+            return None
+        if self._mode == "stockpile":
+            return h.resource(res)
+        if self._mode == "prod_rate":
+            return h.prod_series(res)
+        if self._mode == "cons_rate":
+            return h.cons_series(res)
+        if self._mode == "total_prod":
+            return h.total_prod_series(res)
+        if self._mode == "total_cons":
+            return h.total_cons_series(res)
+        return None
+
+    def _mode_label(self) -> str:
+        return {
+            "stockpile": "Stockpile",
+            "prod_rate": "Production /s",
+            "cons_rate": "Consumption /s",
+            "total_prod": "Total Produced",
+            "total_cons": "Total Consumed",
+        }.get(self._mode, "Stockpile")
 
     # ── Drawing ──────────────────────────────────────────────────
 
@@ -325,16 +417,23 @@ class AdvancedStatsOverlay(Panel):
         )
         self._draw_window_strip(surface, strip)
 
+        # Stat-mode selector strip (just below the time-window strip)
+        mode_strip = pygame.Rect(
+            panel.x + 12, strip.bottom + 4,
+            panel.w - 24, _TOP_STRIP_H,
+        )
+        self._draw_mode_strip(surface, mode_strip)
+
         # Left resource picker panel
         left = pygame.Rect(
-            panel.x + 12, strip.bottom + 6,
-            _LEFT_W, panel.bottom - strip.bottom - 18,
+            panel.x + 12, mode_strip.bottom + 6,
+            _LEFT_W, panel.bottom - mode_strip.bottom - 18,
         )
         self._draw_resource_list(surface, left)
 
         # Right graph + stats panel
         right = pygame.Rect(
-            left.right + 12, strip.bottom + 6,
+            left.right + 12, mode_strip.bottom + 6,
             panel.right - (left.right + 12) - 12,
             left.h,
         )
@@ -361,6 +460,36 @@ class AdvancedStatsOverlay(Panel):
                 r.centery - surf.get_height() // 2,
             ))
             self._window_rects.append((r, idx))
+            x += tw + 6
+
+    def _draw_mode_strip(
+        self, surface: pygame.Surface, rect: pygame.Rect,
+    ) -> None:
+        label = Fonts.body().render("Stat:", True, UI_TEXT)
+        surface.blit(label, (rect.x + 4, rect.centery - label.get_height() // 2))
+        x = rect.x + label.get_width() + 14
+        y = rect.y + (rect.h - 28) // 2
+        self._mode_rects = []
+        modes: list[tuple[str, str]] = [
+            ("stockpile", "Stockpile"),
+            ("prod_rate", "Prod /s"),
+            ("cons_rate", "Cons /s"),
+            ("total_prod", "Total Prod"),
+            ("total_cons", "Total Cons"),
+        ]
+        for key, text in modes:
+            tw = max(70, Fonts.small().size(text)[0] + 16)
+            r = pygame.Rect(x, y, tw, 28)
+            is_sel = key == self._mode
+            bg = UI_ACCENT if is_sel else UI_BG
+            pygame.draw.rect(surface, bg, r, border_radius=4)
+            pygame.draw.rect(surface, UI_BORDER, r, width=1, border_radius=4)
+            surf = Fonts.small().render(text, True, UI_TEXT)
+            surface.blit(surf, (
+                r.centerx - surf.get_width() // 2,
+                r.centery - surf.get_height() // 2,
+            ))
+            self._mode_rects.append((r, key))
             x += tw + 6
 
     def _draw_resource_list(
@@ -458,7 +587,7 @@ class AdvancedStatsOverlay(Panel):
         # Determine max across selected, over window
         max_val = 1.0
         for res in selected:
-            data = self.history.resource(res)
+            data = self._series_for(res)
             if not data:
                 continue
             n = min(len(data), window_s)
@@ -502,10 +631,14 @@ class AdvancedStatsOverlay(Panel):
 
         # Plot each selected resource
         legend_y = graph_rect.y + 4
-        legend_x = graph_rect.right - 170
+        legend_x = graph_rect.right - 200
+        # Mode label header
+        mode_lbl = Fonts.tiny().render(self._mode_label(), True, UI_ACCENT)
+        surface.blit(mode_lbl, (legend_x, legend_y))
+        legend_y += 14
         for res in selected:
-            data = self.history.resource(res)
-            if len(data) < 2:
+            data = self._series_for(res)
+            if data is None or len(data) < 2:
                 continue
             n = min(len(data), window_s)
             recent = list(data)[-n:]
@@ -521,17 +654,44 @@ class AdvancedStatsOverlay(Panel):
             if len(points) >= 2:
                 pygame.draw.lines(surface, color, False, points, 2)
 
-            # Legend entry: icon + name + live production rate.
-            prod = self.history.production_rate(world, res)
-            cons = self.history.consumption_rate(world, res)
-            net = prod - cons
+            # Legend entry depends on the active mode.
+            if self._mode == "stockpile":
+                prod = self.history.production_rate(world, res)
+                cons = self.history.consumption_rate(world, res)
+                net = prod - cons
+                legend_txt = (
+                    f"{res.name.replace('_', ' ').title()}  "
+                    f"{net:+.2f}/s"
+                )
+            elif self._mode == "prod_rate":
+                cur = self.history.production_rate(world, res)
+                legend_txt = (
+                    f"{res.name.replace('_', ' ').title()}  "
+                    f"{cur:.2f}/s"
+                )
+            elif self._mode == "cons_rate":
+                cur = self.history.consumption_rate(world, res)
+                legend_txt = (
+                    f"{res.name.replace('_', ' ').title()}  "
+                    f"{cur:.2f}/s"
+                )
+            elif self._mode == "total_prod":
+                tot = self.history.total_prod(res)
+                legend_txt = (
+                    f"{res.name.replace('_', ' ').title()}  "
+                    f"{tot:.0f}"
+                )
+            elif self._mode == "total_cons":
+                tot = self.history.total_cons(res)
+                legend_txt = (
+                    f"{res.name.replace('_', ' ').title()}  "
+                    f"{tot:.0f}"
+                )
+            else:
+                legend_txt = res.name.replace("_", " ").title()
             icon_surf = get_resource_icon(res, 12)
             surface.blit(icon_surf, (legend_x, legend_y))
-            name_surf = Fonts.tiny().render(
-                f"{res.name.replace('_', ' ').title()}  "
-                f"{net:+.2f}/s",
-                True, color,
-            )
+            name_surf = Fonts.tiny().render(legend_txt, True, color)
             surface.blit(name_surf, (legend_x + 16, legend_y + 1))
             legend_y += 16
 
@@ -589,6 +749,16 @@ class AdvancedStatsOverlay(Panel):
             for r, idx in self._window_rects:
                 if r.collidepoint(event.pos):
                     self._window_idx = idx
+                    return True
+            for r, key in self._mode_rects:
+                if r.collidepoint(event.pos):
+                    self._mode = key
+                    # Drop any selected resources that aren't relevant
+                    # for the new mode so the graph stays meaningful.
+                    self._selected = {
+                        res for res in self._selected
+                        if self._mode_relevant(res)
+                    }
                     return True
             for r, res in self._row_rects:
                 if r.collidepoint(event.pos):
@@ -655,3 +825,11 @@ def _nice_ceiling(v: float) -> float:
     else:
         nice = 10
     return float(nice * base)
+
+
+def _series_has_value(series) -> bool:
+    """Return True if *series* contains any non-zero sample."""
+    for v in series:
+        if v > 0:
+            return True
+    return False

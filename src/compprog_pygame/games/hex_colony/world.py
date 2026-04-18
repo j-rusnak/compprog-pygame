@@ -49,6 +49,12 @@ class Network:
     # buildings on tier 0, storage buildings on tier 1).
     demand_priority: list[list[Building]] = field(default_factory=list)
     demand_auto: bool = True
+    # Per-building supply tiers: higher tiers are drawn from FIRST
+    # when satisfying a demand.  Same auto/manual model as
+    # ``demand_priority``: auto puts producers (and other non-storage
+    # suppliers) on tier 0, storage on tier 1.
+    supply_priority: list[list[Building]] = field(default_factory=list)
+    supply_auto: bool = True
 
     @property
     def name(self) -> str:
@@ -373,6 +379,11 @@ class World:
                     if parent_ids and parent_ids[0] in old_nets
                     else True
                 ),
+                supply_auto=(
+                    old_nets[parent_ids[0]].supply_auto
+                    if parent_ids and parent_ids[0] in old_nets
+                    else True
+                ),
             ))
 
         # Stable display order: by id ascending.
@@ -381,6 +392,7 @@ class World:
         # Rebuild demand-priority tiers for every network now that the
         # ``buildings`` lists are settled.
         self._refresh_demand_priorities(old_nets)
+        self._refresh_supply_priorities(old_nets)
 
     # ── Worker assignment & dispatch ─────────────────────────────
 
@@ -463,6 +475,66 @@ class World:
         demand-priority list, or a large sentinel when the building
         isn't on the demand schedule at all."""
         for ti, tier in enumerate(net.demand_priority):
+            if b in tier:
+                return ti
+        return 1_000_000
+
+    def _refresh_supply_priorities(
+        self, old_nets: dict[int, Network],
+    ) -> None:
+        """Same model as :meth:`_refresh_demand_priorities` but for
+        supply tiers."""
+        for net in self.networks:
+            members = list(net.buildings)
+            if not members:
+                net.supply_priority = []
+                continue
+            if net.supply_auto:
+                net.supply_priority = self._auto_supply_tiers(members)
+                continue
+            old_index: dict[int, int] = {}
+            for parent_net in old_nets.values():
+                for ti, tier in enumerate(parent_net.supply_priority):
+                    for b in tier:
+                        old_index[id(b)] = ti
+            depth = max(old_index.values(), default=-1) + 1
+            tiers: list[list[Building]] = [[] for _ in range(max(depth, 1))]
+            for b in members:
+                idx = old_index.get(id(b), 0)
+                if idx >= len(tiers):
+                    tiers.extend([] for _ in range(idx - len(tiers) + 1))
+                tiers[idx].append(b)
+            net.supply_priority = [t for t in tiers if t]
+
+    def _auto_supply_tiers(
+        self, members: list[Building],
+    ) -> list[list[Building]]:
+        """Default split: producers / crafters on tier 0, storage /
+        camp on tier 1.  Roads / bridges / walls (which have no supply)
+        and pure dwellings are skipped."""
+        from compprog_pygame.games.hex_colony.buildings import BuildingType
+        skip = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL,
+                BuildingType.HOUSE, BuildingType.HABITAT}
+        tier0: list[Building] = []
+        tier1: list[Building] = []
+        for b in members:
+            if b.type in skip:
+                continue
+            if b.type in (BuildingType.STORAGE, BuildingType.CAMP):
+                tier1.append(b)
+            else:
+                tier0.append(b)
+        result: list[list[Building]] = []
+        if tier0:
+            result.append(tier0)
+        if tier1:
+            result.append(tier1)
+        return result
+
+    def _supply_tier_of(
+        self, b: Building, net: Network,
+    ) -> int:
+        for ti, tier in enumerate(net.supply_priority):
             if b in tier:
                 return ti
         return 1_000_000
@@ -757,6 +829,12 @@ class World:
                 if amt > 0:
                     out[b.stored_resource] = amt
             return out
+        # Dwellings only consume FOOD — they never supply.  Treating
+        # dwellings as suppliers caused workers to ping-pong food
+        # between two adjacent houses whenever one was momentarily
+        # over the per-house cap.
+        if b.housing_capacity > 0:
+            return out
         # All other buildings: anything in storage that isn't on their
         # own demand list is fair game as supply.
         demanded = set(self._building_demand(b).keys())
@@ -811,6 +889,23 @@ class World:
             mrec = MATERIAL_RECIPES.get(b.recipe)
             if mrec is not None:
                 for res, amt in mrec.inputs.items():
+                    have = b.storage.get(res, 0.0)
+                    target = amt * 2
+                    need = max(0.0, target - have)
+                    if need > 0.5:
+                        out[res] = need
+        # Workshop with a building recipe (placeable building):
+        # demand the building cost so logistics will deliver inputs
+        # to the workshop instead of the workshop scraping straight
+        # from the global inventory.
+        if (b.type == BuildingType.WORKSHOP
+                and isinstance(b.recipe, BuildingType)):
+            from compprog_pygame.games.hex_colony.buildings import (
+                BUILDING_COSTS,
+            )
+            cost = BUILDING_COSTS.get(b.recipe)
+            if cost is not None:
+                for res, amt in cost.costs.items():
                     have = b.storage.get(res, 0.0)
                     target = amt * 2
                     need = max(0.0, target - have)
@@ -903,7 +998,7 @@ class World:
     ) -> tuple[float, float]:
         """Return (total_stock, total_capacity) for ``res`` across all
         buildings in ``net`` plus the global inventory."""
-        stock = float(self.inventory.get(res, 0.0))
+        stock = float(self.inventory[res])
         cap = 0.0
         for b in net.buildings:
             stock += float(b.storage.get(res, 0.0))
@@ -1182,6 +1277,27 @@ class World:
                 return bucket
         return demands
 
+    def _filter_supplies_by_tier(
+        self, net: "Network",
+        supplies: list[tuple],
+        demands: list[tuple],
+    ) -> list[tuple]:
+        """Restrict the supply pool to the highest-priority tier whose
+        offerings can satisfy at least one outstanding demand."""
+        tiers = net.supply_priority
+        if not tiers:
+            return supplies
+        demand_res = {d[1] for d in demands}
+        by_tier: dict[int, list[tuple]] = {}
+        for s in supplies:
+            ti = self._supply_tier_of(s[0], net)
+            by_tier.setdefault(ti, []).append(s)
+        for ti in sorted(by_tier):
+            bucket = by_tier[ti]
+            if any(s[1] in demand_res for s in bucket):
+                return bucket
+        return supplies
+
     # ── Population growth ────────────────────────────────────────
 
     def _update_population_growth(self, dt: float) -> None:
@@ -1285,6 +1401,12 @@ class World:
         tiered_demands = self._filter_demands_by_tier(net, demands, supplies)
         if tiered_demands:
             demands = tiered_demands
+
+        # Supply-priority filter: drain the highest-priority suppliers
+        # first so storage stays as the fallback source it should be.
+        tiered_supplies = self._filter_supplies_by_tier(net, supplies, demands)
+        if tiered_supplies:
+            supplies = tiered_supplies
 
         best_score = -1e9
         best_src = best_dst = None
@@ -2065,8 +2187,12 @@ class World:
                     continue
 
                 if isinstance(station.recipe, BuildingType):
-                    # Building recipe — Workshop only.
-                    if stype is not BuildingType.WORKSHOP:
+                    # Building recipe — check params for valid station.
+                    from compprog_pygame.games.hex_colony import params as _params
+                    expected_station = _params.BUILDING_RECIPE_STATION.get(
+                        station.recipe.name
+                    )
+                    if expected_station != stype.name:
                         station.recipe = None
                         station.craft_progress = 0.0
                         continue
@@ -2083,12 +2209,14 @@ class World:
     def _tick_building_recipe(
         self, station, dt: float, building_costs,
     ) -> None:
-        # Building recipes still pull from the global inventory (the
-        # Workshop crafts placeable buildings as a "one-off" special
-        # case).  Material recipes go through storage.
+        # Building recipes consume from the station's local storage
+        # first (so logistics deliveries to the workshop are spent
+        # there) and fall back to the global inventory.  This matches
+        # how material recipes work and lets the demand-priority tab
+        # actually feed the workshop.
         cost = building_costs[station.recipe]
         can_afford = all(
-            self.inventory[res] >= amount
+            self._station_available(station, res, amount) >= amount
             for res, amount in cost.costs.items()
         )
         if not can_afford:
@@ -2096,7 +2224,7 @@ class World:
         station.craft_progress += dt * station.workers
         if station.craft_progress >= params.WORKSHOP_CRAFT_TIME:
             for res, amount in cost.costs.items():
-                self.inventory.spend(res, amount)
+                self._station_consume(station, res, amount)
             self.building_inventory.add(station.recipe)
             station.craft_progress = 0.0
 

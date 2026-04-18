@@ -579,7 +579,7 @@ def generate_terrain(seed: str, settings: HexColonySettings) -> HexGrid:
 
 # ── Starter-area resource guarantee ──────────────────────────────
 
-_STARTER_SEARCH_RADIUS = 25
+_STARTER_SEARCH_RADIUS = 15
 _STARTER_CLUSTER_SIZE = 4
 
 

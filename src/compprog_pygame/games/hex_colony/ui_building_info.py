@@ -85,20 +85,6 @@ _BUILDING_LABEL: dict[BuildingType, str] = {
     BuildingType.RESEARCH_CENTER: "Research Center",
 }
 
-WORKSHOP_CRAFTABLE: list[BuildingType] = [
-    BuildingType.HABITAT,
-    BuildingType.PATH,
-    BuildingType.BRIDGE,
-    BuildingType.WALL,
-    BuildingType.WOODCUTTER,
-    BuildingType.QUARRY,
-    BuildingType.GATHERER,
-    BuildingType.STORAGE,
-    BuildingType.REFINERY,
-    BuildingType.FARM,
-    BuildingType.WELL,
-    BuildingType.WORKSHOP,
-]
 
 
 # ── Content item types (lightweight DSL) ─────────────────────────
@@ -675,12 +661,19 @@ class BuildingInfoPanel(Panel):
 
             items.append(_Spacer(4))
 
-            # Building recipes (Workshop only).
-            if b.type == BuildingType.WORKSHOP:
+            # Building recipes for this station type.
+            # Derive the list from params so every station that can
+            # produce buildings shows them, not just the Workshop.
+            building_recipes_for_station = [
+                BuildingType[bname]
+                for bname, sname in params.BUILDING_RECIPE_STATION.items()
+                if sname == b.type.name
+            ]
+            if building_recipes_for_station:
                 god = bool(
                     self.god_mode_getter and self.god_mode_getter()
                 )
-                for craft_type in WORKSHOP_CRAFTABLE:
+                for craft_type in building_recipes_for_station:
                     if not god and not is_building_available(
                         craft_type, self.tech_tree, self.tier_tracker,
                     ):
@@ -702,9 +695,8 @@ class BuildingInfoPanel(Panel):
                     )
                 ]
             if station_recipes:
-                if b.type == BuildingType.WORKSHOP:
-                    items.append(_Spacer(2))
-                    line("Materials:", UI_MUTED, Fonts.small())
+                items.append(_Spacer(2))
+                line("Materials:", UI_MUTED, Fonts.small())
                 for mrec in station_recipes:
                     items.append(_MaterialRecipeBtn(
                         mrec, selected=(b.recipe == mrec.output),
