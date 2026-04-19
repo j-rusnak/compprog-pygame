@@ -532,10 +532,11 @@ class InfoTabContent(TabContent):
     def draw_content(
         self, surface: pygame.Surface, rect: pygame.Rect, world: World,
     ) -> None:
-        mins, secs = divmod(int(world.time_elapsed), 60)
+        mins, secs = divmod(int(world.real_time_elapsed), 60)
         n_buildings = sum(
             1 for b in world.buildings.buildings
             if b.type != BuildingType.PATH
+            and getattr(b, "faction", "SURVIVOR") == "SURVIVOR"
         )
         items = [
             (STATS_COLONY_AGE, f"{mins}:{secs:02d}"),

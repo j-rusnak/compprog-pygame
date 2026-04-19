@@ -87,6 +87,7 @@ class StatsTabContent(TabContent):
             1 for b in world.buildings.buildings
             if b.type not in (BuildingType.PATH, BuildingType.BRIDGE,
                               BuildingType.CAMP, BuildingType.WALL)
+            and getattr(b, "faction", "SURVIVOR") == "SURVIVOR"
         )
         idle = sum(
             1 for p in world.population.people
@@ -95,7 +96,7 @@ class StatsTabContent(TabContent):
         research_count = getattr(world, "_tech_research_count", 0)
         raw_stock = self._count_stock(world, RAW_RESOURCES)
         processed_stock = self._count_stock(world, PROCESSED_RESOURCES)
-        time_s = int(world.time_elapsed)
+        time_s = int(world.real_time_elapsed)
 
         # Stat cards + Advanced button
         btn_w = 170

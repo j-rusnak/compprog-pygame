@@ -92,6 +92,11 @@ class World:
         self.inventory = Inventory()
         self.building_inventory = BuildingInventory()
         self.time_elapsed: float = 0.0
+        self.real_time_elapsed: float = 0.0
+        # Cumulative resources produced by buildings (harvested/crafted).
+        # Separate from ``Inventory.total_produced`` which only counts
+        # resources that pass through the global pool.
+        self._total_produced: dict[Resource, float] = {r: 0.0 for r in Resource}
         self._housing_dirty: bool = True  # needs recalc on first frame
         # Per-building-network worker priority lists.  ``networks`` is
         # rebuilt each frame; each Network keeps its own tier list so
@@ -144,14 +149,19 @@ class World:
         """The mission is lost when all survivors are dead."""
         return self.population.count == 0 and self.time_elapsed > 0
 
+    def total_produced(self, res: Resource) -> float:
+        """Cumulative resources produced by all buildings (harvested/crafted)."""
+        return self._total_produced.get(res, 0.0)
+
     # ── Generation ───────────────────────────────────────────────
 
     @classmethod
     def generate(cls, settings: HexColonySettings, seed: str = "default") -> World:
         world = cls(settings)
         world.seed = seed
-        world.grid = generate_terrain(seed, settings)
+        world.grid, ai_camp_coords = generate_terrain(seed, settings)
         world._place_starting_camp()
+        world._place_ai_tribal_camps(ai_camp_coords)
         world._init_resources()
         world._init_building_inventory()
         world._spawn_people()
@@ -179,6 +189,43 @@ class World:
                                 s.start_stone, s.start_food))
             + params.START_IRON + params.START_COPPER,
         )
+
+    def _place_ai_tribal_camps(self, coords: list[HexCoord]) -> None:
+        """Place a primitive AI tribe camp at each given coordinate.
+
+        Each camp belongs to its own ``"PRIMITIVE_<i>"`` tribe so future
+        AI logic can treat them as independent factions.  If the target
+        tile is unbuildable (water/mountain), the nearest passable hex
+        within a small radius is used as a fallback.
+        """
+        for i, coord in enumerate(coords):
+            target = coord
+            tile = self.grid.get(target)
+            # Slide off impassable tiles to the nearest valid hex.
+            if tile is None or tile.terrain in UNBUILDABLE or tile.building is not None:
+                for radius in range(1, 6):
+                    found = False
+                    for q in range(-radius, radius + 1):
+                        for r in range(max(-radius, -q - radius),
+                                       min(radius, -q + radius) + 1):
+                            cand = HexCoord(coord.q + q, coord.r + r)
+                            ct = self.grid.get(cand)
+                            if (ct is not None
+                                    and ct.terrain not in UNBUILDABLE
+                                    and ct.building is None):
+                                target = cand
+                                tile = ct
+                                found = True
+                                break
+                        if found:
+                            break
+                    if found:
+                        break
+            if tile is None:
+                continue
+            camp = self.buildings.place(BuildingType.TRIBAL_CAMP, target)
+            camp.faction = f"PRIMITIVE_{i}"
+            tile.building = camp
 
     def _init_resources(self) -> None:
         s = self.settings
@@ -1382,6 +1429,10 @@ class World:
         for b in self.buildings.buildings:
             if b.housing_capacity <= 0:
                 continue
+            # Skip non-player (AI tribe) dwellings — they reproduce on
+            # their own AI logic, not the player's population system.
+            if b.faction != "SURVIVOR":
+                continue
             # Only tick timer when there's room to grow.
             if b.residents >= b.housing_capacity:
                 b.reproduction_timer = 0.0
@@ -1973,6 +2024,13 @@ class World:
             b.storage[res] = b.storage.get(res, 0.0) + dep
         return dep
 
+    def _produce(self, b: "Building", res: Resource, amount: float) -> float:
+        """Deposit a newly-produced resource and record cumulative production."""
+        dep = self._deposit(b, res, amount)
+        if dep > 0:
+            self._total_produced[res] += dep
+        return dep
+
     def _harvest_from_terrain(
         self, b: "Building", resources: set[Resource], rate_per_worker: float,
         dt: float,
@@ -2017,7 +2075,7 @@ class World:
             if Resource.FOOD in resources and tile.food_amount > 0:
                 take = min(budget, tile.food_amount)
                 tile.food_amount -= take
-                self._deposit(b, Resource.FOOD, take)
+                self._produce(b, Resource.FOOD, take)
                 budget -= take
                 produced = True
                 self._maybe_deplete_tile(tile)
@@ -2029,7 +2087,7 @@ class World:
                 continue
             take = min(budget, tile.resource_amount)
             tile.resource_amount -= take
-            self._deposit(b, res, take)
+            self._produce(b, res, take)
             budget -= take
             produced = True
             self._maybe_deplete_tile(tile)
@@ -2100,7 +2158,7 @@ class World:
                     bonus += params.WELL_FARM_BONUS
                     break
             amount = params.FARM_FOOD_RATE * farm.workers * bonus * dt
-            self._deposit(farm, Resource.FOOD, amount)
+            self._produce(farm, Resource.FOOD, amount)
             farm.active = True
 
         # Refinery: if no active recipe, harvests ore from in-range
@@ -2131,7 +2189,7 @@ class World:
                                self._storage_free(ref))
                     if take > 0:
                         tile.resource_amount -= take
-                        self._deposit(ref, Resource.IRON, take)
+                        self._produce(ref, Resource.IRON, take)
                         rate -= take
                         produced = True
                         self._maybe_deplete_tile(tile)
@@ -2140,7 +2198,7 @@ class World:
                                self._storage_free(ref))
                     if take > 0:
                         tile.resource_amount -= take
-                        self._deposit(ref, Resource.COPPER, take)
+                        self._produce(ref, Resource.COPPER, take)
                         rate -= take
                         produced = True
                         self._maybe_deplete_tile(tile)
@@ -2206,7 +2264,7 @@ class World:
                            self._storage_free(mm))
                 if take > 0:
                     tile.resource_amount -= take
-                    self._deposit(mm, ore, take)
+                    self._produce(mm, ore, take)
                     rate -= take
                     self._maybe_deplete_tile(tile)
 
@@ -2309,5 +2367,5 @@ class World:
         if station.craft_progress >= recipe.time:
             for res, amount in recipe.inputs.items():
                 self._station_consume(station, res, amount)
-            self._deposit(station, recipe.output, recipe.output_amount)
+            self._produce(station, recipe.output, recipe.output_amount)
             station.craft_progress = 0.0

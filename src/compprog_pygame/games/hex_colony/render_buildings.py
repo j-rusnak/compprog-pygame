@@ -241,6 +241,60 @@ def draw_house(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) 
     pygame.draw.polygon(surface, (50, 35, 18), door_pts)
 
 
+def draw_tribal_camp(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Primitive tribal camp — central fire pit ringed by three small hide tents."""
+    if _try_sprite(surface, "buildings/tribal_camp", sx, sy, r, z):
+        return
+    iz = max(1, int(z))
+    hide_col = (140, 100, 60)
+    hide_dark = _darken(hide_col, 0.7)
+    hide_light = _lighten(hide_col, 1.15)
+    earth_col = (95, 70, 45)
+
+    # Earth ring around the camp (a flat trodden-ground disc)
+    ring_r = max(3, int(r * 0.95))
+    pygame.draw.circle(surface, earth_col, (int(sx), int(sy)), ring_r)
+    pygame.draw.circle(surface, _darken(earth_col, 0.7),
+                       (int(sx), int(sy)), ring_r, iz)
+
+    # Three small hide tents around the centre (triangle layout)
+    tent_r = max(2, int(r * 0.32))
+    for i in range(3):
+        angle = math.radians(-90 + i * 120)
+        tx = sx + math.cos(angle) * r * 0.55
+        ty = sy + math.sin(angle) * r * 0.55
+        apex_y = ty - tent_r * 1.1
+        base_y = ty + tent_r * 0.55
+        lx = tx - tent_r * 0.85
+        rx = tx + tent_r * 0.85
+        # shaded right half
+        pygame.draw.polygon(surface, hide_dark,
+                            [(tx, apex_y), (tx, base_y), (rx, base_y)])
+        # lit left half
+        pygame.draw.polygon(surface, hide_light,
+                            [(tx, apex_y), (lx, base_y), (tx, base_y)])
+        # outline
+        pygame.draw.polygon(surface, _darken(hide_col, 0.5),
+                            [(tx, apex_y), (lx, base_y), (rx, base_y)], iz)
+
+    # Central fire pit: stone ring with glowing embers
+    pit_r = max(2, int(r * 0.22))
+    pygame.draw.circle(surface, (90, 85, 80), (int(sx), int(sy)), pit_r)
+    pygame.draw.circle(surface, (60, 55, 50), (int(sx), int(sy)), pit_r, iz)
+    # Ember glow
+    ember_r = max(1, int(pit_r * 0.55))
+    pygame.draw.circle(surface, (255, 140, 40), (int(sx), int(sy)), ember_r)
+    pygame.draw.circle(surface, (255, 220, 120),
+                       (int(sx - iz * 0.5), int(sy - iz * 0.5)),
+                       max(1, ember_r - iz))
+
+    # Smoke wisp above fire
+    smoke_x = int(sx + iz)
+    smoke_top = int(sy - r * 0.85)
+    pygame.draw.line(surface, (180, 175, 170),
+                     (int(sx), int(sy - pit_r)), (smoke_x, smoke_top), iz)
+
+
 def draw_woodcutter(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
     if _try_sprite(surface, "buildings/woodcutter", sx, sy, r, z):
         return

@@ -74,6 +74,12 @@ def _text(step_id: str) -> tuple[str, list[str]]:
     return entry["title"], list(entry["lines"])  # type: ignore[arg-type]
 
 
+# Steps dismissed with a zero cooldown so the next hint fires
+# immediately instead of after the default delay.  Used for tightly
+# paired hints (housing → tier goal).
+_INSTANT_FOLLOWUP: set[str] = {"build_habitat"}
+
+
 TUTORIAL_STEPS: list[_TutorialStep] = [
     _TutorialStep(
         id="welcome",
@@ -129,11 +135,10 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         id="tier_goal",
         title=_text("tier_goal")[0],
         lines=_text("tier_goal")[1],
-        # Fires once the player has actually placed their first
-        # habitat — i.e. immediately after the habitat hint becomes
-        # obsolete.  ``after="build_habitat"`` ensures the previous
-        # step has already been dismissed.
-        trigger=lambda w, ctx: _has_building_count(w, BuildingType.HABITAT),
+        # Fires immediately after the housing popup is dismissed so
+        # the player always gets the tier-goal explanation right
+        # after the habitat hint.
+        trigger=lambda w, ctx: True,
         after="build_habitat",
     ),
     _TutorialStep(
@@ -182,6 +187,13 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         trigger=lambda w, ctx: _population(w) >= 10,
         after="build_habitat",
     ),
+    _TutorialStep(
+        id="useful_controls",
+        title=_text("useful_controls")[0],
+        lines=_text("useful_controls")[1],
+        trigger=lambda w, ctx: ctx.get("real_time", 0) >= 120.0,
+        after=None,
+    ),
 ]
 
 
@@ -224,11 +236,25 @@ class TutorialPanel(Panel):
         if self._cooldown > 0:
             self._cooldown -= ctx.get("dt", 1 / 60)
             return
+        # Lookup so we can check an `after` step's trigger state.
+        steps_by_id = {s.id: s for s in TUTORIAL_STEPS}
         for step in TUTORIAL_STEPS:
             if step.id in self._dismissed:
                 continue
             if step.after is not None and step.after not in self._dismissed:
-                continue
+                # Only block while the earlier step is still applicable
+                # (its trigger currently fires).  Once the earlier step
+                # becomes irrelevant — e.g. the player skipped past it
+                # — this step should still eventually appear.
+                prev = steps_by_id.get(step.after)
+                prev_applicable = False
+                if prev is not None:
+                    try:
+                        prev_applicable = bool(prev.trigger(world, ctx))
+                    except Exception:
+                        prev_applicable = False
+                if prev_applicable:
+                    continue
             try:
                 if step.trigger(world, ctx):
                     self._current_step = step
@@ -240,10 +266,15 @@ class TutorialPanel(Panel):
 
     def dismiss(self) -> None:
         if self._current_step is not None:
-            self._dismissed.add(self._current_step.id)
+            dismissed_id = self._current_step.id
+            self._dismissed.add(dismissed_id)
             self._current_step = None
+            # Tightly paired hints skip the usual cooldown so the next
+            # tip appears on the very next frame.
+            self._cooldown = 0.0 if dismissed_id in _INSTANT_FOLLOWUP else 3.0
+        else:
+            self._cooldown = 3.0
         self._visible = False
-        self._cooldown = 3.0  # seconds before next hint
 
     def draw(self, surface: pygame.Surface, world: "World") -> None:
         if not self._visible or self._current_step is None:

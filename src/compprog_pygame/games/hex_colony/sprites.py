@@ -47,7 +47,7 @@ SPRITE_DIR = ASSET_DIR / "sprites"
 
 def _ensure_dirs() -> None:
     """Create sprite subdirectories if they don't exist."""
-    for sub in ("buildings", "overlays", "people"):
+    for sub in ("buildings", "overlays", "people", "cutscene"):
         (SPRITE_DIR / sub).mkdir(parents=True, exist_ok=True)
 
 

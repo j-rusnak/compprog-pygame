@@ -74,6 +74,7 @@ BUILDING_COST_WORKSHOP: dict[str, int] = {"WOOD": 25, "STONE": 15, "FIBER": 5}
 BUILDING_COST_FORGE: dict[str, int] = {"STONE": 20, "WOOD": 10}
 BUILDING_COST_ASSEMBLER: dict[str, int] = {"IRON_BAR": 8, "COPPER_BAR": 4, "PLANKS": 6, "BRICKS": 6}
 BUILDING_COST_RESEARCH_CENTER: dict[str, int] = {"PLANKS": 8, "STONE": 15, "FIBER": 6}
+BUILDING_COST_TRIBAL_CAMP: dict[str, int] = {}
 
 # ═══════════════════════════════════════════════════════════════════
 #  BUILDING CAPACITY
@@ -98,6 +99,7 @@ BUILDING_MAX_WORKERS_WORKSHOP: int = 2
 BUILDING_MAX_WORKERS_FORGE: int = 2
 BUILDING_MAX_WORKERS_ASSEMBLER: int = 2
 BUILDING_MAX_WORKERS_RESEARCH_CENTER: int = 2
+BUILDING_MAX_WORKERS_TRIBAL_CAMP: int = 0
 
 # Housing capacity (number of people that can live here; 0 = not a dwelling)
 BUILDING_HOUSING_CAMP: int = 10
@@ -118,6 +120,7 @@ BUILDING_HOUSING_WORKSHOP: int = 0
 BUILDING_HOUSING_FORGE: int = 0
 BUILDING_HOUSING_ASSEMBLER: int = 0
 BUILDING_HOUSING_RESEARCH_CENTER: int = 0
+BUILDING_HOUSING_TRIBAL_CAMP: int = 8
 
 # Storage capacity (max total resources stored; 0 = none)
 # Camp capacity is set dynamically at placement time.
@@ -139,6 +142,7 @@ BUILDING_STORAGE_WORKSHOP: int = 60
 BUILDING_STORAGE_FORGE: int = 60
 BUILDING_STORAGE_ASSEMBLER: int = 60
 BUILDING_STORAGE_RESEARCH_CENTER: int = 80
+BUILDING_STORAGE_TRIBAL_CAMP: int = 100
 
 # ═══════════════════════════════════════════════════════════════════
 #  LOGISTICS

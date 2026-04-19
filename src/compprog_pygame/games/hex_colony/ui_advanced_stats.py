@@ -717,7 +717,7 @@ class AdvancedStatsOverlay(Panel):
              UI_OK if pop_rate >= 0 else (220, 90, 90)),
             ("Prod/s", f"{live_prod:.2f}",
              UI_OK if live_prod > 0 else UI_MUTED),
-            ("Time", _fmt_time(int(world.time_elapsed)), UI_TEXT),
+            ("Time", _fmt_time(int(world.real_time_elapsed)), UI_TEXT),
             ("Window", _WINDOWS[self._window_idx][0], UI_MUTED),
         ]
         col_w = rect.w // max(1, len(stats))

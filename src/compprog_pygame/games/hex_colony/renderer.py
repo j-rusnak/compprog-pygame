@@ -85,6 +85,7 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_forge,
     draw_assembler,
     draw_research_center,
+    draw_tribal_camp,
 )
 from compprog_pygame.games.hex_colony.render_terrain import (
     DIR_EDGE,
@@ -923,6 +924,8 @@ class Renderer:
                 draw_workshop(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.RESEARCH_CENTER:
                 draw_research_center(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.TRIBAL_CAMP:
+                draw_tribal_camp(surface, sx, sy, r, zoom)
 
             # Overcrowding indicator: red ! above dwelling
             if (building.housing_capacity > 0

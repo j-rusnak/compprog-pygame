@@ -523,6 +523,19 @@ TUTORIAL_STEPS: list[dict[str, object]] = [
             "between buildings automatically.",
         ],
     },
+    {
+        "id": "useful_controls",
+        "title": "Useful Controls",
+        "lines": [
+            "Hold Alt to see the resource overlay \u2014 it",
+            "highlights which tiles have resources nearby.",
+            "",
+            "Press I to open the Info Guide with detailed",
+            "colony stats and controls reference.",
+            "",
+            "Press 1 / 2 / 3 to change the game speed.",
+        ],
+    },
 ]
 
 

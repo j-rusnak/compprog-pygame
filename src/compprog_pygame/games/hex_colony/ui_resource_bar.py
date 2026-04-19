@@ -201,8 +201,8 @@ class ResourceBar(Panel):
             surface.blit(s, (rx, cy - s.get_height() // 2))
             rx -= _ITEM_GAP
 
-        if self.sim_speed > 1.0:
-            s = font_val.render(f"{self.sim_speed:.0f}x", True, UI_ACCENT)
+        if self.sim_speed > 3.0:
+            s = font_val.render(f"{self.sim_speed / 3:.0f}x", True, UI_ACCENT)
             rx -= s.get_width()
             surface.blit(s, (rx, cy - s.get_height() // 2))
             rx -= _ITEM_GAP

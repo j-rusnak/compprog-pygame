@@ -32,6 +32,7 @@ class BuildingType(Enum):
     FORGE = auto()          # stone blacksmithing forge — smelts raw ore into bars
     ASSEMBLER = auto()      # higher-tier assembler — builds gears, silicon, circuits
     RESEARCH_CENTER = auto() # research center — opens the tech tree
+    TRIBAL_CAMP = auto()    # primitive tribal camp — AI tribe centerpiece (not player-buildable)
 
 
 @dataclass(slots=True)
@@ -65,6 +66,7 @@ BUILDING_COSTS: dict[BuildingType, BuildingCost] = {
     BuildingType.FORGE: BuildingCost(_costs_from_dict(params.BUILDING_COST_FORGE)),
     BuildingType.ASSEMBLER: BuildingCost(_costs_from_dict(params.BUILDING_COST_ASSEMBLER)),
     BuildingType.RESEARCH_CENTER: BuildingCost(_costs_from_dict(params.BUILDING_COST_RESEARCH_CENTER)),
+    BuildingType.TRIBAL_CAMP: BuildingCost(_costs_from_dict(params.BUILDING_COST_TRIBAL_CAMP)),
 }
 
 # Max workers each building supports
@@ -87,6 +89,7 @@ BUILDING_MAX_WORKERS: dict[BuildingType, int] = {
     BuildingType.FORGE: params.BUILDING_MAX_WORKERS_FORGE,
     BuildingType.ASSEMBLER: params.BUILDING_MAX_WORKERS_ASSEMBLER,
     BuildingType.RESEARCH_CENTER: params.BUILDING_MAX_WORKERS_RESEARCH_CENTER,
+    BuildingType.TRIBAL_CAMP: params.BUILDING_MAX_WORKERS_TRIBAL_CAMP,
 }
 
 # Housing capacity per building type (0 = not a dwelling)
@@ -109,6 +112,7 @@ BUILDING_HOUSING: dict[BuildingType, int] = {
     BuildingType.FORGE: params.BUILDING_HOUSING_FORGE,
     BuildingType.ASSEMBLER: params.BUILDING_HOUSING_ASSEMBLER,
     BuildingType.RESEARCH_CENTER: params.BUILDING_HOUSING_RESEARCH_CENTER,
+    BuildingType.TRIBAL_CAMP: params.BUILDING_HOUSING_TRIBAL_CAMP,
 }
 
 # Storage capacity per building type.
@@ -134,6 +138,7 @@ BUILDING_STORAGE_CAPACITY: dict[BuildingType, int] = {
     BuildingType.FORGE: params.BUILDING_STORAGE_FORGE,
     BuildingType.ASSEMBLER: params.BUILDING_STORAGE_ASSEMBLER,
     BuildingType.RESEARCH_CENTER: params.BUILDING_STORAGE_RESEARCH_CENTER,
+    BuildingType.TRIBAL_CAMP: params.BUILDING_STORAGE_TRIBAL_CAMP,
 }
 
 

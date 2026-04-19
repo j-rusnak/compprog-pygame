@@ -42,6 +42,7 @@ FACTION_BUILDINGS: dict[Faction, frozenset[BuildingType]] = {
     }),
     Faction.PRIMITIVE: frozenset({
         BuildingType.HOUSE,
+        BuildingType.TRIBAL_CAMP,
     }),
 }
 

@@ -87,9 +87,20 @@ BUILDABLE = [
 class Game:
     """Top-level game object — owns the world, camera, and renderer."""
 
-    def __init__(self, settings: HexColonySettings | None = None, seed: str = "default") -> None:
+    def __init__(
+        self,
+        settings: HexColonySettings | None = None,
+        seed: str = "default",
+        world: World | None = None,
+    ) -> None:
         self.settings = settings or HexColonySettings()
-        self.world = World.generate(self.settings, seed=seed)
+        # Allow the caller to pass a world that was generated on a
+        # background thread (so the intro cutscene can mask the
+        # generation latency).  Falls back to synchronous generation
+        # for callers that don't care about load time (e.g. tests).
+        self.world = world if world is not None else World.generate(
+            self.settings, seed=seed,
+        )
         self.camera: Camera | None = None
         self.renderer = Renderer()
         self.running = True
@@ -106,7 +117,8 @@ class Game:
         # second click places paths along the BFS route between them.
         self._path_anchor: HexCoord | None = None
         self._hint_font = pygame.font.Font(None, 26)
-        self._sim_speed: float = 1.0  # 1x, 2x, or 3x
+        self._sim_speed: float = 3.0  # 1x (=3), 2x (=6), 3x (=9)
+        self._real_time_elapsed: float = 0.0
         self._drag_button: int = 0  # which mouse button started camera drag
 
         # Tech tree, tier tracker & notifications
@@ -245,6 +257,7 @@ class Game:
                 self._update_alt_overlay()
                 self._update_ghost_building()
                 self.world.update(dt * self._sim_speed)
+                self.world.real_time_elapsed += dt
                 # Research progress
                 completed = self.tech_tree.update(dt * self._sim_speed, self.world)
                 if completed:
@@ -264,9 +277,11 @@ class Game:
                     )
                     self._tier_popup.show(tier, next_tier)
                 self.notifications.update(dt)
+                self._real_time_elapsed += dt
                 # Tutorial triggers
                 self._tutorial.check_triggers(self.world, {
                     "time": self.world.time_elapsed,
+                    "real_time": self._real_time_elapsed,
                     "dt": dt,
                     "researched_count": self.tech_tree.researched_count,
                 })
@@ -343,11 +358,11 @@ class Game:
             elif event.key == pygame.K_i:
                 self._info_guide.toggle()
             elif event.key == pygame.K_1:
-                self._sim_speed = 1.0
-            elif event.key == pygame.K_2:
-                self._sim_speed = 2.0
-            elif event.key == pygame.K_3:
                 self._sim_speed = 3.0
+            elif event.key == pygame.K_2:
+                self._sim_speed = 6.0
+            elif event.key == pygame.K_3:
+                self._sim_speed = 9.0
             elif event.key == pygame.K_F1:
                 # Toggle god mode at runtime
                 self.god_mode = not self.god_mode

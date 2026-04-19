@@ -312,6 +312,11 @@ class TierTracker:
 
     def __init__(self) -> None:
         self.current_tier: int = 0
+        # Baselines snapshot at each tier-up so cumulative counters
+        # (resources produced, research done) effectively restart at 0
+        # for the next tier's goal display.
+        self._baseline_produced: dict[str, float] = {}
+        self._baseline_research: int = 0
 
     def check_requirements(self, world) -> dict[str, tuple[float, float]]:
         """Return {req_name: (current, required)} for the next tier.
@@ -330,11 +335,13 @@ class TierTracker:
                 float(reqs["population"]),
             )
         if "buildings_placed" in reqs:
-            # Count non-path, non-camp buildings
+            # Count non-path, non-camp player buildings only.
             count = sum(
                 1 for b in world.buildings.buildings
                 if b.type not in (BuildingType.PATH, BuildingType.BRIDGE,
-                                  BuildingType.CAMP, BuildingType.WALL)
+                                  BuildingType.CAMP, BuildingType.WALL,
+                                  BuildingType.TRIBAL_CAMP, BuildingType.HOUSE)
+                and getattr(b, "faction", "SURVIVOR") == "SURVIVOR"
             )
             progress["Buildings"] = (float(count), float(reqs["buildings_placed"]))
         if "resource_gathered" in reqs:
@@ -342,12 +349,16 @@ class TierTracker:
             for res_name, target in reqs["resource_gathered"].items():
                 res = Resource[res_name]
                 # Use total produced (lifetime gathered/crafted) so that
-                # spending the resource does not erase progress.
-                current = world.inventory.total_produced(res)
+                # spending the resource does not erase progress.  Subtract
+                # the baseline captured at the previous tier-up so each
+                # tier's goal counts from 0.
+                baseline = self._baseline_produced.get(res_name, 0.0)
+                current = max(0.0, world.total_produced(res) - baseline)
                 progress[res_name.capitalize()] = (float(current), float(target))
         if "research_count" in reqs:
             count = getattr(world, '_tech_research_count', 0)
-            progress["Research"] = (float(count), float(reqs["research_count"]))
+            current = max(0, count - self._baseline_research)
+            progress["Research"] = (float(current), float(reqs["research_count"]))
 
         return progress
 
@@ -360,6 +371,13 @@ class TierTracker:
             if current < required:
                 return False
         self.current_tier += 1
+        # Snapshot baselines so the next tier's resource/research goals
+        # display progress starting from 0.
+        from compprog_pygame.games.hex_colony.resources import Resource
+        self._baseline_produced = {
+            r.name: world.total_produced(r) for r in Resource
+        }
+        self._baseline_research = getattr(world, '_tech_research_count', 0)
         return True
 
     def is_building_unlocked(self, btype: BuildingType) -> bool:

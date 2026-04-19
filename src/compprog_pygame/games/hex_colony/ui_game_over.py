@@ -76,8 +76,11 @@ class GameOverOverlay(Panel):
         )
 
         # Stats
-        mins, secs = divmod(int(world.time_elapsed), 60)
-        n_bld = len(world.buildings.buildings)
+        mins, secs = divmod(int(world.real_time_elapsed), 60)
+        n_bld = sum(
+            1 for b in world.buildings.buildings
+            if getattr(b, "faction", "SURVIVOR") == "SURVIVOR"
+        )
         info = render_text_clipped(
             Fonts.label(),
             GAME_OVER_STATS.format(time=f"{mins}:{secs:02d}", buildings=n_bld),

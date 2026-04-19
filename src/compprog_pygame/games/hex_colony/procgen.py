@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import math
 import random as _random
+from dataclasses import replace as _replace
 
 from compprog_pygame.games.hex_colony.hex_grid import HexCoord, HexGrid, HexTile, Terrain, hex_to_pixel
 from compprog_pygame.games.hex_colony.settings import HexColonySettings
@@ -452,25 +453,79 @@ def _generate_ore_veins(
 
 # ── Public API ───────────────────────────────────────────────────
 
-def generate_terrain(seed: str, settings: HexColonySettings) -> HexGrid:
-    """Create the full hex grid with deterministic, natural-looking terrain."""
+def _generate_single_region(seed: str, settings: HexColonySettings) -> HexGrid:
+    """Create a single hex region centered at (0, 0).
+
+    Kept for backwards compatibility / single-region testing — the live
+    game now uses :func:`generate_terrain` which produces a continuous
+    7-region map with seamless borders.
+    """
+    grid, _ = _build_multi_region_terrain(seed, settings, region_centres=[HexCoord(0, 0)])
+    return grid
+
+
+# ── Multi-region map (player region + AI tribe neighbours) ───────
+
+# Number of AI tribe camps spawned in the surrounding ring (out of 6 neighbours).
+_AI_TRIBE_COUNT: int = 3
+
+
+def _neighbor_region_offsets(radius: int) -> list[tuple[int, int]]:
+    """Hex-of-hexes meta-grid offsets for the 6 neighbour regions.
+
+    Each neighbour region of axial radius ``radius`` is centred at a
+    distance ``2*radius+1`` from origin, arranged so the seven regions
+    (centre + 6 neighbours) tessellate without gaps or overlap.
+    """
+    R = radius
+    return [
+        (2 * R + 1, -R),
+        (R, R + 1),
+        (-R - 1, 2 * R + 1),
+        (-(2 * R + 1), R),
+        (-R, -R - 1),
+        (R + 1, -(2 * R + 1)),
+    ]
+
+
+def _build_multi_region_terrain(
+    seed: str,
+    settings: HexColonySettings,
+    region_centres: list[HexCoord],
+) -> tuple[HexGrid, dict[HexCoord, float]]:
+    """Build a hex grid covering one or more region areas with a single
+    continuous noise field, so seams between adjacent regions disappear.
+
+    Edge shaping is computed against the OVERALL bounding hex of the
+    union of all regions (centred on origin), so the centre region stays
+    calm and mountains/water naturally appear at the outer rim.
+    """
     seed_int = seed_to_int(seed)
     rng = _random.Random(seed_int)
 
     radius = settings.world_radius
     hex_size = settings.hex_size
 
-    # Scale noise with map size so biomes grow proportionally on larger maps
-    # A radius-20 map uses the base values; larger maps scale up.
+    # Effective overall radius: distance from origin to the farthest
+    # corner of any region centre, plus the region radius itself.
+    if region_centres:
+        max_centre_dist = max(c.distance(HexCoord(0, 0)) for c in region_centres)
+    else:
+        max_centre_dist = 0
+    effective_radius = max(radius, max_centre_dist + radius)
+
+    # Scale noise with the size of a SINGLE region (not the multi-region
+    # union) so biomes/landmarks stay the same size as the original
+    # single-region map; the multi-region change just extends that style
+    # outward seamlessly.
     scale_factor = max(1.0, radius / 20.0)
 
-    # Build several noise layers for different terrain aspects
+    # Build all noise layers ONCE — this is what makes neighbour regions
+    # continuous with the centre.  Sample them anywhere in pixel space.
     elevation_noise = NoiseMap(rng, octaves=5, base_scale=260.0 * scale_factor, persistence=0.50)
     moisture_noise = NoiseMap(rng, octaves=3, base_scale=300.0 * scale_factor, persistence=0.50)
     detail_noise = NoiseMap(rng, octaves=3, base_scale=80.0 * scale_factor, persistence=0.6)
-    # Mountain-range noise: large blobs for distinct mountain biomes
     mountain_noise = NoiseMap(rng, octaves=2, base_scale=280.0 * scale_factor, persistence=0.40)
-    # Lake-basin noise: large blobs for lake districts
     lake_noise = NoiseMap(rng, octaves=2, base_scale=300.0 * scale_factor, persistence=0.40)
 
     grid = HexGrid()
@@ -478,81 +533,89 @@ def generate_terrain(seed: str, settings: HexColonySettings) -> HexGrid:
     lake_affinity_map: dict[HexCoord, float] = {}
     origin = HexCoord(0, 0)
 
-    # --- Pass 1: assign raw terrain from noise -----------------------
-    for q in range(-radius, radius + 1):
-        r1 = max(-radius, -q - radius)
-        r2 = min(radius, -q + radius)
-        for r in range(r1, r2 + 1):
-            coord = HexCoord(q, r)
-            px, py = hex_to_pixel(coord, hex_size)
+    # --- Pass 1: assign raw terrain from noise across all regions ----
+    seen: set[HexCoord] = set()
+    for centre in region_centres:
+        for q in range(-radius, radius + 1):
+            r1 = max(-radius, -q - radius)
+            r2 = min(radius, -q + radius)
+            for r in range(r1, r2 + 1):
+                coord = HexCoord(centre.q + q, centre.r + r)
+                if coord in seen:
+                    continue
+                seen.add(coord)
+                px, py = hex_to_pixel(coord, hex_size)
 
-            elev = elevation_noise.sample(px, py)
-            moist = moisture_noise.sample(px, py)
-            det = detail_noise.sample(px, py)
-            mtn_affinity = mountain_noise.sample(px, py)  # high = mountain-prone
-            lake_affinity = lake_noise.sample(px, py)      # low = lake-prone
+                elev = elevation_noise.sample(px, py)
+                moist = moisture_noise.sample(px, py)
+                det = detail_noise.sample(px, py)
+                mtn_affinity = mountain_noise.sample(px, py)
+                lake_affinity = lake_noise.sample(px, py)
 
-            # Edge ratio: 0 at centre, 1 at border
-            dist = coord.distance(origin)
-            edge_t = dist / radius if radius > 0 else 0.0
+                # Edge ratio against the overall map (not per region).
+                dist = coord.distance(origin)
+                edge_t = (dist / effective_radius) if effective_radius > 0 else 0.0
+                if edge_t > 1.0:
+                    edge_t = 1.0
 
-            # Edge shaping: dampen elevation in the inner 60% of the map
-            # (keeping the centre calm with mostly forest), then amplify
-            # in the outer ring so mountains and water appear at borders.
-            if edge_t < 0.6:
-                # Inner zone: gently compress elevation toward zero
-                dampen = 1.0 - 0.3 * (edge_t / 0.6)  # 1.0 at centre → 0.7 at 60%
-                elev *= dampen
-            else:
-                # Outer zone: transition from dampened (0.7) back up and beyond
-                outer_t = (edge_t - 0.6) / 0.4  # 0..1 across outer 40%
-                elev *= 0.7 + 0.6 * outer_t  # 0.7 → 1.3 at border
+                # Same edge-shape curve as before, applied globally.
+                if edge_t < 0.6:
+                    dampen = 1.0 - 0.3 * (edge_t / 0.6)
+                    elev *= dampen
+                else:
+                    outer_t = (edge_t - 0.6) / 0.4
+                    elev *= 0.7 + 0.6 * outer_t
+                if edge_t > 0.9:
+                    rim = (edge_t - 0.9) / 0.1
+                    elev *= 1.0 - 0.3 * rim
 
-            # Still softly depress the very outermost ring so the map
-            # doesn't end abruptly with tall mountains at the boundary.
-            if edge_t > 0.9:
-                rim = (edge_t - 0.9) / 0.1  # 0..1 in last 10%
-                elev *= 1.0 - 0.3 * rim
+                elevation[coord] = elev
+                lake_affinity_map[coord] = lake_affinity
 
-            elevation[coord] = elev
-            lake_affinity_map[coord] = lake_affinity
+                terrain = _classify(elev, moist, det, edge_t,
+                                    mtn_affinity, lake_affinity)
+                amount = _resource_amount(terrain, rng)
+                food = _food_amount(terrain, rng)
+                grid.set_tile(HexTile(coord=coord, terrain=terrain,
+                                      resource_amount=amount,
+                                      food_amount=food))
 
-            terrain = _classify(elev, moist, det, edge_t, mtn_affinity, lake_affinity)
-            amount = _resource_amount(terrain, rng)
-            food = _food_amount(terrain, rng)
-            grid.set_tile(HexTile(coord=coord, terrain=terrain,
-                                  resource_amount=amount, food_amount=food))
-
-    # --- Pass 2: (clearing deferred to after all post-processing) ---
-
-    # --- Pass 3: expand lakes around high lake-affinity zones --------
+    # --- Pass 3: lakes ------------------------------------------------
     _expand_lakes(grid, rng, elevation, lake_affinity_map)
 
-    # --- Pass 4: carve rivers starting from lake edges ---------------
-    # Ensure at least 3 real rivers; more on larger maps
-    min_rivers = 3
-    max_rivers = max(5, 3 + radius // 20)
-    river_count = rng.randint(min_rivers, max_rivers)
-    _carve_rivers(grid, rng, settings, elevation, lake_affinity_map, count=river_count)
+    # --- Pass 4: rivers ----------------------------------------------
+    # Keep river LENGTH/meander tuned to a single-region scale so they
+    # don't become absurdly long; just spawn more of them for the wider
+    # multi-region world.
+    if len(region_centres) <= 1:
+        river_count = rng.randint(3, 5)
+    else:
+        river_count = rng.randint(6, 10)
+    _carve_rivers(grid, rng, settings, elevation,
+                  lake_affinity_map, count=river_count)
 
-    # --- Pass 5: ring mountains with stone deposits ------------------
+    # --- Pass 5: stone deposits ringing mountain peaks ---------------
     _ring_mountains_with_stone(grid, rng)
 
-    # --- Pass 5b: generate iron and copper ore veins -----------------
+    # --- Pass 5b: ore veins (scaled to overall map size) -------------
     iron_veins = max(params.ORE_IRON_VEIN_COUNT_MIN,
-                     params.ORE_IRON_VEIN_COUNT_BASE + radius // params.ORE_IRON_VEIN_COUNT_RADIUS_DIVISOR)
+                     params.ORE_IRON_VEIN_COUNT_BASE
+                     + effective_radius // params.ORE_IRON_VEIN_COUNT_RADIUS_DIVISOR)
     copper_veins = max(params.ORE_COPPER_VEIN_COUNT_MIN,
-                       params.ORE_COPPER_VEIN_COUNT_BASE + radius // params.ORE_COPPER_VEIN_COUNT_RADIUS_DIVISOR)
-    _generate_ore_veins(grid, rng, settings, Terrain.IRON_VEIN,
+                       params.ORE_COPPER_VEIN_COUNT_BASE
+                       + effective_radius // params.ORE_COPPER_VEIN_COUNT_RADIUS_DIVISOR)
+    ore_settings = _replace(settings, world_radius=effective_radius) \
+        if effective_radius != radius else settings
+    _generate_ore_veins(grid, rng, ore_settings, Terrain.IRON_VEIN,
                         num_veins=iron_veins,
                         vein_min=params.ORE_IRON_VEIN_SIZE_MIN,
                         vein_max=params.ORE_IRON_VEIN_SIZE_MAX)
-    _generate_ore_veins(grid, rng, settings, Terrain.COPPER_VEIN,
+    _generate_ore_veins(grid, rng, ore_settings, Terrain.COPPER_VEIN,
                         num_veins=copper_veins,
                         vein_min=params.ORE_COPPER_VEIN_SIZE_MIN,
                         vein_max=params.ORE_COPPER_VEIN_SIZE_MAX)
 
-    # --- Pass 6: clear safe zone + soften fringe (rendered last) ----
+    # --- Pass 6: clear safe zone around centre origin ----------------
     for q2 in range(-SAFE_RADIUS, SAFE_RADIUS + 1):
         for r2 in range(max(-SAFE_RADIUS, -q2 - SAFE_RADIUS),
                         min(SAFE_RADIUS, -q2 + SAFE_RADIUS) + 1):
@@ -565,16 +628,43 @@ def generate_terrain(seed: str, settings: HexColonySettings) -> HexGrid:
                 tile.underlying_terrain = None
     _soften_clearing_fringe(grid, origin, SAFE_RADIUS)
 
-    # --- Pass 6b: guarantee starter resource clusters near spawn ----
-    # Ensures the player can craft every tier-0 recipe without hiking
-    # across the map — at least one small cluster of each of wood,
-    # stone, and fibre/food lives within the starter radius of origin.
+    # --- Pass 6b: starter resource clusters --------------------------
     _ensure_starter_resources(grid, rng, origin)
 
-    # --- Pass 7: ensure connectivity from safe-zone edge to map border
-    _ensure_connectivity(grid, rng, radius)
+    # --- Pass 6c: guaranteed nearby ore ------------------------------
+    _ensure_nearby_ore(grid, rng, origin)
 
-    return grid
+    # --- Pass 7: connectivity from the safe-zone outward -------------
+    _ensure_connectivity(grid, rng, effective_radius)
+
+    return grid, elevation
+
+
+def generate_terrain(
+    seed: str, settings: HexColonySettings,
+) -> tuple[HexGrid, list[HexCoord]]:
+    """Create the central player region plus 6 surrounding neighbour regions.
+
+    Terrain is generated with a single shared noise field so borders
+    between regions are seamless and biomes (forests, lakes, rivers)
+    naturally span across multiple regions.
+
+    Returns ``(grid, ai_camp_coords)`` where ``ai_camp_coords`` is the
+    list of axial coordinates where AI tribe camps should be placed
+    (3 of the 6 neighbour-region centres, chosen deterministically from
+    the world seed).
+    """
+    radius = settings.world_radius
+    offsets = _neighbor_region_offsets(radius)
+    centres = [HexCoord(0, 0)] + [HexCoord(dq, dr) for dq, dr in offsets]
+
+    grid, _elev = _build_multi_region_terrain(seed, settings, centres)
+
+    # Deterministically pick 3 of the 6 neighbour centres for AI tribes.
+    selector_rng = _random.Random(seed_to_int(seed) ^ 0xA17C_AAFE)
+    camp_indices = set(selector_rng.sample(range(6), _AI_TRIBE_COUNT))
+    ai_camp_coords = [centres[i + 1] for i in sorted(camp_indices)]
+    return grid, ai_camp_coords
 
 
 # ── Starter-area resource guarantee ──────────────────────────────
@@ -699,6 +789,94 @@ def _ensure_starter_resources(
         _stamp_cluster(
             grid, rng, origin, Terrain.FIBER_PATCH,
             _STARTER_CLUSTER_SIZE, lo_hi, r,
+        )
+
+
+# ── Nearby ore-vein guarantee ────────────────────────────────────
+
+_ORE_SEARCH_RADIUS = 25
+_ORE_CLUSTER_SIZE = 4
+
+
+def _stamp_ore_cluster(
+    grid: HexGrid,
+    rng: _random.Random,
+    origin: HexCoord,
+    ore_terrain: Terrain,
+    size: int,
+    resource_range: tuple[float, float],
+    search_radius: int,
+) -> None:
+    """Place a small ore vein cluster within *search_radius* of origin.
+
+    Works like ``_stamp_cluster`` but converts any non-water/mountain
+    tile (preserving ``underlying_terrain``) instead of requiring grass.
+    """
+    inner = SAFE_RADIUS + 3
+    blocked = {
+        Terrain.WATER, Terrain.MOUNTAIN,
+        Terrain.IRON_VEIN, Terrain.COPPER_VEIN,
+    }
+    candidates: list[HexCoord] = []
+    for q in range(-search_radius, search_radius + 1):
+        for r in range(max(-search_radius, -q - search_radius),
+                       min(search_radius, -q + search_radius) + 1):
+            c = HexCoord(q, r)
+            d = c.distance(origin)
+            if d < inner or d > search_radius:
+                continue
+            tile = grid.get(c)
+            if tile is None or tile.terrain in blocked:
+                continue
+            if tile.building is not None:
+                continue
+            candidates.append(c)
+    if not candidates:
+        return
+    candidates.sort(key=lambda c: c.distance(origin))
+    pool_end = max(1, len(candidates) // 3)
+    seed = rng.choice(candidates[:pool_end])
+
+    placed: set[HexCoord] = set()
+    frontier = [seed]
+    lo, hi = resource_range
+    while frontier and len(placed) < size:
+        rng.shuffle(frontier)
+        cur = frontier.pop(0)
+        if cur in placed:
+            continue
+        tile = grid.get(cur)
+        if tile is None or tile.terrain in blocked:
+            continue
+        if cur.distance(origin) <= SAFE_RADIUS:
+            continue
+        tile.underlying_terrain = tile.terrain
+        tile.terrain = ore_terrain
+        tile.resource_amount = rng.uniform(lo, hi)
+        tile.food_amount = 0.0
+        placed.add(cur)
+        for nb in cur.neighbors():
+            if nb not in placed:
+                frontier.append(nb)
+
+
+def _ensure_nearby_ore(
+    grid: HexGrid, rng: _random.Random, origin: HexCoord,
+) -> None:
+    """Guarantee at least one iron vein and one copper vein within 25 tiles."""
+    r = _ORE_SEARCH_RADIUS
+    iron_terrains = {Terrain.IRON_VEIN}
+    copper_terrains = {Terrain.COPPER_VEIN}
+
+    if _count_terrain_near(grid, origin, iron_terrains, r) < 1:
+        _stamp_ore_cluster(
+            grid, rng, origin, Terrain.IRON_VEIN,
+            _ORE_CLUSTER_SIZE, params.TILE_RESOURCE_IRON_VEIN, r,
+        )
+    if _count_terrain_near(grid, origin, copper_terrains, r) < 1:
+        _stamp_ore_cluster(
+            grid, rng, origin, Terrain.COPPER_VEIN,
+            _ORE_CLUSTER_SIZE, params.TILE_RESOURCE_COPPER_VEIN, r,
         )
 
 
