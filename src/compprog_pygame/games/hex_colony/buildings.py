@@ -162,8 +162,7 @@ class Building:
     # dedicated to.  ``None`` means the player hasn't picked one yet
     # (the building will neither supply nor demand).
     stored_resource: "Resource | None" = None
-    # GATHERER only: which resource to gather.  ``None`` means both
-    # food and fiber (legacy behaviour).
+    # GATHERER only: which resource to gather.  Defaults to FOOD.
     gatherer_output: "Resource | None" = None
     # QUARRY only: which resource to mine.  ``None`` means stone only
     # (default behaviour).  Can be set to IRON or COPPER to slowly

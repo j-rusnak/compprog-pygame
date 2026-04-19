@@ -152,10 +152,18 @@ class _QuarryOutputBtn:
     height: int = _SMALL_LINE_H + 2
 
 
+@dataclass
+class _RecipeDropdownHeader:
+    """Clickable header that toggles the recipe dropdown open/closed."""
+    label: str
+    is_open: bool
+    height: int = _LINE_H + 4
+
+
 _Item = (
     _Line | _IconLine | _Spacer | _RecipeBtn | _MaterialRecipeBtn
     | _TechTreeBtn | _StorageResBtn | _GathererOutputBtn
-    | _QuarryOutputBtn
+    | _QuarryOutputBtn | _RecipeDropdownHeader
 )
 
 
@@ -173,6 +181,8 @@ class BuildingInfoPanel(Panel):
         self._gatherer_output_rects: list[tuple[pygame.Rect, Resource | None]] = []
         self._quarry_output_rects: list[tuple[pygame.Rect, Resource | None]] = []
         self._tech_tree_btn: pygame.Rect | None = None
+        self._recipe_dropdown_open: bool = False
+        self._recipe_dropdown_btn: pygame.Rect | None = None
         self.on_open_tech_tree: typing.Callable[[], None] | None = None
         self.tier_tracker: typing.Any = None
         self.tech_tree: typing.Any = None
@@ -197,6 +207,8 @@ class BuildingInfoPanel(Panel):
             self._gatherer_output_rects = []
             self._quarry_output_rects = []
             self._tech_tree_btn = None
+            self._recipe_dropdown_open = False
+            self._recipe_dropdown_btn = None
             return
 
         items = self._build_items(world)
@@ -281,6 +293,8 @@ class BuildingInfoPanel(Panel):
                 self._draw_gatherer_output_btn(surface, x, cy, item)
             elif isinstance(item, _QuarryOutputBtn):
                 self._draw_quarry_output_btn(surface, x, cy, item)
+            elif isinstance(item, _RecipeDropdownHeader):
+                self._draw_recipe_dropdown_header(surface, x, cy, item)
             elif isinstance(item, _TechTreeBtn):
                 self._draw_tech_btn(surface, x, cy)
             cy += item.height
@@ -420,6 +434,24 @@ class BuildingInfoPanel(Panel):
             )
             surface.blit(surf, (icon_x + icon_size + 6, btn_rect.y + 2))
         self._quarry_output_rects.append((btn_rect, item.resource))
+
+    def _draw_recipe_dropdown_header(
+        self, surface: pygame.Surface, x: int, cy: int,
+        item: _RecipeDropdownHeader,
+    ) -> None:
+        btn_rect = pygame.Rect(
+            x + _PADDING, cy, _PANEL_W - _PADDING * 2, _LINE_H,
+        )
+        mx, my = pygame.mouse.get_pos()
+        hover = btn_rect.collidepoint(mx, my)
+        bg = (55, 65, 85) if hover else (45, 55, 75)
+        pygame.draw.rect(surface, bg, btn_rect, border_radius=3)
+        pygame.draw.rect(surface, UI_ACCENT, btn_rect, width=1, border_radius=3)
+        surf = render_text_clipped(
+            Fonts.small(), item.label, UI_TEXT, btn_rect.w - 12,
+        )
+        surface.blit(surf, (btn_rect.x + 6, btn_rect.y + 3))
+        self._recipe_dropdown_btn = btn_rect
 
     def _draw_tech_btn(self, surface: pygame.Surface, x: int, cy: int) -> None:
         btn_rect = pygame.Rect(
@@ -648,24 +680,18 @@ class BuildingInfoPanel(Panel):
                 ))
                 items.append(_Spacer(2))
 
-        # GATHERER building: let the player pick food, fiber, or both.
+        # GATHERER building: let the player pick food or fiber.
         if b.type == BuildingType.GATHERER:
             items.append(_Spacer())
             current = b.gatherer_output
-            line(
-                f"Gathers: {current.name.replace('_',' ').title() if current else 'Both'}",
-                UI_ACCENT if current else UI_MUTED,
-            )
+            label = current.name.replace('_', ' ').title() if current else 'Food'
+            line(f"Gathers: {label}", UI_ACCENT)
             items.append(_Spacer(2))
             for res in [Resource.FOOD, Resource.FIBER]:
                 items.append(_GathererOutputBtn(
                     resource=res, selected=(current == res),
                 ))
                 items.append(_Spacer(2))
-            items.append(_GathererOutputBtn(
-                resource=None, selected=(current is None),
-            ))
-            items.append(_Spacer(2))
 
         # QUARRY building: let the player pick stone, iron, or copper.
         if b.type == BuildingType.QUARRY:
@@ -728,47 +754,61 @@ class BuildingInfoPanel(Panel):
 
             items.append(_Spacer(4))
 
-            # Building recipes for this station type.
-            # Derive the list from params so every station that can
-            # produce buildings shows them, not just the Workshop.
-            building_recipes_for_station = [
-                BuildingType[bname]
-                for bname, sname in params.BUILDING_RECIPE_STATION.items()
-                if sname == b.type.name
-            ]
-            if building_recipes_for_station:
-                god = bool(
-                    self.god_mode_getter and self.god_mode_getter()
-                )
-                for craft_type in building_recipes_for_station:
-                    if not god and not is_building_available(
-                        craft_type, self.tech_tree, self.tier_tracker,
-                    ):
-                        continue
-                    items.append(_RecipeBtn(
-                        craft_type, selected=(b.recipe == craft_type),
-                    ))
-                    items.append(_Spacer(2))
+            # Dropdown header for recipe selection.
+            if b.recipe is not None:
+                if isinstance(b.recipe, BuildingType):
+                    dd_label = b.recipe.name.replace("_", " ").title()
+                else:
+                    dd_label = b.recipe.name.replace("_", " ").title()
+            else:
+                dd_label = "Select recipe..."
+            arrow = "\u25bc" if self._recipe_dropdown_open else "\u25b6"
+            items.append(_RecipeDropdownHeader(
+                label=f"{arrow} {dd_label}",
+                is_open=self._recipe_dropdown_open,
+            ))
+            items.append(_Spacer(2))
 
-            # Material recipes for this station.
-            station_recipes = recipes_for_station(b.type.name)
-            if not bool(
-                self.god_mode_getter and self.god_mode_getter()
-            ):
-                station_recipes = [
-                    mr for mr in station_recipes
-                    if is_resource_available(
-                        mr.output, self.tech_tree, self.tier_tracker,
-                    )
+            if self._recipe_dropdown_open:
+                # Building recipes for this station type.
+                building_recipes_for_station = [
+                    BuildingType[bname]
+                    for bname, sname in params.BUILDING_RECIPE_STATION.items()
+                    if sname == b.type.name
                 ]
-            if station_recipes:
-                items.append(_Spacer(2))
-                line("Materials:", UI_MUTED, Fonts.small())
-                for mrec in station_recipes:
-                    items.append(_MaterialRecipeBtn(
-                        mrec, selected=(b.recipe == mrec.output),
-                    ))
+                if building_recipes_for_station:
+                    god = bool(
+                        self.god_mode_getter and self.god_mode_getter()
+                    )
+                    for craft_type in building_recipes_for_station:
+                        if not god and not is_building_available(
+                            craft_type, self.tech_tree, self.tier_tracker,
+                        ):
+                            continue
+                        items.append(_RecipeBtn(
+                            craft_type, selected=(b.recipe == craft_type),
+                        ))
+                        items.append(_Spacer(2))
+
+                # Material recipes for this station.
+                station_recipes = recipes_for_station(b.type.name)
+                if not bool(
+                    self.god_mode_getter and self.god_mode_getter()
+                ):
+                    station_recipes = [
+                        mr for mr in station_recipes
+                        if is_resource_available(
+                            mr.output, self.tech_tree, self.tier_tracker,
+                        )
+                    ]
+                if station_recipes:
                     items.append(_Spacer(2))
+                    line("Materials:", UI_MUTED, Fonts.small())
+                    for mrec in station_recipes:
+                        items.append(_MaterialRecipeBtn(
+                            mrec, selected=(b.recipe == mrec.output),
+                        ))
+                        items.append(_Spacer(2))
 
         # Research Center button
         if b.type == BuildingType.RESEARCH_CENTER:
@@ -847,6 +887,11 @@ class BuildingInfoPanel(Panel):
                 BuildingType.REFINERY,
                 BuildingType.ASSEMBLER,
             ):
+                # Dropdown header toggle.
+                if (self._recipe_dropdown_btn is not None
+                        and self._recipe_dropdown_btn.collidepoint(event.pos)):
+                    self._recipe_dropdown_open = not self._recipe_dropdown_open
+                    return True
                 for btn_rect, craft_type in self._recipe_rects:
                     if btn_rect.collidepoint(event.pos):
                         if self.building.recipe == craft_type:
@@ -855,6 +900,7 @@ class BuildingInfoPanel(Panel):
                         else:
                             self.building.recipe = craft_type
                             self.building.craft_progress = 0.0
+                        self._recipe_dropdown_open = False
                         return True
                 for btn_rect, mrec in self._mat_recipe_rects:
                     if btn_rect.collidepoint(event.pos):
@@ -864,6 +910,7 @@ class BuildingInfoPanel(Panel):
                         else:
                             self.building.recipe = mrec.output
                             self.building.craft_progress = 0.0
+                        self._recipe_dropdown_open = False
                         return True
             if self.building.type == BuildingType.STORAGE:
                 for btn_rect, res in self._storage_res_rects:

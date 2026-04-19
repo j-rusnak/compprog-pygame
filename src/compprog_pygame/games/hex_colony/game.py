@@ -41,6 +41,9 @@ from compprog_pygame.games.hex_colony.ui_supply_priority import (
     SupplyPriorityOverlay,
     SupplyPriorityTabContent,
 )
+from compprog_pygame.games.hex_colony.ui_tier_popup import TierPopup
+from compprog_pygame.games.hex_colony.ui_info_guide import InfoGuideOverlay
+from compprog_pygame.games.hex_colony.ui_tutorial import TutorialPanel
 from compprog_pygame.games.hex_colony import params
 
 # Build-mode palette order
@@ -109,6 +112,9 @@ class Game:
         self._worker_priority_overlay = WorkerPriorityOverlay()
         self._demand_priority_overlay = DemandPriorityOverlay()
         self._supply_priority_overlay = SupplyPriorityOverlay()
+        self._tier_popup = TierPopup()
+        self._info_guide = InfoGuideOverlay()
+        self._tutorial = TutorialPanel()
         self.ui.add_panel(self._resource_bar)
         self.ui.add_panel(self._bottom_bar)
         self.ui.add_panel(self._building_info)
@@ -120,12 +126,16 @@ class Game:
         self.ui.add_panel(self._worker_priority_overlay)
         self.ui.add_panel(self._demand_priority_overlay)
         self.ui.add_panel(self._supply_priority_overlay)
+        self.ui.add_panel(self._tier_popup)
+        self.ui.add_panel(self._info_guide)
+        self.ui.add_panel(self._tutorial)
         self.ui.add_panel(self._pause_overlay)
         self.ui.add_panel(self._game_over_overlay)
 
         # Worker-priority tab (opens the drag-and-drop overlay).
         self._worker_priority_tab = WorkerPriorityTabContent()
         self._worker_priority_tab.on_open_edit = self._on_open_worker_priority
+        self._worker_priority_tab.on_toggle_auto = self._on_toggle_worker_auto
         self._bottom_bar.add_tab("Workers", self._worker_priority_tab)
 
         # Demand-priority tab (opens its own drag-and-drop overlay).
@@ -230,11 +240,19 @@ class Game:
                 if self.tier_tracker.try_advance(self.world):
                     from compprog_pygame.games.hex_colony.tech_tree import TIERS
                     tier = TIERS[self.tier_tracker.current_tier]
-                    self.notifications.push(
-                        f"Tier {self.tier_tracker.current_tier}: {tier.name} reached!",
-                        (255, 215, 0),
+                    next_tier = (
+                        TIERS[self.tier_tracker.current_tier + 1]
+                        if self.tier_tracker.current_tier + 1 < len(TIERS)
+                        else None
                     )
+                    self._tier_popup.show(tier, next_tier)
                 self.notifications.update(dt)
+                # Tutorial triggers
+                self._tutorial.check_triggers(self.world, {
+                    "time": self.world.time_elapsed,
+                    "dt": dt,
+                    "researched_count": self.tech_tree.researched_count,
+                })
             self.camera.update(dt)
             self._resource_bar.delete_mode = self.delete_mode
             self._resource_bar.sim_speed = self._sim_speed
@@ -305,6 +323,8 @@ class Game:
                         btab.delete_active = False
             elif event.key == pygame.K_h:
                 self._help_overlay.toggle()
+            elif event.key == pygame.K_i:
+                self._info_guide.toggle()
             elif event.key == pygame.K_1:
                 self._sim_speed = 1.0
             elif event.key == pygame.K_2:
@@ -605,9 +625,13 @@ class Game:
         if placed > 0:
             label = "tile" if placed == 1 else "tiles"
             self.notifications.push(f"Built {placed} {label}")
-        if last_placed is not None:
-            self._path_anchor = last_placed
+        # Exit path placement mode after placing.
+        self._path_anchor = None
         self.renderer.path_preview = []
+        self.build_mode = None
+        btab = self._bottom_bar.buildings_tab
+        if btab:
+            btab.selected_building = None
 
     def _try_delete_building(self, coord) -> None:
         """Delete a building at the given coordinate, refunding half its cost."""
@@ -684,6 +708,21 @@ class Game:
     def _on_open_worker_priority(self) -> None:
         """Open the Edit Worker Priority drag-drop modal."""
         self._worker_priority_overlay.visible = True
+
+    def _on_toggle_worker_auto(self, net_id: int | None) -> None:
+        """Toggle worker-priority auto mode for the selected network.
+        When turning auto on, immediately recompute the flat tier list
+        and auto logistics target."""
+        if net_id is None:
+            return
+        for n in self.world.networks:
+            if n.id == net_id:
+                n.worker_auto = not n.worker_auto
+                if n.worker_auto:
+                    self.world._refresh_worker_priorities(
+                        {n.id: n for n in self.world.networks},
+                    )
+                return
 
     def _on_open_demand_priority(self) -> None:
         """Open the Edit Resource Demand drag-drop modal."""

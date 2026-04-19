@@ -26,17 +26,17 @@ CAMP_STORAGE_MULTIPLIER: int = 2
 #  RESOURCE GATHERING (units per second per worker)
 # ═══════════════════════════════════════════════════════════════════
 
-GATHER_RATE_WOOD: float = 0.3
-GATHER_RATE_FIBER: float = 0.24
-GATHER_RATE_STONE: float = 0.18
-GATHER_RATE_FOOD: float = 0.15
-GATHER_RATE_IRON: float = 0.24
-GATHER_RATE_COPPER: float = 0.24
+GATHER_RATE_WOOD: float = 0.2
+GATHER_RATE_FIBER: float = 0.2
+GATHER_RATE_STONE: float = 0.1
+GATHER_RATE_FOOD: float = 0.1
+GATHER_RATE_IRON: float = 0.1
+GATHER_RATE_COPPER: float = 0.1
 
 # Quarry ore mining rate (per worker per second).  Intended to be
 # much slower than the mining machine so the quarry serves as an
 # early-game fallback for copper/iron.
-QUARRY_ORE_RATE: float = 0.12  # MINING_MACHINE_RATE / 10
+QUARRY_ORE_RATE: float = 0.02  # MINING_MACHINE_RATE / 10
 
 # ═══════════════════════════════════════════════════════════════════
 #  RESOURCE CONSUMPTION
@@ -58,7 +58,7 @@ PERSON_SPEED: float = 60.0  # pixels per second
 
 BUILDING_COST_CAMP: dict[str, int] = {}
 BUILDING_COST_HOUSE: dict[str, int] = {"WOOD": 12, "FIBER": 4}
-BUILDING_COST_HABITAT: dict[str, int] = {"WOOD": 12, "STONE": 10, "FIBER": 4}
+BUILDING_COST_HABITAT: dict[str, int] = {"WOOD": 12, "STONE": 10, "FIBER": 4, "IRON_BAR": 1}
 BUILDING_COST_PATH: dict[str, int] = {"STONE": 1, "WOOD": 1}
 BUILDING_COST_BRIDGE: dict[str, int] = {"PLANKS": 4}
 BUILDING_COST_WOODCUTTER: dict[str, int] = {"WOOD": 10, "STONE": 5}
@@ -146,9 +146,6 @@ BUILDING_STORAGE_RESEARCH_CENTER: int = 80
 
 # Items a single logistics worker can carry in one trip.
 LOGISTICS_CARRY_CAPACITY: int = 5
-# Worker count scaling factor — the more logistics workers, the more
-# the proximity term dominates (so swarms spread across the map).
-LOGISTICS_PROXIMITY_WORKER_FACTOR: float = 0.08
 
 # ═══════════════════════════════════════════════════════════════════
 #  POPULATION GROWTH
@@ -220,11 +217,11 @@ BUILDING_RECIPE_STATION: dict[str, str] = {
     "QUARRY":           "WORKSHOP",
     "GATHERER":         "WORKSHOP",
     "STORAGE":          "WORKSHOP",
-    "REFINERY":         "WORKSHOP",
+    "REFINERY":         "ASSEMBLER",
     "FARM":             "WORKSHOP",
     "WELL":             "WORKSHOP",
     "WORKSHOP":         "WORKSHOP",
-    "FORGE":            "FORGE",
+    "FORGE":            "WORKSHOP",
     "MINING_MACHINE":   "ASSEMBLER",
     "ASSEMBLER":        "FORGE",
     "RESEARCH_CENTER":  "WORKSHOP",

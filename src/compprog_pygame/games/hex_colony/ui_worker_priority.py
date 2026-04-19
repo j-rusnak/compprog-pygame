@@ -123,13 +123,13 @@ class WorkerPriorityTabContent(TabContent):
 
     def __init__(self) -> None:
         self.on_open_edit: "callable | None" = None
+        self.on_toggle_auto: "callable | None" = None
         self._edit_btn_rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
+        self._auto_btn_rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
         self._edit_hover: bool = False
+        self._auto_hover: bool = False
         self._scroll: int = 0
-        # Network selection sticky across frames so switching tabs
-        # out-and-back preserves the view.
         self._selected_net_id: int | None = None
-        # Rebuilt each draw.
         self._net_tab_rects: list[tuple[pygame.Rect, int]] = []
 
     def _pick_network(self, world: "World") -> "Network | None":
@@ -176,6 +176,9 @@ class WorkerPriorityTabContent(TabContent):
     def draw_content(
         self, surface: pygame.Surface, rect: pygame.Rect, world: "World",
     ) -> None:
+        selected = self._pick_network(world)
+        is_auto = selected.worker_auto if selected is not None else True
+
         # Right-aligned Edit Hierarchy button.
         self._edit_btn_rect = pygame.Rect(
             rect.right - _EDIT_BTN_W - 10,
@@ -198,11 +201,38 @@ class WorkerPriorityTabContent(TabContent):
             self._edit_btn_rect.centery - label.get_height() // 2,
         ))
 
+        # Auto toggle button left of Edit.
+        _AUTO_BTN_W = 70
+        self._auto_btn_rect = pygame.Rect(
+            self._edit_btn_rect.left - _AUTO_BTN_W - 8,
+            rect.y + (rect.h - _EDIT_BTN_H) // 2,
+            _AUTO_BTN_W, _EDIT_BTN_H,
+        )
+        _GREEN = (40, 120, 60)
+        _GREEN_HI = (60, 150, 80)
+        _RED = (120, 40, 40)
+        _RED_HI = (150, 60, 60)
+        auto_base = _GREEN if is_auto else _RED
+        auto_hi = _GREEN_HI if is_auto else _RED_HI
+        auto_bg = pygame.Surface(
+            (self._auto_btn_rect.w, self._auto_btn_rect.h), pygame.SRCALPHA,
+        )
+        auto_bg.fill((*(auto_hi if self._auto_hover else auto_base), 235))
+        surface.blit(auto_bg, self._auto_btn_rect.topleft)
+        pygame.draw.rect(
+            surface, UI_BORDER, self._auto_btn_rect,
+            width=2, border_radius=4,
+        )
+        auto_label = Fonts.body().render("Auto", True, UI_TEXT)
+        surface.blit(auto_label, (
+            self._auto_btn_rect.centerx - auto_label.get_width() // 2,
+            self._auto_btn_rect.centery - auto_label.get_height() // 2,
+        ))
+
         # Network tab strip (if there are multiple networks).
-        selected = self._pick_network(world)
         tabs_rect = pygame.Rect(
             rect.x + 6, rect.y + 4,
-            self._edit_btn_rect.left - rect.x - 12, 22,
+            self._auto_btn_rect.left - rect.x - 12, 22,
         )
         tabs_h = 0
         if len(world.networks) > 1:
@@ -260,11 +290,16 @@ class WorkerPriorityTabContent(TabContent):
     ) -> bool:
         if event.type == pygame.MOUSEMOTION:
             self._edit_hover = self._edit_btn_rect.collidepoint(event.pos)
+            self._auto_hover = self._auto_btn_rect.collidepoint(event.pos)
             return False
         if event.type == pygame.MOUSEWHEEL:
             self._scroll = max(0, self._scroll - event.y * 20)
             return True
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self._auto_btn_rect.collidepoint(event.pos):
+                if self.on_toggle_auto is not None:
+                    self.on_toggle_auto(self._selected_net_id)
+                return True
             if self._edit_btn_rect.collidepoint(event.pos):
                 if self.on_open_edit is not None:
                     self.on_open_edit()
@@ -359,10 +394,13 @@ class WorkerPriorityOverlay(Panel):
             title_rect.x + _OVERLAY_PAD,
             title_rect.centery - title_surf.get_height() // 2,
         ))
-        hint = Fonts.small().render(
-            "Drag cards between tiers.  Higher tier = higher priority.",
-            True, UI_MUTED,
+        hint_text = (
+            "Auto mode active — disable Auto to customise."
+            if (self._current_network() or None) is not None
+            and self._current_network().worker_auto
+            else "Drag cards between tiers.  Higher tier = higher priority."
         )
+        hint = Fonts.small().render(hint_text, True, UI_MUTED)
         surface.blit(hint, (
             title_rect.x + _OVERLAY_PAD + title_surf.get_width() + 18,
             title_rect.centery - hint.get_height() // 2 + 6,
@@ -629,9 +667,10 @@ class WorkerPriorityOverlay(Panel):
                 self._cancel_drag()
                 self.visible = False
                 return True
-            # Logistics +/- buttons.
             net = self._current_network()
-            if net is not None:
+            is_auto = net is not None and net.worker_auto
+            # Logistics +/- buttons (disabled in auto mode).
+            if net is not None and not is_auto:
                 if self._log_minus_rect.collidepoint(event.pos):
                     net.logistics_target = max(0, net.logistics_target - 1)
                     return True
@@ -644,17 +683,18 @@ class WorkerPriorityOverlay(Panel):
                     self._selected_net_id = net_id
                     self._cancel_drag()
                     return True
-            # Start drag if mouse is over a card.
-            for rect, ti, ci, b in self._card_rects:
-                if rect.collidepoint(event.pos):
-                    self._drag_building = b
-                    self._drag_origin_tier = ti
-                    self._drag_origin_index = ci
-                    self._drag_mouse_offset = (
-                        event.pos[0] - rect.x,
-                        event.pos[1] - rect.y,
-                    )
-                    return True
+            # Start drag if mouse is over a card (disabled in auto mode).
+            if not is_auto:
+                for rect, ti, ci, b in self._card_rects:
+                    if rect.collidepoint(event.pos):
+                        self._drag_building = b
+                        self._drag_origin_tier = ti
+                        self._drag_origin_index = ci
+                        self._drag_mouse_offset = (
+                            event.pos[0] - rect.x,
+                            event.pos[1] - rect.y,
+                        )
+                        return True
             return True  # consume click inside overlay
 
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1:

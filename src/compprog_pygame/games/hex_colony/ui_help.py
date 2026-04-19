@@ -33,6 +33,7 @@ _HELP_LINES: list[tuple[str, str]] = [
     ("B", "Cycle build mode"),
     ("X", "Toggle delete mode"),
     ("H", "Toggle this help overlay"),
+    ("I", "Toggle game guide"),
     ("1 / 2 / 3", "Set game speed"),
     ("Tab", "Toggle sandbox mode"),
     ("Alt (hold)", "Show resource overlay"),

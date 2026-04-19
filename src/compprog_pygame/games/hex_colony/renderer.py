@@ -1286,6 +1286,16 @@ class Renderer:
                 draw_research_center(bld_surf, cx_local, cy_local, r, zoom)
             elif btype == BuildingType.MINING_MACHINE:
                 draw_mining_machine(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.FARM:
+                draw_farm(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.WELL:
+                draw_well(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.WALL:
+                draw_wall(bld_surf, cx_local, cy_local, r, zoom, [], coord.q, coord.r)
+            elif btype == BuildingType.REFINERY:
+                draw_refinery(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.BRIDGE:
+                draw_bridge(bld_surf, cx_local, cy_local, r, zoom, [], coord.q, coord.r)
 
             if not self.ghost_valid:
                 red_tint = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)

@@ -55,6 +55,10 @@ class Network:
     # suppliers) on tier 0, storage on tier 1.
     supply_priority: list[list[Building]] = field(default_factory=list)
     supply_auto: bool = True
+    # Worker-priority auto mode: when True, all worker-buildings are
+    # placed in a single tier and ``logistics_target`` is automatically
+    # computed as ``floor(building_count / 3)``.
+    worker_auto: bool = True
 
     @property
     def name(self) -> str:
@@ -384,6 +388,11 @@ class World:
                     if parent_ids and parent_ids[0] in old_nets
                     else True
                 ),
+                worker_auto=(
+                    old_nets[parent_ids[0]].worker_auto
+                    if parent_ids and parent_ids[0] in old_nets
+                    else True
+                ),
             ))
 
         # Stable display order: by id ascending.
@@ -393,6 +402,7 @@ class World:
         # ``buildings`` lists are settled.
         self._refresh_demand_priorities(old_nets)
         self._refresh_supply_priorities(old_nets)
+        self._refresh_worker_priorities(old_nets)
 
     # ── Worker assignment & dispatch ─────────────────────────────
 
@@ -530,6 +540,38 @@ class World:
         if tier1:
             result.append(tier1)
         return result
+
+    def _refresh_worker_priorities(
+        self, old_nets: dict[int, Network],
+    ) -> None:
+        """When ``worker_auto`` is enabled on a network, flatten all
+        worker-buildings into a single tier and auto-compute
+        ``logistics_target`` as 1 per every 3 buildings (rounded down).
+        """
+        from compprog_pygame.games.hex_colony.buildings import (
+            BUILDING_MAX_WORKERS,
+            BuildingType,
+        )
+        for net in self.networks:
+            if not net.worker_auto:
+                continue
+            # Flatten all worker-buildings into one tier.
+            flat: list[Building] = []
+            for b in net.buildings:
+                if BUILDING_MAX_WORKERS.get(b.type, 0) <= 0:
+                    continue
+                flat.append(b)
+            net.priority = [flat] if flat else []
+            # Auto logistics: 1 worker per every 3 buildings
+            # (non-path, non-bridge, non-wall).
+            countable = [
+                b for b in net.buildings
+                if b.type not in (
+                    BuildingType.PATH, BuildingType.BRIDGE,
+                    BuildingType.WALL,
+                )
+            ]
+            net.logistics_target = len(countable) // 3
 
     def _supply_tier_of(
         self, b: Building, net: Network,
@@ -797,7 +839,7 @@ class World:
         if t == BuildingType.GATHERER:
             if b.gatherer_output is not None:
                 return {b.gatherer_output}
-            return {Resource.FIBER, Resource.FOOD}
+            return {Resource.FOOD}
         if t == BuildingType.FARM:
             return {Resource.FOOD}
         if t == BuildingType.MINING_MACHINE:
@@ -896,12 +938,12 @@ class World:
                     need = max(0.0, target - have)
                     if need > 0.5:
                         out[res] = need
-        # Workshop with a building recipe (placeable building):
-        # demand the building cost so logistics will deliver inputs
-        # to the workshop instead of the workshop scraping straight
-        # from the global inventory.
-        if (b.type == BuildingType.WORKSHOP
-                and isinstance(b.recipe, BuildingType)):
+        # Crafting station with a building recipe (placeable
+        # building): demand the building cost so logistics will
+        # deliver inputs instead of scraping the global inventory.
+        # Check BUILDING_RECIPE_STATION so Forge, Assembler, etc.
+        # also get deliveries — not just the Workshop.
+        if isinstance(b.recipe, BuildingType):
             from compprog_pygame.games.hex_colony.buildings import (
                 BUILDING_COSTS,
             )
@@ -1355,15 +1397,6 @@ class World:
         net = self._network_of_building(p.home)
         if net is None:
             return
-        # Number of logistics workers in this network (>=1 since *p* is
-        # one).  Used to scale the proximity weight.
-        log_count = max(1, sum(
-            1 for q in self.population.people
-            if q.is_logistics and q.home is not None
-            and self._network_of_building(q.home) is net
-        ))
-        prox_weight = 1.0 + log_count * params.LOGISTICS_PROXIMITY_WORKER_FACTOR
-
         # Pre-compute supply/demand per building.
         supplies: list[tuple] = []  # (b, res, amount, fill_frac)
         demands: list[tuple] = []   # (b, res, need, empty_frac)
@@ -1410,13 +1443,35 @@ class World:
         if tiered_supplies:
             supplies = tiered_supplies
 
+        # ── Reservation: subtract capacity already claimed by other
+        # logistics workers so new workers spread to uncovered needs
+        # instead of all piling onto the same highest-scoring route.
+        claimed_supply: dict[tuple[int, object], float] = {}  # (id(b), res) → qty
+        claimed_demand: dict[tuple[int, object], float] = {}
+        carry_cap = params.LOGISTICS_CARRY_CAPACITY
+        for other in self.population.people:
+            if other is p or not other.is_logistics:
+                continue
+            if other.logistics_src is None or other.logistics_dst is None:
+                continue
+            if other.task not in (Task.LOGISTICS_PICKUP, Task.LOGISTICS_DELIVER):
+                continue
+            res_key = other.logistics_res
+            sk = (id(other.logistics_src), res_key)
+            dk = (id(other.logistics_dst), res_key)
+            claimed_supply[sk] = claimed_supply.get(sk, 0.0) + carry_cap
+            claimed_demand[dk] = claimed_demand.get(dk, 0.0) + carry_cap
+
         best_score = -1e9
         best_src = best_dst = None
         best_res = None
         for sb, sres, samt, sfill in supplies:
+            # Effective supply after subtracting claimed reservations.
+            eff_samt = samt - claimed_supply.get((id(sb), sres), 0.0)
             for db, dres, dneed, dempty in demands:
                 if sres != dres or sb is db:
                     continue
+                eff_dneed = dneed - claimed_demand.get((id(db), dres), 0.0)
                 # Bonus for storage→consumer (feeding stockpiles back
                 # into the production chain).  We deliberately do NOT
                 # bonus producer→storage anymore — non-storage demands
@@ -1427,26 +1482,20 @@ class World:
                 link_bonus = 0.0
                 if storage_to_consumer:
                     link_bonus += 0.8
-                # Distance (hex distance from worker → src → dst).
-                d_ps = p.hex_pos.distance(sb.coord)
-                d_sd = sb.coord.distance(db.coord)
-                total_d = max(1, d_ps + d_sd)
-                proximity = 1.0 / total_d
                 # Urgency from fill ratios.  Empty demand buildings
                 # edge out full supply buildings by a small margin so
                 # that consumers are kept fed before producers unclog.
                 urgency = sfill * 0.55 + dempty * 0.65
-                # Magnitude: what we can actually transport.
+                # Magnitude: what we can actually transport (effective).
                 qty = min(
-                    params.LOGISTICS_CARRY_CAPACITY, samt, dneed,
+                    carry_cap, eff_samt, eff_dneed,
                 )
                 if qty <= 0:
                     continue
-                magnitude = min(1.0, qty / params.LOGISTICS_CARRY_CAPACITY)
+                magnitude = min(1.0, qty / carry_cap)
                 score = (
                     urgency * 1.0
                     + link_bonus
-                    + proximity * prox_weight
                     + magnitude * 0.3
                 )
                 if score > best_score:
@@ -1553,10 +1602,10 @@ class World:
             # Gatherer's effective wanted set depends on the player's
             # selection.
             if b.type == BuildingType.GATHERER:
-                if b.gatherer_output is None:
-                    wanted = {Resource.FIBER, Resource.FOOD}
+                if b.gatherer_output == Resource.FIBER:
+                    wanted = {Resource.FIBER}
                 else:
-                    wanted = {b.gatherer_output}
+                    wanted = {Resource.FOOD}
             # Quarry's effective wanted set depends on the player's
             # selection (stone by default, or iron/copper ore).
             if b.type == BuildingType.QUARRY:
@@ -2027,20 +2076,15 @@ class World:
                 self._harvest_from_terrain(
                     b, {b.quarry_output}, params.QUARRY_ORE_RATE, dt,
                 )
-        # Gatherer: produce only the user-selected resource, or both
+        # Gatherer: produce only the user-selected resource (default food)
         for b in self.buildings.by_type(BuildingType.GATHERER):
-            if b.gatherer_output == Resource.FOOD:
-                self._harvest_from_terrain(
-                    b, {Resource.FOOD}, s.gather_food, dt,
-                )
-            elif b.gatherer_output == Resource.FIBER:
+            if b.gatherer_output == Resource.FIBER:
                 self._harvest_from_terrain(
                     b, {Resource.FIBER}, s.gather_fiber, dt,
                 )
             else:
                 self._harvest_from_terrain(
-                    b, {Resource.FIBER, Resource.FOOD},
-                    (s.gather_fiber + s.gather_food) * 0.5, dt,
+                    b, {Resource.FOOD}, s.gather_food, dt,
                 )
 
         # Pre-compute well locations for farm bonus

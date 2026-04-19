@@ -223,13 +223,18 @@ class TechTree:
                 self._consumed[res] = already + took
 
         # Actual progress is the minimum consumed / total_cost ratio,
-        # multiplied by node.time.
+        # multiplied by node.time.  Use a small epsilon when checking
+        # ratios to avoid floating-point 99%-stuck issues.
         if node.cost:
             min_ratio = 1.0
             for res, total_amount in node.cost.items():
                 if total_amount <= 0:
                     continue
                 ratio = self._consumed.get(res, 0.0) / total_amount
+                # Snap near-complete ratios to 1.0 to prevent the
+                # research from stalling at 99% due to float rounding.
+                if ratio >= 1.0 - 1e-9:
+                    ratio = 1.0
                 if ratio < min_ratio:
                     min_ratio = ratio
             self.research_progress = min(node.time, min_ratio * node.time)
