@@ -23,6 +23,11 @@ from compprog_pygame.games.hex_colony.ui import (
     draw_panel_bg,
     render_text_clipped,
 )
+from compprog_pygame.games.hex_colony.strings import (
+    RESOURCE_BAR_DELETE,
+    RESOURCE_BAR_SANDBOX,
+    RESOURCE_BAR_MAX_TIER,
+)
 
 if TYPE_CHECKING:
     from compprog_pygame.games.hex_colony.tech_tree import TechTree, TierTracker
@@ -144,7 +149,7 @@ class ResourceBar(Panel):
         progress = self.tier_tracker.check_requirements(world)
         if not progress:
             if x + 80 <= max_x:
-                m = font_small.render("(Max Tier)", True, UI_MUTED)
+                m = font_small.render(RESOURCE_BAR_MAX_TIER, True, UI_MUTED)
                 surface.blit(m, (x, cy - m.get_height() // 2))
                 x += m.get_width()
             return x
@@ -184,13 +189,13 @@ class ResourceBar(Panel):
         rx = self.rect.right - _PADDING_X
 
         if self.delete_mode:
-            s = font_val.render("DELETE [X]", True, UI_BAD)
+            s = font_val.render(RESOURCE_BAR_DELETE, True, UI_BAD)
             rx -= s.get_width()
             surface.blit(s, (rx, cy - s.get_height() // 2))
             rx -= _ITEM_GAP
 
         if self.sandbox:
-            s = font_val.render("SANDBOX", True, UI_ACCENT)
+            s = font_val.render(RESOURCE_BAR_SANDBOX, True, UI_ACCENT)
             rx -= s.get_width()
             surface.blit(s, (rx, cy - s.get_height() // 2))
             rx -= _ITEM_GAP

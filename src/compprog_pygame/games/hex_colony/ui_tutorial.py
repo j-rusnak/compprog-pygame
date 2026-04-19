@@ -24,6 +24,10 @@ from compprog_pygame.games.hex_colony.ui import (
     draw_panel_bg,
     wrap_text,
 )
+from compprog_pygame.games.hex_colony.strings import (
+    TUTORIAL_STEPS as _TUTORIAL_TEXT,
+    TUTORIAL_DISMISS_BUTTON,
+)
 
 if TYPE_CHECKING:
     from compprog_pygame.games.hex_colony.world import World
@@ -61,43 +65,33 @@ def _population(world: "World") -> int:
     return world.population.count
 
 
+# Build a lookup from step id -> text dict for quick access.
+_TEXT_BY_ID: dict[str, dict] = {d["id"]: d for d in _TUTORIAL_TEXT}  # type: ignore[arg-type]
+
+def _text(step_id: str) -> tuple[str, list[str]]:
+    """Return (title, lines) for *step_id* from the centralised strings."""
+    entry = _TEXT_BY_ID[step_id]
+    return entry["title"], list(entry["lines"])  # type: ignore[arg-type]
+
+
 TUTORIAL_STEPS: list[_TutorialStep] = [
     _TutorialStep(
         id="welcome",
-        title="Welcome to Hex Colony!",
-        lines=[
-            "You've crash-landed on an alien world.",
-            "Your crew needs Food to survive \u2014 without it",
-            "your colonists will starve!",
-            "",
-            "Let's get started by setting up food production.",
-        ],
+        title=_text("welcome")[0],
+        lines=_text("welcome")[1],
         trigger=lambda w, ctx: ctx.get("time", 0) < 2.0,
     ),
     _TutorialStep(
         id="build_gatherer",
-        title="Build a Gatherer",
-        lines=[
-            "Open the Buildings tab at the bottom of the",
-            "screen and select \u201cGatherer\u201d.",
-            "",
-            "Place it on a grass/plains tile near your Camp.",
-            "Gatherers harvest Food from surrounding tiles.",
-        ],
+        title=_text("build_gatherer")[0],
+        lines=_text("build_gatherer")[1],
         trigger=lambda w, ctx: not _has_building_count(w, BuildingType.GATHERER),
         after="welcome",
     ),
     _TutorialStep(
         id="connect_paths",
-        title="Connect with Paths",
-        lines=[
-            "Your Gatherer needs a path connection to the",
-            "Camp so workers can reach it.",
-            "",
-            "Select \u201cPath\u201d from Buildings, click near the",
-            "Camp, then click near the Gatherer to lay a",
-            "route automatically.",
-        ],
+        title=_text("connect_paths")[0],
+        lines=_text("connect_paths")[1],
         trigger=lambda w, ctx: (
             _has_building_count(w, BuildingType.GATHERER)
             and not _has_workers_at(w, BuildingType.GATHERER)
@@ -106,28 +100,15 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
     ),
     _TutorialStep(
         id="food_producing",
-        title="Food Production Started!",
-        lines=[
-            "Great! Workers are now gathering Food.",
-            "Click on the Gatherer to see its info panel.",
-            "It defaults to Food \u2014 you can switch to Fiber",
-            "later if you need it for crafting.",
-            "",
-            "Keep an eye on the Food counter in the top bar.",
-        ],
+        title=_text("food_producing")[0],
+        lines=_text("food_producing")[1],
         trigger=lambda w, ctx: _has_workers_at(w, BuildingType.GATHERER),
         after="connect_paths",
     ),
     _TutorialStep(
         id="build_woodcutter",
-        title="Gather More Resources",
-        lines=[
-            "You'll need Wood and Stone to build more.",
-            "",
-            "Place a Woodcutter on a forest tile and a",
-            "Quarry on a mountain tile, then connect them",
-            "with Paths.",
-        ],
+        title=_text("build_woodcutter")[0],
+        lines=_text("build_woodcutter")[1],
         trigger=lambda w, ctx: (
             _has_workers_at(w, BuildingType.GATHERER)
             and not _has_building_count(w, BuildingType.WOODCUTTER)
@@ -136,15 +117,8 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
     ),
     _TutorialStep(
         id="build_habitat",
-        title="Build a Habitat",
-        lines=[
-            "Your Camp can only house a few colonists.",
-            "Build a Habitat to provide more housing \u2014",
-            "colonists will reproduce when they have food",
-            "and a home with room.",
-            "",
-            "More people means more workers!",
-        ],
+        title=_text("build_habitat")[0],
+        lines=_text("build_habitat")[1],
         trigger=lambda w, ctx: (
             _has_building_count(w, BuildingType.WOODCUTTER)
             and not _has_building_count(w, BuildingType.HABITAT)
@@ -153,14 +127,8 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
     ),
     _TutorialStep(
         id="workshop_crafting",
-        title="Workshop Crafting",
-        lines=[
-            "Your Workshop can craft materials and buildings.",
-            "",
-            "Click on the Workshop, then select a recipe",
-            "from the dropdown menu. Workers will craft it",
-            "using resources from your global inventory.",
-        ],
+        title=_text("workshop_crafting")[0],
+        lines=_text("workshop_crafting")[1],
         trigger=lambda w, ctx: (
             _has_building_count(w, BuildingType.WORKSHOP)
             and _has_workers_at(w, BuildingType.WORKSHOP)
@@ -173,14 +141,8 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
     ),
     _TutorialStep(
         id="forge_smelting",
-        title="Forge \u2014 Smelt Ores",
-        lines=[
-            "The Forge smelts raw Iron and Copper into bars.",
-            "",
-            "Click on the Forge and pick a material recipe",
-            "to start smelting. You'll need bars to craft",
-            "advanced buildings and components.",
-        ],
+        title=_text("forge_smelting")[0],
+        lines=_text("forge_smelting")[1],
         trigger=lambda w, ctx: (
             _has_building_count(w, BuildingType.FORGE)
             and _has_workers_at(w, BuildingType.FORGE)
@@ -189,19 +151,12 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
                 for b in w.buildings.by_type(BuildingType.FORGE)
             )
         ),
-        after=None,  # can trigger independently
+        after=None,
     ),
     _TutorialStep(
         id="research",
-        title="Research New Tech",
-        lines=[
-            "Your Research Center can unlock new buildings",
-            "and recipes.",
-            "",
-            "Click on it and select a technology to research.",
-            "Research consumes resources over time. Open the",
-            "Tech Tree to see what's available.",
-        ],
+        title=_text("research")[0],
+        lines=_text("research")[1],
         trigger=lambda w, ctx: (
             _has_building_count(w, BuildingType.RESEARCH_CENTER)
             and _has_workers_at(w, BuildingType.RESEARCH_CENTER)
@@ -211,15 +166,8 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
     ),
     _TutorialStep(
         id="population_growing",
-        title="Population Growing!",
-        lines=[
-            "Your colony is expanding. More colonists means",
-            "you can staff more buildings.",
-            "",
-            "Check the Workers tab to see how workers are",
-            "assigned. Logistics workers move resources",
-            "between buildings automatically.",
-        ],
+        title=_text("population_growing")[0],
+        lines=_text("population_growing")[1],
         trigger=lambda w, ctx: _population(w) >= 10,
         after="build_habitat",
     ),
@@ -341,7 +289,7 @@ class TutorialPanel(Panel):
         bg = (80, 160, 80) if hover else (60, 130, 60)
         pygame.draw.rect(surface, bg, self._btn_rect, border_radius=4)
         pygame.draw.rect(surface, (100, 200, 100), self._btn_rect, 1, border_radius=4)
-        label = font.render("Got it", True, (255, 255, 255))
+        label = font.render(TUTORIAL_DISMISS_BUTTON, True, (255, 255, 255))
         surface.blit(label, (
             self._btn_rect.centerx - label.get_width() // 2,
             self._btn_rect.centery - label.get_height() // 2,

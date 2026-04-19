@@ -21,6 +21,11 @@ from compprog_pygame.games.hex_colony.ui import (
     draw_titled_panel,
     render_text_clipped,
 )
+from compprog_pygame.games.hex_colony.strings import (
+    GAME_OVER_TITLE,
+    GAME_OVER_BUTTONS,
+    GAME_OVER_STATS,
+)
 
 if TYPE_CHECKING:
     from compprog_pygame.games.hex_colony.world import World
@@ -29,7 +34,7 @@ if TYPE_CHECKING:
 _BUTTON_W = 280
 _BUTTON_H = 48
 _BUTTON_GAP = 12
-_BUTTONS = ["Return to Main Menu", "Quit"]
+_BUTTONS = GAME_OVER_BUTTONS
 
 
 class GameOverOverlay(Panel):
@@ -66,16 +71,16 @@ class GameOverOverlay(Panel):
         py = (sh - ph) // 2
         panel = pygame.Rect(px, py, pw, ph)
         content_y = draw_titled_panel(
-            surface, panel, "All Survivors Lost",
+            surface, panel, GAME_OVER_TITLE,
             title_color=UI_BAD, title_font=Fonts.hero(),
         )
 
         # Stats
         mins, secs = divmod(int(world.time_elapsed), 60)
+        n_bld = len(world.buildings.buildings)
         info = render_text_clipped(
             Fonts.label(),
-            f"Survived {mins}:{secs:02d}   |   "
-            f"Buildings: {len(world.buildings.buildings)}",
+            GAME_OVER_STATS.format(time=f"{mins}:{secs:02d}", count=n_bld),
             UI_MUTED, pw - 40,
         )
         surface.blit(info, (

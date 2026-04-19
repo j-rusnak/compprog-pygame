@@ -43,6 +43,15 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_workshop,
 )
 from compprog_pygame.games.hex_colony.tech_tree import is_building_available
+from compprog_pygame.games.hex_colony.strings import (
+    building_short_label,
+    building_description,
+    BUILDING_CATEGORY_NAMES,
+    STATS_COLONY_AGE,
+    STATS_POPULATION,
+    STATS_BUILDINGS,
+    TAB_BUILDINGS,
+)
 from compprog_pygame.games.hex_colony.ui import (
     Fonts,
     Panel,
@@ -139,15 +148,15 @@ class BuildingsTabContent(TabContent):
     """Categorised grid of buildings with inventory counts."""
 
     _CATEGORIES: list[tuple[str, list[BuildingType]]] = [
-        ("Core", [BuildingType.RESEARCH_CENTER]),
-        ("Housing", [BuildingType.HABITAT]),
-        ("Resource", [BuildingType.WOODCUTTER, BuildingType.QUARRY,
+        (BUILDING_CATEGORY_NAMES[0], [BuildingType.RESEARCH_CENTER]),
+        (BUILDING_CATEGORY_NAMES[1], [BuildingType.HABITAT]),
+        (BUILDING_CATEGORY_NAMES[2], [BuildingType.WOODCUTTER, BuildingType.QUARRY,
                       BuildingType.GATHERER, BuildingType.FARM, BuildingType.WELL,
                       BuildingType.MINING_MACHINE]),
-        ("Processing", [BuildingType.WORKSHOP, BuildingType.FORGE,
+        (BUILDING_CATEGORY_NAMES[3], [BuildingType.WORKSHOP, BuildingType.FORGE,
                         BuildingType.ASSEMBLER, BuildingType.REFINERY,
                         BuildingType.STORAGE]),
-        ("Logistics", [BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL]),
+        (BUILDING_CATEGORY_NAMES[4], [BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL]),
     ]
 
     BUILDABLE: list[BuildingType] = []
@@ -193,41 +202,14 @@ class BuildingsTabContent(TabContent):
     }
 
     _DESC: dict[BuildingType, str] = {
-        BuildingType.HABITAT: "Houses 6 survivors",
-        BuildingType.PATH: "Connects buildings",
-        BuildingType.BRIDGE: "Path over water",
-        BuildingType.WOODCUTTER: "Harvests wood",
-        BuildingType.QUARRY: "Harvests stone",
-        BuildingType.GATHERER: "Gathers fiber & food",
-        BuildingType.STORAGE: "Stores 100 resources",
-        BuildingType.REFINERY: "Processes metals",
-        BuildingType.MINING_MACHINE: "Auto-mines ore (uses fuel)",
-        BuildingType.FARM: "Grows food",
-        BuildingType.WELL: "Boosts nearby farms",
-        BuildingType.WALL: "Defensive wall",
-        BuildingType.WORKSHOP: "Crafts buildings",
-        BuildingType.FORGE: "Smelts metal bars",
-        BuildingType.ASSEMBLER: "Builds advanced parts",
-        BuildingType.RESEARCH_CENTER: "Unlocks tech tree",
+        bt: building_description(bt.name)
+        for bt in BuildingType
+        if building_description(bt.name)
     }
 
     _LABEL: dict[BuildingType, str] = {
-        BuildingType.HABITAT: "Habitat",
-        BuildingType.PATH: "Path",
-        BuildingType.BRIDGE: "Bridge",
-        BuildingType.WALL: "Wall",
-        BuildingType.WOODCUTTER: "Woodcutter",
-        BuildingType.QUARRY: "Quarry",
-        BuildingType.GATHERER: "Gatherer",
-        BuildingType.STORAGE: "Storage",
-        BuildingType.REFINERY: "Refinery",
-        BuildingType.MINING_MACHINE: "Mining Machine",
-        BuildingType.FARM: "Farm",
-        BuildingType.WELL: "Well",
-        BuildingType.WORKSHOP: "Workshop",
-        BuildingType.FORGE: "Forge",
-        BuildingType.ASSEMBLER: "Assembler",
-        BuildingType.RESEARCH_CENTER: "Research",
+        bt: building_short_label(bt.name)
+        for bt in BuildingType
     }
 
     # Harvester buildings: show the sprite of the resource they yield
@@ -556,9 +538,9 @@ class InfoTabContent(TabContent):
             if b.type != BuildingType.PATH
         )
         items = [
-            ("Colony age", f"{mins}:{secs:02d}"),
-            ("Population", str(world.population.count)),
-            ("Buildings", str(n_buildings)),
+            (STATS_COLONY_AGE, f"{mins}:{secs:02d}"),
+            (STATS_POPULATION, str(world.population.count)),
+            (STATS_BUILDINGS, str(n_buildings)),
         ]
         # Lay out in columns
         col_w = rect.w // max(1, len(items))
@@ -597,7 +579,7 @@ class BottomBar(Panel):
         return None
 
     def _create_default_tabs(self) -> None:
-        self.add_tab("Buildings", BuildingsTabContent())
+        self.add_tab(TAB_BUILDINGS, BuildingsTabContent())
 
     def add_tab(self, label: str, content: TabContent) -> None:
         self._tabs.append(_Tab(label=label, content=content))

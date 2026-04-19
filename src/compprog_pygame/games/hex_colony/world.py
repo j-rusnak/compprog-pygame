@@ -16,6 +16,11 @@ from compprog_pygame.games.hex_colony.procgen import generate_terrain
 from compprog_pygame.games.hex_colony.resources import BuildingInventory, Inventory, Resource
 from compprog_pygame.games.hex_colony.settings import HexColonySettings
 from compprog_pygame.games.hex_colony import params
+from compprog_pygame.games.hex_colony.strings import (
+    building_label,
+    NOTIF_NEW_COLONIST,
+    NOTIF_UNREACHABLE,
+)
 
 
 @dataclass
@@ -1384,7 +1389,7 @@ class World:
                 spawned_any = True
                 if self.notifications is not None:
                     self.notifications.push(
-                        "A new colonist was born!", (180, 255, 180),
+                        NOTIF_NEW_COLONIST, (180, 255, 180),
                     )
         if spawned_any:
             self.mark_housing_dirty()
@@ -1540,9 +1545,9 @@ class World:
                 current_unreachable.add(bid)
                 if bid in self._unreachable_notified:
                     continue
-                label = b.type.name.replace("_", " ").title()
+                label = building_label(b.type.name)
                 self.notifications.push(
-                    f"No workers can reach {label}", (230, 100, 100),
+                    NOTIF_UNREACHABLE.format(label=label), (230, 100, 100),
                 )
                 self._unreachable_notified.add(bid)
         # Forget buildings that became reachable again (or were deleted)

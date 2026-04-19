@@ -12,6 +12,17 @@ from typing import TYPE_CHECKING
 import pygame
 
 from compprog_pygame.games.hex_colony.buildings import BuildingType
+from compprog_pygame.games.hex_colony.strings import (
+    building_label,
+    TIER_UNLOCKED_HEADER,
+    TIER_NO_UNLOCKS,
+    TIER_MAX_REACHED,
+    TIER_DISMISS_HINT,
+    TIER_REQ_POPULATION,
+    TIER_REQ_BUILDINGS,
+    TIER_REQ_RESOURCE,
+    TIER_REQ_RESEARCH,
+)
 from compprog_pygame.games.hex_colony.ui import (
     Fonts,
     Panel,
@@ -26,24 +37,7 @@ if TYPE_CHECKING:
     from compprog_pygame.games.hex_colony.tech_tree import TierInfo
     from compprog_pygame.games.hex_colony.world import World
 
-_BUILDING_LABEL: dict[BuildingType, str] = {
-    BuildingType.HABITAT: "Habitat",
-    BuildingType.PATH: "Path",
-    BuildingType.BRIDGE: "Bridge",
-    BuildingType.WALL: "Wall",
-    BuildingType.WOODCUTTER: "Woodcutter",
-    BuildingType.QUARRY: "Quarry",
-    BuildingType.GATHERER: "Gatherer",
-    BuildingType.STORAGE: "Storage",
-    BuildingType.REFINERY: "Refinery",
-    BuildingType.MINING_MACHINE: "Mining Machine",
-    BuildingType.FARM: "Farm",
-    BuildingType.WELL: "Well",
-    BuildingType.WORKSHOP: "Workshop",
-    BuildingType.FORGE: "Forge",
-    BuildingType.ASSEMBLER: "Assembler",
-    BuildingType.RESEARCH_CENTER: "Research Center",
-}
+
 
 _LINE_H = 26
 _SECTION_GAP = 14
@@ -132,16 +126,16 @@ class TierPopup(Panel):
 
         # Unlocked buildings
         if cur.unlocks_buildings:
-            header = label.render("Unlocked Buildings:", True, UI_ACCENT)
+            header = label.render(TIER_UNLOCKED_HEADER, True, UI_ACCENT)
             surface.blit(header, (px + _MARGIN, y))
             y += _LINE_H
             for bt in cur.unlocks_buildings:
-                name = _BUILDING_LABEL.get(bt, bt.name.replace("_", " ").title())
+                name = building_label(bt.name)
                 bullet = body.render(f"  \u2022 {name}", True, UI_TEXT)
                 surface.blit(bullet, (px + _MARGIN, y))
                 y += _LINE_H
         else:
-            note = body.render("No new buildings unlocked.", True, UI_MUTED)
+            note = body.render(TIER_NO_UNLOCKS, True, UI_MUTED)
             surface.blit(note, (px + _MARGIN, y))
             y += _LINE_H
 
@@ -162,13 +156,13 @@ class TierPopup(Panel):
             reqs = nxt.requirements
             if "population" in reqs:
                 txt = body.render(
-                    f"  \u2022 Population: {reqs['population']}", True, UI_TEXT,
+                    TIER_REQ_POPULATION.format(amount=reqs['population']), True, UI_TEXT,
                 )
                 surface.blit(txt, (px + _MARGIN, y))
                 y += _LINE_H
             if "buildings_placed" in reqs:
                 txt = body.render(
-                    f"  \u2022 Buildings: {reqs['buildings_placed']}",
+                    TIER_REQ_BUILDINGS.format(amount=reqs['buildings_placed']),
                     True, UI_TEXT,
                 )
                 surface.blit(txt, (px + _MARGIN, y))
@@ -176,28 +170,28 @@ class TierPopup(Panel):
             if "resource_gathered" in reqs:
                 for res_name, amount in reqs["resource_gathered"].items():
                     txt = body.render(
-                        f"  \u2022 {res_name.replace('_', ' ').title()}: {amount}",
+                        TIER_REQ_RESOURCE.format(name=res_name.replace('_', ' ').title(), amount=amount),
                         True, UI_TEXT,
                     )
                     surface.blit(txt, (px + _MARGIN, y))
                     y += _LINE_H
             if "research_count" in reqs:
                 txt = body.render(
-                    f"  \u2022 Research completed: {reqs['research_count']}",
+                    TIER_REQ_RESEARCH.format(amount=reqs['research_count']),
                     True, UI_TEXT,
                 )
                 surface.blit(txt, (px + _MARGIN, y))
                 y += _LINE_H
         else:
             congrats = label.render(
-                "Maximum tier reached!", True, (255, 215, 0),
+                TIER_MAX_REACHED, True, (255, 215, 0),
             )
             surface.blit(congrats, (px + _MARGIN, y))
             y += _LINE_H
 
         # Dismiss hint
         hint = small.render(
-            "Click anywhere or press Escape to continue", True, UI_MUTED,
+            TIER_DISMISS_HINT, True, UI_MUTED,
         )
         surface.blit(hint, (
             px + (pw - hint.get_width()) // 2,

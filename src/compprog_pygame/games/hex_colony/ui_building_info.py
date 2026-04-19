@@ -22,6 +22,19 @@ from compprog_pygame.games.hex_colony.buildings import (
     BuildingType,
 )
 from compprog_pygame.games.hex_colony import params
+from compprog_pygame.games.hex_colony.strings import (
+    building_label,
+    resource_name,
+    INFO_INPUTS_HEADER,
+    INFO_OUTPUTS_HEADER,
+    INFO_OTHER_HEADER,
+    INFO_MATERIALS_HEADER,
+    INFO_SELECT_RECIPE,
+    INFO_SELECT_RECIPE_DD,
+    INFO_OPEN_TECH_TREE,
+    INFO_MAX_TIER,
+    INFO_STONE_DEFAULT,
+)
 from compprog_pygame.games.hex_colony.resources import (
     MATERIAL_RECIPES,
     MaterialRecipe,
@@ -65,25 +78,7 @@ _TOP_MARGIN = 48          # stay below 38px resource bar
 _BOTTOM_MARGIN = 44       # stay above 32px bottom tab strip
 _SCROLLBAR_W = 6
 
-_BUILDING_LABEL: dict[BuildingType, str] = {
-    BuildingType.CAMP: "Ship Wreckage",
-    BuildingType.HABITAT: "Habitat",
-    BuildingType.PATH: "Path",
-    BuildingType.BRIDGE: "Bridge",
-    BuildingType.WALL: "Wall",
-    BuildingType.WOODCUTTER: "Woodcutter",
-    BuildingType.QUARRY: "Quarry",
-    BuildingType.GATHERER: "Gatherer",
-    BuildingType.STORAGE: "Storage",
-    BuildingType.REFINERY: "Refinery",
-    BuildingType.MINING_MACHINE: "Mining Machine",
-    BuildingType.FARM: "Farm",
-    BuildingType.WELL: "Well",
-    BuildingType.WORKSHOP: "Workshop",
-    BuildingType.FORGE: "Forge",
-    BuildingType.ASSEMBLER: "Assembler",
-    BuildingType.RESEARCH_CENTER: "Research Center",
-}
+
 
 
 
@@ -274,7 +269,7 @@ class BuildingInfoPanel(Panel):
                 icon_rect = pygame.Rect(icon_x, icon_y, icon_size, icon_size)
                 if icon_rect.collidepoint(pygame.mouse.get_pos()):
                     set_tooltip(
-                        item.resource.name.replace("_", " ").title(),
+                        resource_name(item.resource.name),
                     )
                 max_w = _PANEL_W - _PADDING * 2 - icon_size - 8
                 if max_scroll > 0:
@@ -315,7 +310,7 @@ class BuildingInfoPanel(Panel):
         bg = UI_ACCENT if item.selected else UI_BG
         pygame.draw.rect(surface, bg, btn_rect, border_radius=3)
         pygame.draw.rect(surface, UI_BORDER, btn_rect, width=1, border_radius=3)
-        label = item.craft_type.name.replace("_", " ").title()
+        label = building_label(item.craft_type.name)
         label_col = UI_TEXT
         surf = render_text_clipped(
             Fonts.small(), label, label_col, btn_rect.w - 12,
@@ -341,7 +336,7 @@ class BuildingInfoPanel(Panel):
         icon_y = btn_rect.centery - icon_size // 2
         surface.blit(out_icon, (icon_x, icon_y))
         label = (
-            f"{item.recipe.output.name.replace('_', ' ').title()}"
+            f"{resource_name(item.recipe.output.name)}"
             f" \u00d7{item.recipe.output_amount}"
         )
         surf = render_text_clipped(
@@ -365,7 +360,7 @@ class BuildingInfoPanel(Panel):
         icon_x = btn_rect.x + 4
         icon_y = btn_rect.centery - icon_size // 2
         surface.blit(icon_surf, (icon_x, icon_y))
-        label = item.resource.name.replace("_", " ").title()
+        label = resource_name(item.resource.name)
         surf = render_text_clipped(
             Fonts.small(), label, UI_TEXT, btn_rect.w - icon_size - 12,
         )
@@ -388,7 +383,7 @@ class BuildingInfoPanel(Panel):
             icon_x = btn_rect.x + 4
             icon_y = btn_rect.centery - icon_size // 2
             surface.blit(icon_surf, (icon_x, icon_y))
-            label = item.resource.name.replace("_", " ").title()
+            label = resource_name(item.resource.name)
             surf = render_text_clipped(
                 Fonts.small(), label, UI_TEXT, btn_rect.w - icon_size - 12,
             )
@@ -417,7 +412,7 @@ class BuildingInfoPanel(Panel):
             icon_x = btn_rect.x + 4
             icon_y = btn_rect.centery - icon_size // 2
             surface.blit(icon_surf, (icon_x, icon_y))
-            label = item.resource.name.replace("_", " ").title()
+            label = resource_name(item.resource.name)
             surf = render_text_clipped(
                 Fonts.small(), label, UI_TEXT, btn_rect.w - icon_size - 12,
             )
@@ -428,7 +423,7 @@ class BuildingInfoPanel(Panel):
             icon_x = btn_rect.x + 4
             icon_y = btn_rect.centery - icon_size // 2
             surface.blit(icon_surf, (icon_x, icon_y))
-            label = "Stone (default)"
+            label = INFO_STONE_DEFAULT
             surf = render_text_clipped(
                 Fonts.small(), label, UI_TEXT, btn_rect.w - icon_size - 12,
             )
@@ -459,7 +454,7 @@ class BuildingInfoPanel(Panel):
         )
         pygame.draw.rect(surface, UI_ACCENT, btn_rect, border_radius=4)
         pygame.draw.rect(surface, UI_BORDER, btn_rect, width=2, border_radius=4)
-        surf = Fonts.body().render("\u2261 Open Tech Tree", True, UI_TEXT)
+        surf = Fonts.body().render(INFO_OPEN_TECH_TREE, True, UI_TEXT)
         surface.blit(surf, (
             btn_rect.centerx - surf.get_width() // 2,
             btn_rect.centery - surf.get_height() // 2,
@@ -496,7 +491,7 @@ class BuildingInfoPanel(Panel):
             items.append(_Line(text, color, font, h))
 
         # Title
-        label = _BUILDING_LABEL.get(b.type, b.type.name.title())
+        label = building_label(b.type.name)
         items.append(_Line(label, UI_ACCENT, Fonts.title(), 34))
         items.append(_Spacer(4))
 
@@ -557,21 +552,21 @@ class BuildingInfoPanel(Panel):
                 # Inputs section — always show every required ingredient
                 # so the player can see a 0/N slot before logistics
                 # delivers any.
-                line("Inputs:", UI_MUTED, Fonts.small())
+                line(INFO_INPUTS_HEADER, UI_MUTED, Fonts.small())
                 for res, req_amt in mrec.inputs.items():
                     have = int(b.storage.get(res, 0.0))
                     cap = req_amt * 2
                     items.append(_IconLine(
                         res,
-                        f"{res.name.replace('_', ' ').capitalize()}: {have}/{cap}",
+                        f"{resource_name(res.name)}: {have}/{cap}",
                         RESOURCE_COLORS[res],
                     ))
                 # Outputs section — what this station produces.
-                line("Outputs:", UI_MUTED, Fonts.small())
+                line(INFO_OUTPUTS_HEADER, UI_MUTED, Fonts.small())
                 out_have = int(b.storage.get(output_res, 0.0))
                 items.append(_IconLine(
                     output_res,
-                    f"{output_res.name.replace('_', ' ').capitalize()}: {out_have}",
+                    f"{resource_name(output_res.name)}: {out_have}",
                     RESOURCE_COLORS[output_res],
                 ))
                 # Any other stored resources (legacy buffer, etc.).
@@ -580,11 +575,11 @@ class BuildingInfoPanel(Panel):
                     if a > 0 and r not in input_set and r != output_res
                 ]
                 if others:
-                    line("Other:", UI_MUTED, Fonts.small())
+                    line(INFO_OTHER_HEADER, UI_MUTED, Fonts.small())
                     for res, amount in others:
                         items.append(_IconLine(
                             res,
-                            f"{res.name.replace('_', ' ').capitalize()}: {int(amount)}",
+                            f"{resource_name(res.name)}: {int(amount)}",
                             RESOURCE_COLORS[res],
                         ))
             else:
@@ -619,12 +614,12 @@ class BuildingInfoPanel(Panel):
                             )
 
                 if input_rows:
-                    line("Inputs:", UI_MUTED, Fonts.small())
+                    line(INFO_INPUTS_HEADER, UI_MUTED, Fonts.small())
                     input_set = {r for r, _, _ in input_rows}
                     for res, have, cap in input_rows:
                         items.append(_IconLine(
                             res,
-                            f"{res.name.replace('_',' ').capitalize()}: "
+                            f"{resource_name(res.name)}: "
                             f"{int(have)}/{int(cap)}",
                             RESOURCE_COLORS[res],
                         ))
@@ -633,11 +628,11 @@ class BuildingInfoPanel(Panel):
                         if a > 0 and r not in input_set
                     ]
                     if other_lines:
-                        line("Other:", UI_MUTED, Fonts.small())
+                        line(INFO_OTHER_HEADER, UI_MUTED, Fonts.small())
                         for res, amount in other_lines:
                             items.append(_IconLine(
                                 res,
-                                f"{res.name.replace('_',' ').capitalize()}: "
+                                f"{resource_name(res.name)}: "
                                 f"{int(amount)}",
                                 RESOURCE_COLORS[res],
                             ))
@@ -646,7 +641,7 @@ class BuildingInfoPanel(Panel):
                         if amount > 0:
                             items.append(_IconLine(
                                 res,
-                                f"{res.name.replace('_', ' ').capitalize()}: "
+                                f"{resource_name(res.name)}: "
                                 f"{int(amount)}",
                                 RESOURCE_COLORS[res],
                             ))
@@ -663,7 +658,7 @@ class BuildingInfoPanel(Panel):
             items.append(_Spacer())
             current = b.stored_resource
             line(
-                f"Stores: {current.name.replace('_',' ').title() if current else '(none selected)'}",
+                f"Stores: {resource_name(current.name) if current else '(none selected)'}",
                 UI_ACCENT if current else UI_MUTED,
             )
             items.append(_Spacer(2))
@@ -684,7 +679,7 @@ class BuildingInfoPanel(Panel):
         if b.type == BuildingType.GATHERER:
             items.append(_Spacer())
             current = b.gatherer_output
-            label = current.name.replace('_', ' ').title() if current else 'Food'
+            label = resource_name(current.name) if current else resource_name('FOOD')
             line(f"Gathers: {label}", UI_ACCENT)
             items.append(_Spacer(2))
             for res in [Resource.FOOD, Resource.FIBER]:
@@ -698,9 +693,9 @@ class BuildingInfoPanel(Panel):
             items.append(_Spacer())
             current = b.quarry_output
             if current is None:
-                label = "Stone"
+                label = resource_name('STONE')
             else:
-                label = current.name.replace("_", " ").title()
+                label = resource_name(current.name)
             line(f"Mining: {label}", UI_ACCENT)
             items.append(_Spacer(2))
             items.append(_QuarryOutputBtn(
@@ -725,8 +720,8 @@ class BuildingInfoPanel(Panel):
             # Active recipe + progress + cost breakdown.
             if b.recipe is not None:
                 if isinstance(b.recipe, BuildingType):
-                    recipe_name = b.recipe.name.replace("_", " ").title()
-                    line(f"Crafting: {recipe_name}", UI_ACCENT)
+                    recipe_label = building_label(b.recipe.name)
+                    line(f"Crafting: {recipe_label}", UI_ACCENT)
                     pct = int(
                         b.craft_progress / params.WORKSHOP_CRAFT_TIME * 100
                     )
@@ -740,7 +735,7 @@ class BuildingInfoPanel(Panel):
                     # Material recipe — b.recipe is a Resource.
                     mrec = MATERIAL_RECIPES.get(b.recipe)
                     if mrec is not None:
-                        name = b.recipe.name.replace("_", " ").title()
+                        name = resource_name(b.recipe.name)
                         line(f"Crafting: {name} \u00d7{mrec.output_amount}",
                              UI_ACCENT)
                         pct = int(b.craft_progress / mrec.time * 100)
@@ -750,18 +745,18 @@ class BuildingInfoPanel(Panel):
                             col = RESOURCE_COLORS[res] if has else UI_BAD
                             items.append(_IconLine(res, f"{amount}", col))
             else:
-                line("Select recipe:", UI_MUTED)
+                line(INFO_SELECT_RECIPE, UI_MUTED)
 
             items.append(_Spacer(4))
 
             # Dropdown header for recipe selection.
             if b.recipe is not None:
                 if isinstance(b.recipe, BuildingType):
-                    dd_label = b.recipe.name.replace("_", " ").title()
+                    dd_label = building_label(b.recipe.name)
                 else:
-                    dd_label = b.recipe.name.replace("_", " ").title()
+                    dd_label = resource_name(b.recipe.name)
             else:
-                dd_label = "Select recipe..."
+                dd_label = INFO_SELECT_RECIPE_DD
             arrow = "\u25bc" if self._recipe_dropdown_open else "\u25b6"
             items.append(_RecipeDropdownHeader(
                 label=f"{arrow} {dd_label}",
@@ -803,7 +798,7 @@ class BuildingInfoPanel(Panel):
                     ]
                 if station_recipes:
                     items.append(_Spacer(2))
-                    line("Materials:", UI_MUTED, Fonts.small())
+                    line(INFO_MATERIALS_HEADER, UI_MUTED, Fonts.small())
                     for mrec in station_recipes:
                         items.append(_MaterialRecipeBtn(
                             mrec, selected=(b.recipe == mrec.output),
@@ -831,7 +826,7 @@ class BuildingInfoPanel(Panel):
             line(wl, UI_MUTED, Fonts.small())
         if info.unlocks_buildings:
             names = ", ".join(
-                bt.name.replace("_", " ").title()
+                building_label(bt.name)
                 for bt in info.unlocks_buildings
             )
             for wl in wrap_text(Fonts.small(), f"Unlocked: {names}", inner_w):
@@ -850,7 +845,7 @@ class BuildingInfoPanel(Panel):
                      col, Fonts.small())
             if nxt.unlocks_buildings:
                 names = ", ".join(
-                    bt.name.replace("_", " ").title()
+                    building_label(bt.name)
                     for bt in nxt.unlocks_buildings
                 )
                 for wl in wrap_text(
@@ -858,7 +853,7 @@ class BuildingInfoPanel(Panel):
                 ):
                     line(wl, UI_MUTED, Fonts.small())
         else:
-            line("(Max tier reached)", UI_MUTED, Fonts.small())
+            line(INFO_MAX_TIER, UI_MUTED, Fonts.small())
 
     # ── Events ───────────────────────────────────────────────────
 

@@ -24,6 +24,16 @@ from compprog_pygame.games.hex_colony.ui import (
     draw_button,
     draw_titled_panel,
 )
+from compprog_pygame.games.hex_colony.strings import (
+    PAUSE_TITLE,
+    PAUSE_BUTTONS,
+    OPTIONS_TITLE,
+    OPTIONS_GRAPHICS,
+    OPTIONS_MUSIC,
+    OPTIONS_SFX,
+    OPTIONS_BACK,
+    QUALITY_DESCRIPTIONS,
+)
 
 if TYPE_CHECKING:
     from compprog_pygame.games.hex_colony.world import World
@@ -33,13 +43,9 @@ _BUTTON_W = 280
 _BUTTON_H = 48
 _BUTTON_GAP = 12
 
-_PAUSE_LABELS = ["Resume", "Options", "Return to Main Menu", "Quit"]
+_PAUSE_LABELS = PAUSE_BUTTONS
 _QUALITY_CYCLE = {"high": "medium", "medium": "low", "low": "high"}
-_QUALITY_DESC = {
-    "high": "Full gradients, overlays, and contours",
-    "medium": "Blended colors, overlays, no triangle gradients",
-    "low": "Flat tile colors and buildings only",
-}
+_QUALITY_DESC = QUALITY_DESCRIPTIONS
 
 
 @dataclass
@@ -100,7 +106,7 @@ class PauseOverlay(Panel):
         px = (sw - pw) // 2
         py = (sh - ph) // 2
         panel_rect = pygame.Rect(px, py, pw, ph)
-        content_y = draw_titled_panel(surface, panel_rect, "Paused")
+        content_y = draw_titled_panel(surface, panel_rect, PAUSE_TITLE)
 
         self._targets = []
         by = content_y
@@ -122,7 +128,7 @@ class PauseOverlay(Panel):
         px = (sw - pw) // 2
         py = (sh - ph) // 2
         panel_rect = pygame.Rect(px, py, pw, ph)
-        content_y = draw_titled_panel(surface, panel_rect, "Options")
+        content_y = draw_titled_panel(surface, panel_rect, OPTIONS_TITLE)
 
         self._targets = []
         inner_x = px + 24
@@ -132,7 +138,7 @@ class PauseOverlay(Panel):
 
         # Graphics quality row
         sy = content_y + 6
-        label_surf = font_label.render("Graphics Quality", True, UI_TEXT)
+        label_surf = font_label.render(OPTIONS_GRAPHICS, True, UI_TEXT)
         surface.blit(label_surf, (inner_x, sy))
 
         btn_w = 130
@@ -153,8 +159,8 @@ class PauseOverlay(Panel):
         # Placeholder rows
         sy += 80
         placeholders = [
-            ("Music Volume", "\u2014"),
-            ("Sound Effects", "\u2014"),
+            (OPTIONS_MUSIC, "\u2014"),
+            (OPTIONS_SFX, "\u2014"),
         ]
         for text, value in placeholders:
             lbl = font_label.render(text, True, UI_TEXT)
@@ -170,7 +176,7 @@ class PauseOverlay(Panel):
             back_w, _BUTTON_H,
         )
         is_hov = self._hovered == 1
-        draw_button(surface, back, "Back", state="hover" if is_hov else "normal")
+        draw_button(surface, back, OPTIONS_BACK, state="hover" if is_hov else "normal")
         self._targets.append(_ClickTarget(back, "options:back"))
 
     def handle_event(self, event: pygame.event.Event) -> bool:

@@ -45,6 +45,21 @@ from compprog_pygame.games.hex_colony.ui_tier_popup import TierPopup
 from compprog_pygame.games.hex_colony.ui_info_guide import InfoGuideOverlay
 from compprog_pygame.games.hex_colony.ui_tutorial import TutorialPanel
 from compprog_pygame.games.hex_colony import params
+from compprog_pygame.games.hex_colony.strings import (
+    building_label,
+    NOTIF_RESEARCH_COMPLETE,
+    NOTIF_GOD_MODE_ON,
+    NOTIF_GOD_MODE_OFF,
+    NOTIF_REQUIRES_RESEARCH,
+    NOTIF_REQUIRES_TIER,
+    NOTIF_BUILT,
+    NOTIF_BUILT_PATH,
+    TAB_WORKERS,
+    TAB_DEMAND,
+    TAB_SUPPLY,
+    TAB_STATS,
+    TAB_INFO,
+)
 
 # Build-mode palette order
 BUILDABLE = [
@@ -136,27 +151,27 @@ class Game:
         self._worker_priority_tab = WorkerPriorityTabContent()
         self._worker_priority_tab.on_open_edit = self._on_open_worker_priority
         self._worker_priority_tab.on_toggle_auto = self._on_toggle_worker_auto
-        self._bottom_bar.add_tab("Workers", self._worker_priority_tab)
+        self._bottom_bar.add_tab(TAB_WORKERS, self._worker_priority_tab)
 
         # Demand-priority tab (opens its own drag-and-drop overlay).
         self._demand_priority_tab = DemandPriorityTabContent()
         self._demand_priority_tab.on_open_edit = self._on_open_demand_priority
         self._demand_priority_tab.on_toggle_auto = self._on_toggle_demand_auto
-        self._bottom_bar.add_tab("Demand", self._demand_priority_tab)
+        self._bottom_bar.add_tab(TAB_DEMAND, self._demand_priority_tab)
 
         # Supply-priority tab (mirrors the demand one).
         self._supply_priority_tab = SupplyPriorityTabContent()
         self._supply_priority_tab.on_open_edit = self._on_open_supply_priority
         self._supply_priority_tab.on_toggle_auto = self._on_toggle_supply_auto
-        self._bottom_bar.add_tab("Supply", self._supply_priority_tab)
+        self._bottom_bar.add_tab(TAB_SUPPLY, self._supply_priority_tab)
 
         # Add Stats tab to bottom bar
         self._stats_tab = StatsTabContent()
-        self._bottom_bar.add_tab("Stats", self._stats_tab)
+        self._bottom_bar.add_tab(TAB_STATS, self._stats_tab)
 
         # Info tab goes last.
         from compprog_pygame.games.hex_colony.ui_bottom_bar import InfoTabContent
-        self._bottom_bar.add_tab("Info", InfoTabContent())
+        self._bottom_bar.add_tab(TAB_INFO, InfoTabContent())
 
         # Wire building tab -> build mode
         buildings_tab = self._bottom_bar.buildings_tab
@@ -232,7 +247,7 @@ class Game:
                     from compprog_pygame.games.hex_colony.tech_tree import TECH_NODES
                     node = TECH_NODES[completed]
                     self.notifications.push(
-                        f"Research complete: {node.name}", (100, 255, 100),
+                        NOTIF_RESEARCH_COMPLETE.format(name=node.name), (100, 255, 100),
                     )
                 # Expose research count for tier checks
                 self.world._tech_research_count = self.tech_tree.researched_count
@@ -334,7 +349,7 @@ class Game:
             elif event.key == pygame.K_F1:
                 # Toggle god mode at runtime
                 self.god_mode = not self.god_mode
-                msg = "God mode ON" if self.god_mode else "God mode OFF"
+                msg = NOTIF_GOD_MODE_ON if self.god_mode else NOTIF_GOD_MODE_OFF
                 col = (255, 215, 0) if self.god_mode else (200, 200, 200)
                 self.notifications.push(msg, col)
 
@@ -469,7 +484,7 @@ class Game:
             if req is not None and not silent:
                 node = TECH_NODES[req]
                 self.notifications.push(
-                    f"Requires {node.name} research", (255, 150, 80),
+                    NOTIF_REQUIRES_RESEARCH.format(name=node.name), (255, 150, 80),
                 )
             return False
         # Tier gate (bypassed in god mode)
@@ -479,7 +494,7 @@ class Game:
             tier_info = TIERS[req_tier]
             if not silent:
                 self.notifications.push(
-                    f"Requires Tier {req_tier}: {tier_info.name}", (255, 150, 80),
+                    NOTIF_REQUIRES_TIER.format(level=req_tier, name=tier_info.name), (255, 150, 80),
                 )
             return False
         # Check existing building
@@ -518,7 +533,7 @@ class Game:
             self.blueprints.record_building(coord, self.build_mode)
         # Notification
         if not silent:
-            self.notifications.push(f"Built {self.build_mode.name.replace('_', ' ').title()}")
+            self.notifications.push(NOTIF_BUILT.format(name=building_label(self.build_mode.name)))
         self.world.mark_housing_dirty()
         return True
 
@@ -624,7 +639,7 @@ class Game:
 
         if placed > 0:
             label = "tile" if placed == 1 else "tiles"
-            self.notifications.push(f"Built {placed} {label}")
+            self.notifications.push(NOTIF_BUILT_PATH.format(count=placed, label=label))
         # Exit path placement mode after placing.
         self._path_anchor = None
         self.renderer.path_preview = []

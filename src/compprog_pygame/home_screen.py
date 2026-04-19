@@ -9,6 +9,11 @@ from __future__ import annotations
 import pygame
 
 from compprog_pygame.game_registry import GameInfo, all_games
+from compprog_pygame.games.hex_colony.strings import (
+    HOME_TITLE,
+    HOME_HINT,
+    HOME_NO_GAMES,
+)
 
 # Colours
 BACKGROUND = (9, 12, 25)
@@ -104,7 +109,7 @@ class HomeScreen:
         surface.fill(BACKGROUND)
 
         # Title
-        title = self.title_font.render("Select a Game", True, TITLE_COLOR)
+        title = self.title_font.render(HOME_TITLE, True, TITLE_COLOR)
         surface.blit(title, ((self.width - title.get_width()) // 2, 40))
 
         mouse_pos = pygame.mouse.get_pos()
@@ -137,8 +142,8 @@ class HomeScreen:
 
         # Hint at bottom
         if self.games:
-            hint = self.hint_font.render("Click a game to play  \u2022  ESC to quit", True, MUTED_TEXT)
+            hint = self.hint_font.render(HOME_HINT, True, MUTED_TEXT)
             surface.blit(hint, ((self.width - hint.get_width()) // 2, self.height - 40))
         else:
-            hint = self.hint_font.render("No games registered yet!", True, MUTED_TEXT)
+            hint = self.hint_font.render(HOME_NO_GAMES, True, MUTED_TEXT)
             surface.blit(hint, ((self.width - hint.get_width()) // 2, self.height // 2))

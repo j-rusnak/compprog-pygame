@@ -15,6 +15,11 @@ from compprog_pygame.games.hex_colony.ui import (
     UI_TEXT,
     draw_titled_panel,
 )
+from compprog_pygame.games.hex_colony.strings import (
+    HELP_TITLE,
+    HELP_DISMISS,
+    HELP_BINDINGS,
+)
 
 if TYPE_CHECKING:
     from compprog_pygame.games.hex_colony.world import World
@@ -24,21 +29,7 @@ _PANEL_W = 440
 _LINE_H = 28
 _MARGIN_X = 24
 
-_HELP_LINES: list[tuple[str, str]] = [
-    ("WASD / Arrows", "Pan camera"),
-    ("Scroll wheel", "Zoom in / out"),
-    ("Left click", "Select tile / place building"),
-    ("Right click", "Cancel build / deselect / pan"),
-    ("Middle click", "Pan camera"),
-    ("B", "Cycle build mode"),
-    ("X", "Toggle delete mode"),
-    ("H", "Toggle this help overlay"),
-    ("I", "Toggle game guide"),
-    ("1 / 2 / 3", "Set game speed"),
-    ("Tab", "Toggle sandbox mode"),
-    ("Alt (hold)", "Show resource overlay"),
-    ("Escape", "Pause menu"),
-]
+_HELP_LINES = HELP_BINDINGS
 
 
 class HelpOverlay(Panel):
@@ -69,7 +60,7 @@ class HelpOverlay(Panel):
         px = (sw - pw) // 2
         py = (sh - ph) // 2
         panel = pygame.Rect(px, py, pw, ph)
-        content_y = draw_titled_panel(surface, panel, "Controls")
+        content_y = draw_titled_panel(surface, panel, HELP_TITLE)
 
         # Compute the widest key so the column line aligns.
         key_font = Fonts.label()
@@ -90,7 +81,7 @@ class HelpOverlay(Panel):
             surface.blit(desc_surf, (divider_x, y + 2))
             y += _LINE_H
 
-        hint = desc_font.render("Press H or ESC to close", True, UI_MUTED)
+        hint = desc_font.render(HELP_DISMISS, True, UI_MUTED)
         surface.blit(hint, (
             px + (pw - hint.get_width()) // 2,
             py + ph - hint.get_height() - 14,
