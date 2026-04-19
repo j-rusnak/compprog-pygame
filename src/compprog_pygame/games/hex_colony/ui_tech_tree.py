@@ -192,7 +192,22 @@ class TechTreeOverlay(Panel):
                 status = "Available"
             else:
                 bg_col = _COL_LOCKED
-                status = "Locked"
+                # When a node has multiple prerequisites and only some
+                # are met, surface which ones are still missing so the
+                # player can see at a glance why they can't research it
+                # yet (rather than guessing from the connecting lines).
+                missing = [
+                    p for p in node.prerequisites
+                    if p not in tt.researched
+                ]
+                if 0 < len(missing) < len(node.prerequisites):
+                    miss_names = ", ".join(
+                        TECH_NODES[m].name for m in missing
+                        if m in TECH_NODES
+                    )
+                    status = f"Locked: needs {miss_names}"
+                else:
+                    status = "Locked"
 
             pygame.draw.rect(surface, bg_col, node_rect, border_radius=6)
             pygame.draw.rect(

@@ -34,6 +34,7 @@ class TechNode:
     time: float  # seconds to research
     prerequisites: list[str]
     unlocks: list[BuildingType]
+    unlock_resources: list[Resource]
     position: tuple[int, int]  # grid (col, row) for visual layout
 
 
@@ -42,6 +43,9 @@ def _build_tech_nodes() -> dict[str, TechNode]:
     for key, data in params.TECH_TREE_DATA.items():
         cost = {Resource[k]: v for k, v in data["cost"].items()}
         unlocks = [BuildingType[b] for b in data.get("unlocks", [])]
+        unlock_resources = [
+            Resource[r] for r in data.get("unlock_resources", [])
+        ]
         nodes[key] = TechNode(
             key=key,
             name=data["name"],
@@ -50,6 +54,7 @@ def _build_tech_nodes() -> dict[str, TechNode]:
             time=data["time"],
             prerequisites=list(data.get("prerequisites", [])),
             unlocks=unlocks,
+            unlock_resources=unlock_resources,
             position=tuple(data.get("position", (0, 0))),
         )
     return nodes
@@ -62,6 +67,14 @@ TECH_REQUIREMENTS: dict[BuildingType, str] = {}
 for _key, _node in TECH_NODES.items():
     for _bt in _node.unlocks:
         TECH_REQUIREMENTS[_bt] = _key
+
+# Reverse lookup: which tech key unlocks a specific recipe/resource?
+# Resources NOT in this map are unconditionally available (subject to
+# their producing station being available).
+RESOURCE_TECH_REQUIREMENTS: dict[Resource, str] = {}
+for _key, _node in TECH_NODES.items():
+    for _res in _node.unlock_resources:
+        RESOURCE_TECH_REQUIREMENTS[_res] = _key
 
 
 class TechTree:
@@ -103,7 +116,13 @@ class TechTree:
         and consumed resources under :attr:`_saved` so it can be
         resumed later.  If *key* was previously paused, its saved
         state is restored.
+
+        No-op if *key* is unknown, already researched, or its
+        prerequisites aren't all met (defensive guard against any
+        caller that forgets to check :meth:`can_research` first).
         """
+        if not self.can_research(key):
+            return
         # Save the currently active node's state (if any).
         if (self.current_research is not None
                 and self.current_research != key):
@@ -200,7 +219,17 @@ class TechTree:
             took = 0.0
             # Prefer pulling from any Research Center's on-site
             # storage first (logistics fills it up like a workshop).
-            for rc in rc_list:
+            # Drain the RC with the most of this resource first so
+            # multiple centers stay balanced \u2014 otherwise the same
+            # rc_list[0] would always be drained, leaving others
+            # over-stocked and dropping their demand to zero, which
+            # halts deliveries to all centers.
+            rc_sorted = sorted(
+                rc_list,
+                key=lambda rc: rc.storage.get(res, 0.0),
+                reverse=True,
+            )
+            for rc in rc_sorted:
                 if took >= need_now:
                     break
                 have_here = rc.storage.get(res, 0.0)
@@ -410,11 +439,18 @@ def is_resource_available(
     tech_tree: "TechTree | None",
     tier_tracker: "TierTracker | None",
 ) -> bool:
-    """True iff the resource is raw OR its producing station is available."""
+    """True iff the resource is reachable: any tech-tree gate is
+    satisfied AND its producing station is available."""
     from compprog_pygame.games.hex_colony.resources import (
         MATERIAL_RECIPES,
         RAW_RESOURCES,
     )
+    # Direct recipe gate: a tech may unlock a specific resource even
+    # when its producing station has been available since tier 0.
+    req_key = RESOURCE_TECH_REQUIREMENTS.get(res)
+    if req_key is not None:
+        if tech_tree is None or req_key not in tech_tree.researched:
+            return False
     if res in RAW_RESOURCES:
         return True
     recipe = MATERIAL_RECIPES.get(res)

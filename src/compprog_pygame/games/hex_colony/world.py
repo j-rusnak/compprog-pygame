@@ -98,9 +98,37 @@ class World:
         # resources that pass through the global pool.
         self._total_produced: dict[Resource, float] = {r: 0.0 for r in Resource}
         self._housing_dirty: bool = True  # needs recalc on first frame
+        # Networks only need rebuilding when buildings are added,
+        # removed, or destroyed — population shifts alone don't change
+        # the building-graph topology.  Default True so the first frame
+        # always builds them.
+        self._networks_dirty: bool = True
+        # Monotonically increasing counter that ticks every time the
+        # building topology changes (placement / deletion).  Used by
+        # the UI / renderer to invalidate per-route BFS caches without
+        # re-running the search every frame.
+        self._topology_version: int = 0
+        # Round-robin offset for throttling ``_logistics_find_job`` —
+        # only a small slice of idle logistics workers re-scan the
+        # network each frame so 50+ haulers don't all run the
+        # O(buildings²) supplier/demand scan in the same tick.
+        self._logistics_search_cursor: int = 0
+        # Tracks the simulation time at which a delivery was last
+        # *assigned* to each ``(id(building), resource)`` consumer
+        # pair.  Used by ``_logistics_find_job`` to bias scoring
+        # toward the longest-starved consumer in the active demand
+        # tier so that one popular building does not monopolise the
+        # haulers while siblings in the same tier wait indefinitely.
+        self._demand_last_served: dict[tuple[int, object], float] = {}
+        # Per-update BFS path cache.  Keys are ``(start, end)`` hex
+        # coordinate pairs; values are the cached path (a fresh copy
+        # is returned to callers so they can mutate it freely).
+        # Cleared at the top of every ``update()``.
+        self._path_cache: dict[tuple[HexCoord, HexCoord], list[HexCoord]] = {}
         # Per-building-network worker priority lists.  ``networks`` is
-        # rebuilt each frame; each Network keeps its own tier list so
-        # the player can edit them independently in the UI.
+        # rebuilt only when ``_networks_dirty`` is set; each Network
+        # keeps its own tier list so the player can edit them
+        # independently in the UI.
         self.networks: list[Network] = []
         self._next_network_id: int = 1
         # Per-frame caches rebuilt by ``_rebuild_networks``.  Used by
@@ -156,10 +184,22 @@ class World:
     # ── Generation ───────────────────────────────────────────────
 
     @classmethod
-    def generate(cls, settings: HexColonySettings, seed: str = "default") -> World:
+    def generate(
+        cls, settings: HexColonySettings, seed: str = "default",
+        progress_callback=None,
+    ) -> World:
+        """Build a fully-populated world.
+
+        *progress_callback*, if provided, is invoked as
+        ``cb(fraction, label)`` with ``fraction`` in [0.0, 1.0] as
+        terrain generation makes progress.  Safe to call from a
+        background thread.
+        """
         world = cls(settings)
         world.seed = seed
-        world.grid, ai_camp_coords = generate_terrain(seed, settings)
+        world.grid, ai_camp_coords = generate_terrain(
+            seed, settings, progress_callback=progress_callback,
+        )
         world._place_starting_camp()
         world._place_ai_tribal_camps(ai_camp_coords)
         world._init_resources()
@@ -257,17 +297,28 @@ class World:
     def update(self, dt: float) -> None:
         """Advance the simulation by *dt* seconds."""
         self.time_elapsed += dt
+        # Clear the per-update BFS path cache.  Building topology
+        # cannot change mid-update, so any path computed during this
+        # tick can be safely shared between callers.
+        self._path_cache.clear()
 
         # Recompute connected housing only when buildings/population changed
         if self._housing_dirty:
             self._update_housing()
             self._housing_dirty = False
 
-        # Keep networks and worker-priority lists in sync with placed
-        # buildings, assign targets, and dispatch commuters.  The
-        # building.workers count is rebuilt from people actually present
-        # at the end so production naturally gates on arrival.
-        self._rebuild_networks()
+        # Networks track the building-graph topology.  Only rebuild
+        # when buildings have actually been placed/removed — the
+        # full BFS+merge pass is expensive once there are many
+        # buildings.
+        if self._networks_dirty:
+            self._rebuild_networks()
+            self._networks_dirty = False
+        # ``_populated_net_ids`` depends on people's home assignments
+        # (which can shift between rebuilds), so refresh it every
+        # frame — this is a cheap O(people) pass.
+        self._refresh_populated_net_ids()
+
         self._assign_workers()
         self._dispatch_commuters()
 
@@ -293,8 +344,32 @@ class World:
         self._check_unreachable_buildings()
 
     def mark_housing_dirty(self) -> None:
-        """Flag that housing assignments need recalculation."""
+        """Flag that housing assignments need recalculation.
+
+        Building placements / removals always change both housing
+        connectivity and the network graph, so this also flags
+        networks for a rebuild on the next ``update()``.
+        """
         self._housing_dirty = True
+        self._networks_dirty = True
+        self._topology_version += 1
+
+    def mark_networks_dirty(self) -> None:
+        """Flag that the network/component graph needs rebuilding."""
+        self._networks_dirty = True
+        self._topology_version += 1
+
+    def _refresh_populated_net_ids(self) -> None:
+        """Recompute the set of network ids that house at least one
+        person.  Cheap O(people) pass run every frame so the dependent
+        unreachable-building checks see up-to-date data even when
+        ``_rebuild_networks`` was skipped."""
+        self._populated_net_ids = {
+            net.id
+            for p in self.population.people
+            if p.home is not None
+            and (net := self._bid_to_network.get(id(p.home))) is not None
+        }
 
     # ── Networks ─────────────────────────────────────────────────
 
@@ -602,9 +677,11 @@ class World:
     def _auto_supply_tiers(
         self, members: list[Building],
     ) -> list[list[Building]]:
-        """Default split: producers / crafters on tier 0, storage /
-        camp on tier 1.  Roads / bridges / walls (which have no supply)
-        and pure dwellings are skipped."""
+        """Default split: storage / camp on tier 0 (drained first so
+        the network's buffer is consumed before producers' on-site
+        stockpile), all other supply-capable buildings on tier 1.
+        Roads / bridges / walls (no supply) and pure dwellings are
+        skipped."""
         skip = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL,
                 BuildingType.HOUSE, BuildingType.HABITAT}
         tier0: list[Building] = []
@@ -613,9 +690,9 @@ class World:
             if b.type in skip:
                 continue
             if b.type in (BuildingType.STORAGE, BuildingType.CAMP):
-                tier1.append(b)
-            else:
                 tier0.append(b)
+            else:
+                tier1.append(b)
         result: list[list[Building]] = []
         if tier0:
             result.append(tier0)
@@ -1034,7 +1111,10 @@ class World:
         # Research center: demands the outstanding cost of the
         # currently-active research, capped per-resource at 2x the
         # remaining requirement so logistics keeps it fed without
-        # over-stuffing.
+        # over-stuffing.  Each RC demands the full remaining amount
+        # independently — logistics + the round-robin consumption in
+        # TechTree.tick() naturally distribute the load across
+        # multiple research centers.
         if b.type == BuildingType.RESEARCH_CENTER:
             tt = self.tech_tree
             if tt is not None and getattr(tt, "current_research", None):
@@ -1046,18 +1126,9 @@ class World:
                         remaining = max(0.0, total_amt - already)
                         if remaining <= 0:
                             continue
-                        target = min(remaining, total_amt) * 2
-                        # Spread across all research centers — each
-                        # building only requests its share so multiple
-                        # centers don't all hoard the full amount.
-                        rc_count = max(1, len(
-                            self.buildings.by_type(
-                                BuildingType.RESEARCH_CENTER,
-                            )
-                        ))
-                        per_building = target / rc_count
+                        target = remaining * 2
                         have = b.storage.get(res, 0.0)
-                        need = max(0.0, per_building - have)
+                        need = max(0.0, target - have)
                         if need > 0.5:
                             out[res] = need
         return out
@@ -1185,11 +1256,39 @@ class World:
                                path to dst (task LOGISTICS_DELIVER).
             LOGISTICS_DELIVER → on arrival at dst, deposit cargo, then
                                 return to LOGISTICS_IDLE.
+
+        Job-finding (the expensive O(buildings²) scan) is throttled to
+        ``params.LOGISTICS_JOBS_PER_FRAME`` idle workers per frame in
+        round-robin order — when 50+ haulers all go idle on the same
+        tick this prevents a multi-second stall.  Active workers
+        (PICKUP / DELIVER) are still ticked unconditionally.
         """
-        for p in self.population.people:
+        idle_indices: list[int] = []
+        for i, p in enumerate(self.population.people):
             if not p.is_logistics:
                 continue
+            if p.task == Task.LOGISTICS_IDLE or p.task == Task.IDLE:
+                idle_indices.append(i)
+            else:
+                self._logistics_tick(p)
+
+        if not idle_indices:
+            self._logistics_search_cursor = 0
+            return
+
+        budget = max(1, params.LOGISTICS_JOBS_PER_FRAME)
+        n = len(idle_indices)
+        # Process up to `budget` idle workers starting from the
+        # round-robin cursor so every worker eventually gets a turn.
+        start = self._logistics_search_cursor % n
+        processed = 0
+        i = start
+        while processed < budget and processed < n:
+            p = self.population.people[idle_indices[i]]
             self._logistics_tick(p)
+            processed += 1
+            i = (i + 1) % n
+        self._logistics_search_cursor = (start + processed) % n
 
     def _logistics_tick(self, p) -> None:
         # Arrival is detected by "has logistics state, path empty, and
@@ -1544,6 +1643,14 @@ class World:
         best_score = -1e9
         best_src = best_dst = None
         best_res = None
+        # Fairness term: a consumer that hasn't received a delivery
+        # for ``FAIR_FULL_BONUS_AFTER`` seconds gets the full bonus,
+        # ramping up linearly from zero.  This breaks ties between
+        # equally-attractive demands and prevents one building in a
+        # demand tier from monopolising the haulers.
+        FAIR_FULL_BONUS_AFTER = 30.0
+        FAIR_BONUS_WEIGHT = 0.6
+        now = self.time_elapsed
         for sb, sres, samt, sfill in supplies:
             # Effective supply after subtracting claimed reservations.
             eff_samt = samt - claimed_supply.get((id(sb), sres), 0.0)
@@ -1572,10 +1679,21 @@ class World:
                 if qty <= 0:
                     continue
                 magnitude = min(1.0, qty / carry_cap)
+                last_served = self._demand_last_served.get(
+                    (id(db), dres), -1e9,
+                )
+                wait = now - last_served
+                if wait <= 0:
+                    fairness = 0.0
+                elif wait >= FAIR_FULL_BONUS_AFTER:
+                    fairness = FAIR_BONUS_WEIGHT
+                else:
+                    fairness = (wait / FAIR_FULL_BONUS_AFTER) * FAIR_BONUS_WEIGHT
                 score = (
                     urgency * 1.0
                     + link_bonus
                     + magnitude * 0.3
+                    + fairness
                 )
                 if score > best_score:
                     best_score = score
@@ -1593,6 +1711,9 @@ class World:
         p.logistics_res = best_res
         p.path = path
         p.task = Task.LOGISTICS_PICKUP
+        # Record the assignment so siblings in the same demand tier
+        # are preferred next time a hauler is dispatched.
+        self._demand_last_served[(id(best_dst), best_res)] = now
 
     def _check_unreachable_buildings(self) -> None:
         """Push a one-time notification for every worker-building that
@@ -1820,24 +1941,53 @@ class World:
         The start hex does not need a building (the person may be at a
         cleared tile).  All intermediate and destination hexes must have
         a building.
+
+        Results are memoised in ``_path_cache`` for the duration of the
+        current ``update()`` call so multiple commuters / logistics
+        workers requesting the same route only pay one BFS.
         """
         if start == end:
             return []
+        cache_key = (start, end)
+        cached = self._path_cache.get(cache_key)
+        if cached is not None:
+            # Return a copy so the caller can mutate it freely.
+            return list(cached)
+        # Parent-pointer BFS — O(V) work, O(V) memory.  The previous
+        # implementation appended ``path + [nb]`` per neighbour which
+        # was O(L) per expansion and O(L^2) overall, producing visible
+        # stalls when many commuters / haulers requested long routes
+        # on the same tick.
+        buildings_at = self.buildings.at
         visited: set[HexCoord] = {start}
-        queue: deque[tuple[HexCoord, list[HexCoord]]] = deque([(start, [])])
+        parent: dict[HexCoord, HexCoord] = {}
+        queue: deque[HexCoord] = deque([start])
+        found = False
         while queue:
-            current, path = queue.popleft()
+            current = queue.popleft()
             for nb in current.neighbors():
                 if nb in visited:
                     continue
                 visited.add(nb)
-                if self.buildings.at(nb) is None:
+                if buildings_at(nb) is None:
                     continue
-                new_path = path + [nb]
+                parent[nb] = current
                 if nb == end:
-                    return new_path
-                queue.append((nb, new_path))
-        return []
+                    found = True
+                    queue.clear()
+                    break
+                queue.append(nb)
+        if not found:
+            self._path_cache[cache_key] = []
+            return []
+        path: list[HexCoord] = []
+        cur = end
+        while cur != start:
+            path.append(cur)
+            cur = parent[cur]
+        path.reverse()
+        self._path_cache[cache_key] = path
+        return list(path)
 
     def find_path_route(
         self, start: HexCoord, end: HexCoord,

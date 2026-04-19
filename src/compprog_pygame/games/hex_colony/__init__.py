@@ -37,11 +37,23 @@ def _launch(screen: pygame.Surface, clock: pygame.time.Clock) -> None:
 
         # Generate the world on a background thread while the intro
         # cutscene plays, so the player never sits on a black screen.
-        gen_state: dict[str, object] = {}
+        gen_state: dict[str, object] = {
+            "progress": 0.0,
+            "label": "Carving terrain",
+        }
+
+        def _on_progress(fraction: float, label: str) -> None:
+            # Plain dict assignment is atomic enough for our use —
+            # the loading screen reads these from the main thread.
+            gen_state["progress"] = float(fraction)
+            gen_state["label"] = label
 
         def _worker() -> None:
             try:
-                gen_state["world"] = World.generate(settings, seed=result.seed)
+                gen_state["world"] = World.generate(
+                    settings, seed=result.seed,
+                    progress_callback=_on_progress,
+                )
             except BaseException as exc:  # noqa: BLE001 — rethrown on main thread
                 gen_state["error"] = exc
 
@@ -68,7 +80,16 @@ def _launch(screen: pygame.Surface, clock: pygame.time.Clock) -> None:
         def _world_ready() -> bool:
             return "world" in gen_state or "error" in gen_state
 
-        if not run_loading_screen(screen, clock, _world_ready):
+        def _get_progress() -> float:
+            return float(gen_state.get("progress", 0.0))
+
+        def _get_label() -> str:
+            return str(gen_state.get("label", ""))
+
+        if not run_loading_screen(
+            screen, clock, _world_ready,
+            progress=_get_progress, label=_get_label,
+        ):
             thread.join()
             raise SystemExit
 

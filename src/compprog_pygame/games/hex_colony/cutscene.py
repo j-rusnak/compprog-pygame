@@ -205,6 +205,29 @@ class IntroCutscene:
         )
         self._rng = _random.Random(20240419)
 
+    def resize(self, screen_size: tuple[int, int]) -> None:
+        """Adapt to a new screen size mid-cutscene.
+
+        Called from :func:`run_cutscene` whenever the window is
+        resized (or toggled fullscreen) so the ship/dialog stay
+        centred and properly scaled.  Phase, timing, and beat index
+        are preserved — only layout-dependent state is recomputed.
+        """
+        new_w, new_h = screen_size
+        if new_w <= 0 or new_h <= 0:
+            return
+        if (new_w, new_h) == (self.w, self.h):
+            return
+        self.w, self.h = new_w, new_h
+        # Re-anchor the dialog box.
+        box_w = min(int(self.w * 0.78), 1100)
+        box_h = 170
+        self._dialog.rect = pygame.Rect(
+            (self.w - box_w) // 2,
+            self.h - box_h - 40,
+            box_w, box_h,
+        )
+
     # ── Public API ────────────────────────────────────────────────
 
     def handle_event(self, event: pygame.event.Event) -> None:
@@ -398,6 +421,10 @@ def run_cutscene(
 
     Returns ``True`` if the cutscene completed normally, or ``False`` if
     the player closed the window (the caller should propagate quit).
+
+    The cutscene listens for ``pygame.VIDEORESIZE`` events so the
+    player can switch fullscreen / resize the window mid-cutscene
+    without breaking the layout.
     """
     cutscene = IntroCutscene(screen.get_size())
     while not cutscene.done:
@@ -405,7 +432,18 @@ def run_cutscene(
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return False
+            if event.type == pygame.VIDEORESIZE:
+                # The display surface has already been resized by
+                # pygame; sync the cutscene to the new dimensions.
+                surf = pygame.display.get_surface()
+                if surf is not None:
+                    cutscene.resize(surf.get_size())
+                continue
             cutscene.handle_event(event)
+        # Belt-and-braces: also catch fullscreen toggles or DPI shifts
+        # that don't fire VIDEORESIZE on every platform.
+        if screen.get_size() != (cutscene.w, cutscene.h):
+            cutscene.resize(screen.get_size())
         cutscene.update(min(dt, 0.05))
         cutscene.draw(screen)
         pygame.display.flip()
@@ -450,8 +488,16 @@ def run_loading_screen(
     *,
     fps: int = 60,
     min_duration: float = 0.4,
+    progress: Callable[[], float] | None = None,
+    label: Callable[[], str] | None = None,
 ) -> bool:
-    """Show an animated loading screen until ``is_world_ready()`` is True.
+    """Show a real progress bar until ``is_world_ready()`` is True.
+
+    *progress* (if provided) returns the current generation progress as
+    a float in [0.0, 1.0].  *label* (if provided) returns a short
+    status string shown under the bar (e.g. "Carving rivers").  When
+    no progress callback is supplied the bar fills smoothly over the
+    minimum duration so the player still sees motion.
 
     Always shows at least one frame (and ``min_duration`` seconds total)
     so the player sees clear feedback even if the world finishes very
@@ -460,42 +506,105 @@ def run_loading_screen(
     Returns ``False`` if the player quit, ``True`` otherwise.
     """
     title_font = pygame.font.Font(None, 56)
-    sub_font = pygame.font.Font(None, 26)
-    title = title_font.render(
+    sub_font = pygame.font.Font(None, 24)
+    pct_font = pygame.font.Font(None, 22)
+    title_surf = title_font.render(
         "Generating world\u2026", True, (220, 225, 240),
-    )
-    sub = sub_font.render(
-        "Carving rivers, scattering stones, planting forests\u2026",
-        True, (140, 150, 170),
     )
     elapsed = 0.0
     first_frame = True
+    # Smoothed progress: lerps toward the latest reported value so
+    # the bar moves smoothly even if the worker reports in chunks.
+    smooth_p = 0.0
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return False
+            elif event.type == pygame.VIDEORESIZE:
+                # Loading screen is resolution-agnostic; just keep
+                # going on the new surface (pygame already resized
+                # the display).
+                pass
         # Draw BEFORE checking readiness so the player always sees at
         # least one frame of the loading screen.
         w, h = screen.get_size()
         screen.fill((0, 0, 0))
         screen.blit(
-            title, (w // 2 - title.get_width() // 2, h // 2 - 70),
+            title_surf,
+            (w // 2 - title_surf.get_width() // 2, h // 2 - 90),
         )
-        screen.blit(
-            sub, (w // 2 - sub.get_width() // 2, h // 2 - 16),
+
+        # Determine target progress.
+        if progress is not None:
+            try:
+                target_p = max(0.0, min(1.0, float(progress())))
+            except Exception:
+                target_p = 0.0
+        else:
+            # No real progress reported — fake a smooth fill to 95%
+            # over the min_duration so the bar at least moves.
+            target_p = min(0.95, elapsed / max(0.001, min_duration))
+        # Snap to ready when world is ready.
+        if not first_frame and is_world_ready():
+            target_p = 1.0
+        # Ease towards target.
+        smooth_p += (target_p - smooth_p) * min(1.0, 8.0 * (1 / fps))
+
+        # Progress bar.
+        bar_w = min(560, int(w * 0.6))
+        bar_h = 22
+        bar_x = (w - bar_w) // 2
+        bar_y = h // 2 - 10
+        # Frame.
+        pygame.draw.rect(
+            screen, (50, 60, 80),
+            (bar_x - 2, bar_y - 2, bar_w + 4, bar_h + 4),
+            border_radius=6,
         )
-        cx, cy = w // 2, h // 2 + 70
-        r = 26
-        rect = pygame.Rect(cx - r, cy - r, r * 2, r * 2)
-        base_angle = elapsed * 4.0
-        for i in range(3):
-            a0 = base_angle + i * (math.tau / 3)
-            a1 = a0 + math.radians(70)
-            shade = 180 - i * 40
-            pygame.draw.arc(
-                screen, (shade, shade + 20, shade + 40),
-                rect, a0, a1, 4,
+        pygame.draw.rect(
+            screen, (18, 22, 32),
+            (bar_x, bar_y, bar_w, bar_h),
+            border_radius=4,
+        )
+        # Fill.
+        fill_w = int(bar_w * smooth_p)
+        if fill_w > 0:
+            pygame.draw.rect(
+                screen, (90, 160, 230),
+                (bar_x, bar_y, fill_w, bar_h),
+                border_radius=4,
             )
+            # Subtle highlight stripe along the top of the fill.
+            pygame.draw.rect(
+                screen, (140, 200, 255),
+                (bar_x, bar_y, fill_w, max(2, bar_h // 4)),
+                border_radius=4,
+            )
+
+        # Percent label centred on the bar.
+        pct_text = f"{int(round(smooth_p * 100))}%"
+        pct_surf = pct_font.render(pct_text, True, (230, 235, 245))
+        screen.blit(
+            pct_surf,
+            (w // 2 - pct_surf.get_width() // 2,
+             bar_y + (bar_h - pct_surf.get_height()) // 2),
+        )
+
+        # Status label below the bar.
+        sub_text = ""
+        if label is not None:
+            try:
+                sub_text = label() or ""
+            except Exception:
+                sub_text = ""
+        if not sub_text:
+            sub_text = "Carving rivers, scattering stones, planting forests\u2026"
+        sub_surf = sub_font.render(sub_text, True, (140, 150, 170))
+        screen.blit(
+            sub_surf,
+            (w // 2 - sub_surf.get_width() // 2, bar_y + bar_h + 16),
+        )
+
         pygame.display.flip()
         if not first_frame and elapsed >= min_duration and is_world_ready():
             return True

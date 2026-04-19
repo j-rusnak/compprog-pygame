@@ -168,6 +168,12 @@ BUILDING_STORAGE_ROCKET_SILO: int = 200
 # Items a single logistics worker can carry in one trip.
 LOGISTICS_CARRY_CAPACITY: int = 5
 
+# Maximum number of idle logistics workers that may run the
+# (expensive) supply/demand search per simulation tick.  The world
+# round-robins through the idle pool so every worker still gets
+# served promptly while large colonies don't stall.
+LOGISTICS_JOBS_PER_FRAME: int = 4
+
 # ═══════════════════════════════════════════════════════════════════
 #  POPULATION GROWTH
 # ═══════════════════════════════════════════════════════════════════
@@ -245,7 +251,7 @@ BUILDING_RECIPE_STATION: dict[str, str] = {
     "FORGE":            "WORKSHOP",
     "MINING_MACHINE":   "ASSEMBLER",
     "ASSEMBLER":        "FORGE",
-    "RESEARCH_CENTER":  "WORKSHOP",
+    "RESEARCH_CENTER":  "ASSEMBLER",
     # Tier 4+ industrial buildings
     "CHEMICAL_PLANT":   "ASSEMBLER",
     "CONVEYOR":         "WORKSHOP",
@@ -541,7 +547,7 @@ TECH_TREE_DATA: dict[str, dict] = {
     # ═══════════════════════════════════════════════════════════
     "advanced_logistics": {
         "name": "Advanced Logistics",
-        "description": "Unlock bridges for crossing water",
+        "description": "Unlock bridges for crossing water and rivers",
         "cost": {"WOOD": 15, "STONE": 10},
         "time": 35.0,
         "prerequisites": [],
@@ -559,11 +565,12 @@ TECH_TREE_DATA: dict[str, dict] = {
     },
     "metallurgy": {
         "name": "Metallurgy",
-        "description": "Smelt raw ore into usable metal",
+        "description": "Refinery and Forge: smelt Iron and Copper into bars",
         "cost": {"STONE": 15, "WOOD": 10},
         "time": 50.0,
         "prerequisites": [],
         "unlocks": ["REFINERY"],
+        "unlock_resources": ["IRON_BAR", "COPPER_BAR"],
         "position": (2, 0),
     },
     "irrigation": {
@@ -586,16 +593,17 @@ TECH_TREE_DATA: dict[str, dict] = {
     },
     "advanced_smelting": {
         "name": "Advanced Smelting",
-        "description": "Improved refinery efficiency",
+        "description": "Forge Steel Bars and melt Glass",
         "cost": {"IRON": 15, "COPPER": 10},
         "time": 60.0,
         "prerequisites": ["metallurgy"],
         "unlocks": [],
+        "unlock_resources": ["STEEL_BAR", "GLASS"],
         "position": (3, 1),
     },
     "exploration": {
         "name": "Exploration",
-        "description": "Reveal more of the surrounding area",
+        "description": "Map the surrounding area and chart distant resources",
         "cost": {"WOOD": 25, "FIBER": 20},
         "time": 45.0,
         "prerequisites": ["advanced_logistics"],
@@ -607,7 +615,7 @@ TECH_TREE_DATA: dict[str, dict] = {
     # ═══════════════════════════════════════════════════════════
     "masonry": {
         "name": "Masonry",
-        "description": "Better stonework: doubles refinery brick output",
+        "description": "Better stonework: doubles Refinery brick output",
         "cost": {"STONE": 40, "BRICKS": 10},
         "time": 70.0,
         "prerequisites": ["fortification"],
@@ -621,6 +629,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "time": 90.0,
         "prerequisites": ["masonry", "advanced_smelting"],
         "unlocks": [],
+        "unlock_resources": ["CONCRETE"],
         "position": (3, 2),
     },
     "basic_chemistry": {
@@ -634,11 +643,12 @@ TECH_TREE_DATA: dict[str, dict] = {
     },
     "electronics_basics": {
         "name": "Electronics Basics",
-        "description": "Foundational research for advanced electronics",
-        "cost": {"COPPER_WIRE": 8, "SILICON": 4},
+        "description": "Workshops draw Copper Wire and machine Gears; Assemblers refine Silicon",
+        "cost": {"COPPER_BAR": 8, "GLASS": 4},
         "time": 100.0,
         "prerequisites": ["advanced_smelting"],
         "unlocks": [],
+        "unlock_resources": ["COPPER_WIRE", "GEARS", "SILICON"],
         "position": (5, 2),
     },
     "conveyor_belts": {
@@ -660,6 +670,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "time": 120.0,
         "prerequisites": ["basic_chemistry"],
         "unlocks": [],
+        "unlock_resources": ["PLASTIC"],
         "position": (4, 3),
     },
     "polymers": {
@@ -673,11 +684,12 @@ TECH_TREE_DATA: dict[str, dict] = {
     },
     "microchips": {
         "name": "Microchips",
-        "description": "Assemble Electronics from Circuits + Plastic",
-        "cost": {"CIRCUIT": 8, "PLASTIC": 6},
+        "description": "Assemble Circuits and Electronics at the Assembler",
+        "cost": {"COPPER_WIRE": 8, "PLASTIC": 6},
         "time": 130.0,
         "prerequisites": ["electronics_basics", "plastics"],
         "unlocks": [],
+        "unlock_resources": ["CIRCUIT", "ELECTRONICS"],
         "position": (5, 3),
     },
     "energy_storage": {
@@ -687,6 +699,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "time": 120.0,
         "prerequisites": ["microchips"],
         "unlocks": [],
+        "unlock_resources": ["BATTERY"],
         "position": (5, 4),
     },
     "solar_panels": {
@@ -726,6 +739,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "time": 180.0,
         "prerequisites": ["polymers", "advanced_electronics"],
         "unlocks": [],
+        "unlock_resources": ["ROCKET_FUEL"],
         "position": (4, 5),
     },
     "orbital_assembly": {
@@ -735,6 +749,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "time": 240.0,
         "prerequisites": ["rocketry", "solar_panels", "concrete_works"],
         "unlocks": ["ROCKET_SILO"],
+        "unlock_resources": ["ROCKET_PART"],
         "position": (5, 6),
     },
 }
@@ -784,23 +799,25 @@ TILE_RESOURCE_COPPER_VEIN: tuple[float, float] = (200.0, 500.0)
 # ═══════════════════════════════════════════════════════════════════
 
 # Number of veins = max(ORE_VEIN_COUNT_MIN, ORE_VEIN_COUNT_BASE + radius // ORE_VEIN_COUNT_RADIUS_DIVISOR)
-ORE_IRON_VEIN_COUNT_MIN: int = 3
-ORE_IRON_VEIN_COUNT_BASE: int = 2
-ORE_IRON_VEIN_COUNT_RADIUS_DIVISOR: int = 15
+# Iron and copper are tuned identically so the player gets roughly equal
+# stocks of both metals.
+ORE_IRON_VEIN_COUNT_MIN: int = 5
+ORE_IRON_VEIN_COUNT_BASE: int = 4
+ORE_IRON_VEIN_COUNT_RADIUS_DIVISOR: int = 10
 
-ORE_COPPER_VEIN_COUNT_MIN: int = 3
-ORE_COPPER_VEIN_COUNT_BASE: int = 2
-ORE_COPPER_VEIN_COUNT_RADIUS_DIVISOR: int = 15
+ORE_COPPER_VEIN_COUNT_MIN: int = 5
+ORE_COPPER_VEIN_COUNT_BASE: int = 4
+ORE_COPPER_VEIN_COUNT_RADIUS_DIVISOR: int = 10
 
-# Vein size range (number of tiles per vein)
-ORE_IRON_VEIN_SIZE_MIN: int = 6
-ORE_IRON_VEIN_SIZE_MAX: int = 16
+# Vein size range (number of tiles per vein) — equal for iron and copper.
+ORE_IRON_VEIN_SIZE_MIN: int = 8
+ORE_IRON_VEIN_SIZE_MAX: int = 20
 
-ORE_COPPER_VEIN_SIZE_MIN: int = 5
-ORE_COPPER_VEIN_SIZE_MAX: int = 14
+ORE_COPPER_VEIN_SIZE_MIN: int = 8
+ORE_COPPER_VEIN_SIZE_MAX: int = 20
 
 # Probability that a neighbor tile is added to the vein during BFS growth
-ORE_VEIN_NEIGHBOR_EXPAND_CHANCE: float = 0.65
+ORE_VEIN_NEIGHBOR_EXPAND_CHANCE: float = 0.72
 
 # ═══════════════════════════════════════════════════════════════════
 #  TERRAIN GENERATION THRESHOLDS

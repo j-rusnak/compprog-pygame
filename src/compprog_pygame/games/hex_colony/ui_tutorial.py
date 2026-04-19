@@ -196,8 +196,11 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         id="industrial_intro",
         title=_text("industrial_intro")[0],
         lines=_text("industrial_intro")[1],
-        # Fires immediately on entering tier 4 (Industrial).
-        trigger=lambda w, ctx: ctx.get("current_tier_level", 0) >= 4,
+        # Fires shortly after entering Industrial tier (0-indexed: 3).
+        trigger=lambda w, ctx: (
+            ctx.get("current_tier_level", 0) >= 3
+            and ctx.get("time_in_tier", 0.0) >= 5.0
+        ),
         after=None,
     ),
     _TutorialStep(
@@ -206,8 +209,8 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         lines=_text("conveyor_intro")[1],
         # ~25 s after entering tier 4 \u2014 by then Conveyor research is realistic.
         trigger=lambda w, ctx: (
-            ctx.get("current_tier_level", 0) >= 4
-            and ctx.get("time_in_tier", 0.0) >= 25.0
+            ctx.get("current_tier_level", 0) >= 3
+            and ctx.get("time_in_tier", 0.0) >= 15.0
         ),
         after="industrial_intro",
     ),
@@ -217,8 +220,8 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         lines=_text("chemical_plant_intro")[1],
         # 60 s into tier 4 \u2014 player has likely started Basic Chemistry.
         trigger=lambda w, ctx: (
-            ctx.get("current_tier_level", 0) >= 4
-            and ctx.get("time_in_tier", 0.0) >= 60.0
+            ctx.get("current_tier_level", 0) >= 3
+            and ctx.get("time_in_tier", 0.0) >= 30.0
         ),
         after="industrial_intro",
     ),
@@ -226,7 +229,7 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         id="automation_intro",
         title=_text("automation_intro")[0],
         lines=_text("automation_intro")[1],
-        trigger=lambda w, ctx: ctx.get("current_tier_level", 0) >= 5,
+        trigger=lambda w, ctx: ctx.get("current_tier_level", 0) >= 4,
         after=None,
     ),
     _TutorialStep(
@@ -234,8 +237,8 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         title=_text("solar_array_intro")[0],
         lines=_text("solar_array_intro")[1],
         trigger=lambda w, ctx: (
-            ctx.get("current_tier_level", 0) >= 5
-            and ctx.get("time_in_tier", 0.0) >= 30.0
+            ctx.get("current_tier_level", 0) >= 4
+            and ctx.get("time_in_tier", 0.0) >= 15.0
         ),
         after="automation_intro",
     ),
@@ -243,7 +246,7 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         id="spacefarer_intro",
         title=_text("spacefarer_intro")[0],
         lines=_text("spacefarer_intro")[1],
-        trigger=lambda w, ctx: ctx.get("current_tier_level", 0) >= 6,
+        trigger=lambda w, ctx: ctx.get("current_tier_level", 0) >= 5,
         after=None,
     ),
     _TutorialStep(
@@ -251,8 +254,8 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         title=_text("rocket_silo_intro")[0],
         lines=_text("rocket_silo_intro")[1],
         trigger=lambda w, ctx: (
-            ctx.get("current_tier_level", 0) >= 6
-            and ctx.get("time_in_tier", 0.0) >= 30.0
+            ctx.get("current_tier_level", 0) >= 5
+            and ctx.get("time_in_tier", 0.0) >= 15.0
         ),
         after="spacefarer_intro",
     ),

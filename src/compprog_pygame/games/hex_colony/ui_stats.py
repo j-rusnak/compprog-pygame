@@ -73,10 +73,9 @@ class StatsTabContent(TabContent):
     def draw_content(
         self, surface: pygame.Surface, rect: pygame.Rect, world: "World",
     ) -> None:
-        # Keep rolling history alive even when the popup is closed so
-        # the graphs show data from the start of the session.
-        self.history.sample(world)
-
+        # Note: stats sampling is driven by Game.run() every frame so
+        # history captures data from t=0, regardless of whether this
+        # tab has ever been viewed.
         from compprog_pygame.games.hex_colony.tech_tree import TIERS
         tier = self.tier_tracker.current_tier if self.tier_tracker else 0
         tier_name = TIERS[tier].name if self.tier_tracker else ""

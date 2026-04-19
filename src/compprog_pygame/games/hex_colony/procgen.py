@@ -492,6 +492,7 @@ def _build_multi_region_terrain(
     seed: str,
     settings: HexColonySettings,
     region_centres: list[HexCoord],
+    progress_callback=None,
 ) -> tuple[HexGrid, dict[HexCoord, float]]:
     """Build a hex grid covering one or more region areas with a single
     continuous noise field, so seams between adjacent regions disappear.
@@ -499,7 +500,18 @@ def _build_multi_region_terrain(
     Edge shaping is computed against the OVERALL bounding hex of the
     union of all regions (centred on origin), so the centre region stays
     calm and mountains/water naturally appear at the outer rim.
+
+    *progress_callback* (if provided) is invoked as ``cb(fraction, label)``
+    with ``fraction`` in [0.0, 1.0] after each major generation pass so
+    the loading screen can show real progress.
     """
+    def _report(p: float, label: str) -> None:
+        if progress_callback is not None:
+            try:
+                progress_callback(min(1.0, max(0.0, p)), label)
+            except Exception:
+                pass
+
     seed_int = seed_to_int(seed)
     rng = _random.Random(seed_int)
 
@@ -522,11 +534,15 @@ def _build_multi_region_terrain(
 
     # Build all noise layers ONCE — this is what makes neighbour regions
     # continuous with the centre.  Sample them anywhere in pixel space.
+    # ``detail_noise`` was 3 octaves; 2 octaves render visually
+    # identically at this scale and shave a noticeable slice off the
+    # per-hex noise cost in Pass 1.
     elevation_noise = NoiseMap(rng, octaves=5, base_scale=260.0 * scale_factor, persistence=0.50)
     moisture_noise = NoiseMap(rng, octaves=3, base_scale=300.0 * scale_factor, persistence=0.50)
-    detail_noise = NoiseMap(rng, octaves=3, base_scale=80.0 * scale_factor, persistence=0.6)
+    detail_noise = NoiseMap(rng, octaves=2, base_scale=80.0 * scale_factor, persistence=0.6)
     mountain_noise = NoiseMap(rng, octaves=2, base_scale=280.0 * scale_factor, persistence=0.40)
     lake_noise = NoiseMap(rng, octaves=2, base_scale=300.0 * scale_factor, persistence=0.40)
+    _report(0.02, "Carving terrain")
 
     grid = HexGrid()
     elevation: dict[HexCoord, float] = {}
@@ -535,7 +551,8 @@ def _build_multi_region_terrain(
 
     # --- Pass 1: assign raw terrain from noise across all regions ----
     seen: set[HexCoord] = set()
-    for centre in region_centres:
+    n_regions = max(1, len(region_centres))
+    for ri, centre in enumerate(region_centres):
         for q in range(-radius, radius + 1):
             r1 = max(-radius, -q - radius)
             r2 = min(radius, -q + radius)
@@ -579,9 +596,12 @@ def _build_multi_region_terrain(
                 grid.set_tile(HexTile(coord=coord, terrain=terrain,
                                       resource_amount=amount,
                                       food_amount=food))
+        # Pass 1 occupies 0.02 → 0.55 of the bar.
+        _report(0.02 + 0.53 * (ri + 1) / n_regions, "Carving terrain")
 
     # --- Pass 3: lakes ------------------------------------------------
     _expand_lakes(grid, rng, elevation, lake_affinity_map)
+    _report(0.62, "Filling lakes")
 
     # --- Pass 4: rivers ----------------------------------------------
     # Keep river LENGTH/meander tuned to a single-region scale so they
@@ -593,9 +613,11 @@ def _build_multi_region_terrain(
         river_count = rng.randint(6, 10)
     _carve_rivers(grid, rng, settings, elevation,
                   lake_affinity_map, count=river_count)
+    _report(0.78, "Carving rivers")
 
     # --- Pass 5: stone deposits ringing mountain peaks ---------------
     _ring_mountains_with_stone(grid, rng)
+    _report(0.82, "Placing stone deposits")
 
     # --- Pass 5b: ore veins (scaled to overall map size) -------------
     iron_veins = max(params.ORE_IRON_VEIN_COUNT_MIN,
@@ -614,6 +636,7 @@ def _build_multi_region_terrain(
                         num_veins=copper_veins,
                         vein_min=params.ORE_COPPER_VEIN_SIZE_MIN,
                         vein_max=params.ORE_COPPER_VEIN_SIZE_MAX)
+    _report(0.92, "Scattering ore veins")
 
     # --- Pass 6: clear safe zone around centre origin ----------------
     for q2 in range(-SAFE_RADIUS, SAFE_RADIUS + 1):
@@ -633,15 +656,18 @@ def _build_multi_region_terrain(
 
     # --- Pass 6c: guaranteed nearby ore ------------------------------
     _ensure_nearby_ore(grid, rng, origin)
+    _report(0.97, "Preparing landing site")
 
     # --- Pass 7: connectivity from the safe-zone outward -------------
     _ensure_connectivity(grid, rng, effective_radius)
+    _report(1.0, "Finalising")
 
     return grid, elevation
 
 
 def generate_terrain(
     seed: str, settings: HexColonySettings,
+    progress_callback=None,
 ) -> tuple[HexGrid, list[HexCoord]]:
     """Create the central player region plus 6 surrounding neighbour regions.
 
@@ -653,12 +679,19 @@ def generate_terrain(
     list of axial coordinates where AI tribe camps should be placed
     (3 of the 6 neighbour-region centres, chosen deterministically from
     the world seed).
+
+    *progress_callback*, if provided, is called as ``cb(fraction, label)``
+    with ``fraction`` ramping from 0.0 to 1.0 over the course of
+    generation.  Safe to call from a background thread.
     """
     radius = settings.world_radius
     offsets = _neighbor_region_offsets(radius)
     centres = [HexCoord(0, 0)] + [HexCoord(dq, dr) for dq, dr in offsets]
 
-    grid, _elev = _build_multi_region_terrain(seed, settings, centres)
+    grid, _elev = _build_multi_region_terrain(
+        seed, settings, centres,
+        progress_callback=progress_callback,
+    )
 
     # Deterministically pick 3 of the 6 neighbour centres for AI tribes.
     selector_rng = _random.Random(seed_to_int(seed) ^ 0xA17C_AAFE)

@@ -50,9 +50,10 @@ if TYPE_CHECKING:
 # ── Data buffer ──────────────────────────────────────────────────
 
 # History length in samples.  Samples are taken once per second, so
-# 600 samples covers 10 minutes — enough headroom for the longest
-# time window we offer.
-HISTORY_LEN: int = 600
+# 3600 samples covers 60 minutes — enough for the longest time
+# window we offer ("All" caps at this length; older samples are
+# rolled off the front of the deque).
+HISTORY_LEN: int = 3600
 SAMPLE_INTERVAL: float = 1.0
 
 
@@ -259,6 +260,7 @@ _WINDOWS: list[tuple[str, int]] = [
     ("2m", 120),
     ("5m", 300),
     ("10m", 600),
+    ("All", HISTORY_LEN),
 ]
 
 
@@ -786,6 +788,8 @@ def _fmt_time(seconds: int) -> str:
 
 
 def _fmt_window_secs(s: int) -> str:
+    if s >= HISTORY_LEN:
+        return "all"
     if s < 60:
         return f"{s}s"
     m = s // 60

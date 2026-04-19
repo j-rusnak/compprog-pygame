@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import gc
+
 import pygame
 
 from compprog_pygame.games.hex_colony.buildings import (
@@ -121,6 +123,12 @@ class Game:
         # Anchor for path chain placement: after first PATH click, the
         # second click places paths along the BFS route between them.
         self._path_anchor: HexCoord | None = None
+        # Cache for the path-chain preview BFS so we don't re-run a
+        # whole-grid pathfind every frame while the player hovers in
+        # PATH build mode.  Key = (anchor, ghost_coord, build_mode,
+        # topology_version, allow_bridges, bridge_stock).
+        self._path_preview_cache_key: tuple | None = None
+        self._path_preview_cache_route: list = []
         self._hint_font = pygame.font.Font(None, 26)
         self._sim_speed: float = 3.0  # 1x (=3), 2x (=6), 3x (=9)
         self._real_time_elapsed: float = 0.0
@@ -253,68 +261,107 @@ class Game:
         self._minimap.camera = self.camera
         self.ui.layout(w, h)
 
-        while self.running:
-            dt = clock.tick(self.settings.fps) / 1000.0
-            dt = min(dt, 0.05)  # clamp large spikes
+        # ── GC tuning to eliminate the "occasional" multi-100 ms
+        # frame stalls caused by Python's generational collector
+        # walking every tracked object once the colony grows large.
+        # ``gc.freeze`` moves all currently-allocated objects (the
+        # entire world, sprites, fonts, UI, etc.) into a permanent
+        # generation that future passes skip.  We then disable the
+        # automatic collector and run a small, bounded gen-0 sweep
+        # ourselves once per second from the main loop.  This trades
+        # one predictable ~1 ms collection per second for the
+        # unpredictable multi-frame freezes the player was seeing.
+        prev_gc_enabled = gc.isenabled()
+        prev_gc_thresholds = gc.get_threshold()
+        gc.collect()
+        gc.freeze()
+        gc.disable()
+        gc_accum = 0.0
+        try:
+            while self.running:
+                dt = clock.tick(self.settings.fps) / 1000.0
+                dt = min(dt, 0.05)  # clamp large spikes
+                gc_accum += dt
+                if gc_accum >= 1.0:
+                    # Cheap young-generation pass; older generations
+                    # were frozen above so this stays tiny.
+                    gc.collect(0)
+                    gc_accum = 0.0
+                self._tick(screen, clock, dt)
+        finally:
+            gc.unfreeze()
+            gc.set_threshold(*prev_gc_thresholds)
+            if prev_gc_enabled:
+                gc.enable()
 
-            for event in pygame.event.get():
-                self._handle_event(event)
+    def _tick(
+        self, screen: pygame.Surface, clock: pygame.time.Clock, dt: float,
+    ) -> None:
+        assert self.camera is not None
 
-            if not self._pause_overlay.visible and not self.world.game_over:
-                self._update_keyboard_pan(dt)
-                self._update_alt_overlay()
-                self._update_ghost_building()
-                self.world.update(dt * self._sim_speed)
-                self.world.real_time_elapsed += dt
-                # Research progress
-                completed = self.tech_tree.update(dt * self._sim_speed, self.world)
-                if completed:
-                    node = TECH_NODES[completed]
-                    self.notifications.push(
-                        NOTIF_RESEARCH_COMPLETE.format(name=node.name), (100, 255, 100),
-                    )
-                # Expose research count for tier checks
-                self.world._tech_research_count = self.tech_tree.researched_count
-                # Tier advancement
-                if self.tier_tracker.try_advance(self.world):
-                    tier = TIERS[self.tier_tracker.current_tier]
-                    next_tier = (
-                        TIERS[self.tier_tracker.current_tier + 1]
-                        if self.tier_tracker.current_tier + 1 < len(TIERS)
-                        else None
-                    )
-                    self._tier_popup.show(tier, next_tier)
-                    self._time_in_current_tier = 0.0
-                else:
-                    self._time_in_current_tier += dt
-                self.notifications.update(dt)
-                self._real_time_elapsed += dt
-                # Tutorial triggers
-                self._tutorial.check_triggers(self.world, {
-                    "time": self.world.time_elapsed,
-                    "real_time": self._real_time_elapsed,
-                    "dt": dt,
-                    "researched_count": self.tech_tree.researched_count,
-                    "current_tier_level": self.tier_tracker.current_tier,
-                    "time_in_tier": self._time_in_current_tier,
-                })
-            self.camera.update(dt)
-            self._resource_bar.delete_mode = self.delete_mode
-            self._resource_bar.sim_speed = self._sim_speed
-            self._resource_bar.tier_tracker = self.tier_tracker
-            self._resource_bar.tech_tree = self.tech_tree
-            self._resource_bar.world = self.world
-            self.renderer.draw(screen, self.world, self.camera, dt=dt)
-            # Supply chain lines for selected building
-            draw_supply_lines(
-                screen, self.world, self.camera,
-                self.renderer.selected_hex, self.renderer._water_tick,
-                self.settings.hex_size,
-            )
-            self.ui.draw(screen, self.world)
-            self.notifications.draw(screen)
+        for event in pygame.event.get():
+            self._handle_event(event)
 
-            pygame.display.flip()
+        if not self._pause_overlay.visible and not self.world.game_over:
+            self._update_keyboard_pan(dt)
+            self._update_alt_overlay()
+            self._update_ghost_building()
+            self.world.update(dt * self._sim_speed)
+            self.world.real_time_elapsed += dt
+            # Sample stats every frame regardless of whether the
+            # Stats tab is currently visible — the user wants
+            # historical data from t=0, not just from when they
+            # first opened the tab.
+            self._stats_tab.history.sample(self.world)
+            # Research progress
+            completed = self.tech_tree.update(dt * self._sim_speed, self.world)
+            if completed:
+                node = TECH_NODES[completed]
+                self.notifications.push(
+                    NOTIF_RESEARCH_COMPLETE.format(name=node.name), (100, 255, 100),
+                )
+            # Expose research count for tier checks
+            self.world._tech_research_count = self.tech_tree.researched_count
+            # Tier advancement
+            if self.tier_tracker.try_advance(self.world):
+                tier = TIERS[self.tier_tracker.current_tier]
+                next_tier = (
+                    TIERS[self.tier_tracker.current_tier + 1]
+                    if self.tier_tracker.current_tier + 1 < len(TIERS)
+                    else None
+                )
+                self._tier_popup.show(tier, next_tier)
+                self._time_in_current_tier = 0.0
+            else:
+                self._time_in_current_tier += dt
+            self.notifications.update(dt)
+            self._real_time_elapsed += dt
+            # Tutorial triggers
+            self._tutorial.check_triggers(self.world, {
+                "time": self.world.time_elapsed,
+                "real_time": self._real_time_elapsed,
+                "dt": dt,
+                "researched_count": self.tech_tree.researched_count,
+                "current_tier_level": self.tier_tracker.current_tier,
+                "time_in_tier": self._time_in_current_tier,
+            })
+        self.camera.update(dt)
+        self._resource_bar.delete_mode = self.delete_mode
+        self._resource_bar.sim_speed = self._sim_speed
+        self._resource_bar.tier_tracker = self.tier_tracker
+        self._resource_bar.tech_tree = self.tech_tree
+        self._resource_bar.world = self.world
+        self.renderer.draw(screen, self.world, self.camera, dt=dt)
+        # Supply chain lines for selected building
+        draw_supply_lines(
+            screen, self.world, self.camera,
+            self.renderer.selected_hex, self.renderer._water_tick,
+            self.settings.hex_size,
+        )
+        self.ui.draw(screen, self.world)
+        self.notifications.draw(screen)
+
+        pygame.display.flip()
 
     # ── Event handling ───────────────────────────────────────────
 
@@ -430,17 +477,46 @@ class Game:
                 self._drag_button = 0
 
         elif event.type == pygame.MOUSEMOTION:
-            self.camera.drag(event.pos)
+            # If the user released the drag button while outside the
+            # window (or over a UI element that swallowed the event),
+            # pygame may never deliver MOUSEBUTTONUP — the camera
+            # would stay glued to the cursor.  Re-poll the actual
+            # button state and stop the drag if it's no longer held.
+            if self._drag_button:
+                pressed = pygame.mouse.get_pressed(num_buttons=5)
+                if not pressed[self._drag_button - 1]:
+                    self.camera.stop_drag()
+                    self._drag_button = 0
+                else:
+                    self.camera.drag(event.pos)
             if self._build_dragging and self.build_mode is not None:
-                wx, wy = self.camera.screen_to_world(*event.pos)
-                coord = pixel_to_hex(wx, wy, self.settings.hex_size)
-                if coord in self.world.grid:
-                    self._try_place_building(coord)
+                if not pygame.mouse.get_pressed(num_buttons=5)[0]:
+                    self._build_dragging = False
+                else:
+                    wx, wy = self.camera.screen_to_world(*event.pos)
+                    coord = pixel_to_hex(wx, wy, self.settings.hex_size)
+                    if coord in self.world.grid:
+                        self._try_place_building(coord)
             elif self._delete_dragging and self.delete_mode:
-                wx, wy = self.camera.screen_to_world(*event.pos)
-                coord = pixel_to_hex(wx, wy, self.settings.hex_size)
-                if coord in self.world.grid:
-                    self._try_delete_building(coord)
+                if not pygame.mouse.get_pressed(num_buttons=5)[0]:
+                    self._delete_dragging = False
+                else:
+                    wx, wy = self.camera.screen_to_world(*event.pos)
+                    coord = pixel_to_hex(wx, wy, self.settings.hex_size)
+                    if coord in self.world.grid:
+                        self._try_delete_building(coord)
+
+        elif event.type in (
+            pygame.WINDOWLEAVE, pygame.WINDOWFOCUSLOST,
+            pygame.WINDOWMINIMIZED,
+        ):
+            # Cursor left the window or window lost focus — cancel
+            # any in-progress drag so it doesn't get stuck on.
+            if self._drag_button:
+                self.camera.stop_drag()
+                self._drag_button = 0
+            self._build_dragging = False
+            self._delete_dragging = False
 
         elif event.type == pygame.MOUSEWHEEL:
             pos = pygame.mouse.get_pos()
@@ -885,11 +961,23 @@ class Game:
                 10 ** 9 if free_build
                 else self.world.building_inventory[BuildingType.BRIDGE]
             )
-            route = self.world.find_path_route(
-                self._path_anchor, self.renderer.ghost_coord,
-                allow_bridges=bridges_unlocked,
-                bridge_stock=bridge_stock,
+            cache_key = (
+                self._path_anchor,
+                self.renderer.ghost_coord,
+                bridges_unlocked,
+                bridge_stock,
+                self.world._topology_version,
             )
+            if cache_key == self._path_preview_cache_key:
+                route = self._path_preview_cache_route
+            else:
+                route = self.world.find_path_route(
+                    self._path_anchor, self.renderer.ghost_coord,
+                    allow_bridges=bridges_unlocked,
+                    bridge_stock=bridge_stock,
+                )
+                self._path_preview_cache_key = cache_key
+                self._path_preview_cache_route = route
             if route:
                 # Prepend anchor tile so preview includes it.
                 anchor_tile = self.world.grid.get(self._path_anchor)
