@@ -1001,12 +1001,14 @@ class World:
             return {Resource.FOOD}
         if t == BuildingType.MINING_MACHINE:
             return {Resource.IRON, Resource.COPPER}
+        if t == BuildingType.OIL_DRILL:
+            return {Resource.OIL}
         if t == BuildingType.REFINERY and b.recipe is None:
             return {Resource.IRON, Resource.COPPER}
         if t in (
             BuildingType.WORKSHOP, BuildingType.FORGE,
             BuildingType.REFINERY, BuildingType.ASSEMBLER,
-            BuildingType.CHEMICAL_PLANT,
+            BuildingType.CHEMICAL_PLANT, BuildingType.OIL_REFINERY,
         ):
             if isinstance(b.recipe, Resource):
                 mrec = MATERIAL_RECIPES.get(b.recipe)
@@ -1084,7 +1086,7 @@ class World:
         if b.type in (
             BuildingType.WORKSHOP, BuildingType.FORGE,
             BuildingType.REFINERY, BuildingType.ASSEMBLER,
-            BuildingType.CHEMICAL_PLANT,
+            BuildingType.CHEMICAL_PLANT, BuildingType.OIL_REFINERY,
         ) and isinstance(b.recipe, Resource):
             mrec = MATERIAL_RECIPES.get(b.recipe)
             if mrec is not None:
@@ -1137,11 +1139,11 @@ class World:
         return b.type in (
             BuildingType.WOODCUTTER, BuildingType.QUARRY,
             BuildingType.GATHERER, BuildingType.FARM,
-            BuildingType.MINING_MACHINE,
+            BuildingType.MINING_MACHINE, BuildingType.OIL_DRILL,
         ) or (b.type in (
             BuildingType.WORKSHOP, BuildingType.FORGE,
             BuildingType.REFINERY, BuildingType.ASSEMBLER,
-            BuildingType.CHEMICAL_PLANT,
+            BuildingType.CHEMICAL_PLANT, BuildingType.OIL_REFINERY,
         ) and isinstance(b.recipe, Resource))
 
     def _is_consumer(self, b: "Building") -> bool:
@@ -1150,7 +1152,7 @@ class World:
         if b.type in (
             BuildingType.WORKSHOP, BuildingType.FORGE,
             BuildingType.REFINERY, BuildingType.ASSEMBLER,
-            BuildingType.CHEMICAL_PLANT,
+            BuildingType.CHEMICAL_PLANT, BuildingType.OIL_REFINERY,
         ) and isinstance(b.recipe, Resource):
             return True
         if b.type == BuildingType.RESEARCH_CENTER:
@@ -1178,9 +1180,12 @@ class World:
             BuildingType.WORKSHOP, BuildingType.FORGE,
             BuildingType.REFINERY, BuildingType.ASSEMBLER,
             BuildingType.CHEMICAL_PLANT, BuildingType.MINING_MACHINE,
+            BuildingType.OIL_REFINERY,
         ):
             r = b.recipe
             return r if isinstance(r, Resource) else None
+        if bt == BuildingType.OIL_DRILL:
+            return Resource.OIL
         return None
 
     def _network_resource_buffer(
@@ -2137,7 +2142,7 @@ class World:
         if b.type in (
             BuildingType.WORKSHOP, BuildingType.FORGE,
             BuildingType.REFINERY, BuildingType.ASSEMBLER,
-            BuildingType.CHEMICAL_PLANT,
+            BuildingType.CHEMICAL_PLANT, BuildingType.OIL_REFINERY,
         ) and isinstance(b.recipe, Resource):
             mrec = MATERIAL_RECIPES.get(b.recipe)
             if mrec is not None:
@@ -2423,6 +2428,31 @@ class World:
                     rate -= take
                     self._maybe_deplete_tile(tile)
 
+        # Oil drill: placed *on top of* an OIL_DEPOSIT tile.  No fuel
+        # required — extracts OIL into its own storage at a fixed rate
+        # until the deposit beneath is depleted (then the tile reverts
+        # to its underlying terrain).
+        for od in self.buildings.by_type(BuildingType.OIL_DRILL):
+            tile = self.grid.get(od.coord)
+            if tile is None or tile.terrain != Terrain.OIL_DEPOSIT:
+                od.active = False
+                continue
+            if tile.resource_amount <= 0:
+                od.active = False
+                continue
+            free = self._storage_free(od)
+            if free <= 0:
+                od.active = False
+                continue
+            take = min(params.OIL_DRILL_RATE * dt, tile.resource_amount, free)
+            if take <= 0:
+                od.active = False
+                continue
+            tile.resource_amount -= take
+            self._produce(od, Resource.OIL, take)
+            od.active = True
+            self._maybe_deplete_tile(tile)
+
     # ── Crafting stations (Workshop / Forge / Refinery) ──────────
 
     def _update_workshops(self, dt: float) -> None:
@@ -2440,6 +2470,7 @@ class World:
             BuildingType.REFINERY,
             BuildingType.ASSEMBLER,
             BuildingType.CHEMICAL_PLANT,
+            BuildingType.OIL_REFINERY,
         )
         for stype in station_types:
             for station in self.buildings.by_type(stype):

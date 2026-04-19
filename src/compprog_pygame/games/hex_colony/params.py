@@ -79,7 +79,10 @@ BUILDING_COST_TRIBAL_CAMP: dict[str, int] = {}
 BUILDING_COST_CHEMICAL_PLANT: dict[str, int] = {"BRICKS": 10, "STEEL_BAR": 4, "GLASS": 6, "GEARS": 4}
 BUILDING_COST_CONVEYOR: dict[str, int] = {"IRON_BAR": 1, "GEARS": 1}
 BUILDING_COST_SOLAR_ARRAY: dict[str, int] = {"GLASS": 6, "SILICON": 4, "STEEL_BAR": 4, "PLASTIC": 4}
-BUILDING_COST_ROCKET_SILO: dict[str, int] = {"CONCRETE": 30, "STEEL_BAR": 20, "ELECTRONICS": 10}
+BUILDING_COST_ROCKET_SILO: dict[str, int] = {"REINFORCED_CONCRETE": 20, "STEEL_PLATE": 15, "ELECTRONICS": 10, "ROBOTIC_ARM": 4}
+# ── Petrochemical chain ────────────────────────────────────
+BUILDING_COST_OIL_DRILL: dict[str, int] = {"STEEL_BAR": 6, "GEARS": 4, "PLANKS": 4}
+BUILDING_COST_OIL_REFINERY: dict[str, int] = {"BRICKS": 12, "STEEL_BAR": 6, "COPPER_WIRE": 4, "GEARS": 4}
 
 # ═══════════════════════════════════════════════════════════════════
 #  BUILDING CAPACITY
@@ -109,6 +112,8 @@ BUILDING_MAX_WORKERS_CHEMICAL_PLANT: int = 2
 BUILDING_MAX_WORKERS_CONVEYOR: int = 0
 BUILDING_MAX_WORKERS_SOLAR_ARRAY: int = 0
 BUILDING_MAX_WORKERS_ROCKET_SILO: int = 0
+BUILDING_MAX_WORKERS_OIL_DRILL: int = 0
+BUILDING_MAX_WORKERS_OIL_REFINERY: int = 2
 
 # Housing capacity (number of people that can live here; 0 = not a dwelling)
 BUILDING_HOUSING_CAMP: int = 10
@@ -134,6 +139,8 @@ BUILDING_HOUSING_CHEMICAL_PLANT: int = 0
 BUILDING_HOUSING_CONVEYOR: int = 0
 BUILDING_HOUSING_SOLAR_ARRAY: int = 0
 BUILDING_HOUSING_ROCKET_SILO: int = 0
+BUILDING_HOUSING_OIL_DRILL: int = 0
+BUILDING_HOUSING_OIL_REFINERY: int = 0
 
 # Storage capacity (max total resources stored; 0 = none)
 # Camp capacity is set dynamically at placement time.
@@ -160,6 +167,8 @@ BUILDING_STORAGE_CHEMICAL_PLANT: int = 80
 BUILDING_STORAGE_CONVEYOR: int = 0
 BUILDING_STORAGE_SOLAR_ARRAY: int = 0
 BUILDING_STORAGE_ROCKET_SILO: int = 200
+BUILDING_STORAGE_OIL_DRILL: int = 80
+BUILDING_STORAGE_OIL_REFINERY: int = 80
 
 # ═══════════════════════════════════════════════════════════════════
 #  LOGISTICS
@@ -204,11 +213,15 @@ REFINERY_RATE: float = 0.3  # units per second per worker (faster than raw gathe
 # than a worker-staffed refinery but stops entirely when out of fuel.
 MINING_MACHINE_RATE: float = 1.2  # ore per second (machine, not per worker)
 MINING_MACHINE_FUEL_RATE: float = 0.08  # CHARCOAL per second while active
+# Oil drill: placed directly on an OIL_DEPOSIT tile.  No fuel needed —
+# extracts crude OIL straight into its own storage at a steady rate.
+OIL_DRILL_RATE: float = 0.6  # crude oil per second
 # Acceptable fuel resources (name -> energy multiplier).  Currently only
 # CHARCOAL is implemented; additional fuels (coal, oil) will be added
 # later and plugged in here.
 MINING_MACHINE_FUELS: dict[str, float] = {
     "CHARCOAL": 1.0,
+    "PETROLEUM": 2.5,  # cleaner-burning, lasts 2.5x longer per unit
 }
 
 # Farm: produces food per second per worker (no terrain requirement)
@@ -257,6 +270,8 @@ BUILDING_RECIPE_STATION: dict[str, str] = {
     "CONVEYOR":         "WORKSHOP",
     "SOLAR_ARRAY":      "ASSEMBLER",
     "ROCKET_SILO":      "ASSEMBLER",
+    "OIL_DRILL":        "ASSEMBLER",
+    "OIL_REFINERY":     "ASSEMBLER",
 }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -276,6 +291,7 @@ RECIPE_STATION_FORGE: str = "FORGE"
 RECIPE_STATION_REFINERY: str = "REFINERY"
 RECIPE_STATION_ASSEMBLER: str = "ASSEMBLER"
 RECIPE_STATION_CHEMICAL_PLANT: str = "CHEMICAL_PLANT"
+RECIPE_STATION_OIL_REFINERY: str = "OIL_REFINERY"
 
 RECIPE_PLANKS: dict = {
     "output_amount": 2,
@@ -388,6 +404,58 @@ RECIPE_ROCKET_PART: dict = {
     "station": RECIPE_STATION_ASSEMBLER,
 }
 
+# ── Petrochemical chain ──────────────────────────────────
+RECIPE_PETROLEUM: dict = {
+    "output_amount": 1,
+    "inputs": {"OIL": 2},
+    "time": 8.0,
+    "station": RECIPE_STATION_OIL_REFINERY,
+}
+RECIPE_LUBRICANT: dict = {
+    "output_amount": 1,
+    "inputs": {"OIL": 3},
+    "time": 10.0,
+    "station": RECIPE_STATION_OIL_REFINERY,
+}
+RECIPE_RUBBER: dict = {
+    "output_amount": 2,
+    "inputs": {"PETROLEUM": 2},
+    "time": 10.0,
+    "station": RECIPE_STATION_CHEMICAL_PLANT,
+}
+
+# ── Advanced materials (every late-game tech node unlocks one) ────────
+RECIPE_STEEL_PLATE: dict = {
+    "output_amount": 1,
+    "inputs": {"STEEL_BAR": 2},
+    "time": 10.0,
+    "station": RECIPE_STATION_FORGE,
+}
+RECIPE_REINFORCED_CONCRETE: dict = {
+    "output_amount": 1,
+    "inputs": {"CONCRETE": 2, "STEEL_PLATE": 1},
+    "time": 12.0,
+    "station": RECIPE_STATION_REFINERY,
+}
+RECIPE_ADVANCED_CIRCUIT: dict = {
+    "output_amount": 1,
+    "inputs": {"CIRCUIT": 2, "RUBBER": 1},
+    "time": 14.0,
+    "station": RECIPE_STATION_ASSEMBLER,
+}
+RECIPE_ROBOTIC_ARM: dict = {
+    "output_amount": 1,
+    "inputs": {"STEEL_PLATE": 1, "ADVANCED_CIRCUIT": 1, "LUBRICANT": 1},
+    "time": 18.0,
+    "station": RECIPE_STATION_ASSEMBLER,
+}
+RECIPE_PAPER: dict = {
+    "output_amount": 2,
+    "inputs": {"WOOD": 1, "FIBER": 1},
+    "time": 5.0,
+    "station": RECIPE_STATION_WORKSHOP,
+}
+
 # All material recipes, keyed by output-resource name.  resources.py
 # builds the typed MATERIAL_RECIPES registry from this dict.
 MATERIAL_RECIPE_DATA: dict[str, dict] = {
@@ -409,6 +477,16 @@ MATERIAL_RECIPE_DATA: dict[str, dict] = {
     "BATTERY": RECIPE_BATTERY,
     "ROCKET_FUEL": RECIPE_ROCKET_FUEL,
     "ROCKET_PART": RECIPE_ROCKET_PART,
+    # Petrochemical chain
+    "PETROLEUM": RECIPE_PETROLEUM,
+    "LUBRICANT": RECIPE_LUBRICANT,
+    "RUBBER": RECIPE_RUBBER,
+    # Late-game advanced materials
+    "STEEL_PLATE": RECIPE_STEEL_PLATE,
+    "REINFORCED_CONCRETE": RECIPE_REINFORCED_CONCRETE,
+    "ADVANCED_CIRCUIT": RECIPE_ADVANCED_CIRCUIT,
+    "ROBOTIC_ARM": RECIPE_ROBOTIC_ARM,
+    "PAPER": RECIPE_PAPER,
 }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -505,17 +583,32 @@ TIER_DATA: list[dict] = [
     },
     # ── Tier 5 ───────────────────────────────────────────────────
     {
+        "name": "Petrochemical",
+        "description": "Tap surface oil deposits and refine their products",
+        # Oil Drill / Oil Refinery are unlocked via the tech tree.
+        "unlocks_buildings": [],
+        "requirements": {
+            "population": 42,
+            "resource_gathered": {"OIL": 30, "PETROLEUM": 20, "RUBBER": 8},
+            "research_count": 8,
+        },
+    },
+    # ── Tier 6 ───────────────────────────────────────────────────
+    {
         "name": "Automation",
         "description": "Power and automate your colony",
         # Solar Array is unlocked via tech (gated by tier).
         "unlocks_buildings": [],
         "requirements": {
             "population": 50,
-            "resource_gathered": {"PLASTIC": 25, "CIRCUIT": 15, "BATTERY": 5},
-            "research_count": 10,
+            "resource_gathered": {
+                "PLASTIC": 25, "CIRCUIT": 15, "BATTERY": 5,
+                "ADVANCED_CIRCUIT": 6,
+            },
+            "research_count": 12,
         },
     },
-    # ── Tier 6 ───────────────────────────────────────────────────
+    # ── Tier 7 ───────────────────────────────────────────────────
     {
         "name": "Spacefarer",
         "description": "Reach for the stars and leave this world",
@@ -523,8 +616,11 @@ TIER_DATA: list[dict] = [
         "unlocks_buildings": [],
         "requirements": {
             "population": 75,
-            "resource_gathered": {"ELECTRONICS": 25, "ROCKET_FUEL": 10},
-            "research_count": 14,
+            "resource_gathered": {
+                "ELECTRONICS": 25, "ROCKET_FUEL": 10,
+                "REINFORCED_CONCRETE": 8, "ROBOTIC_ARM": 4,
+            },
+            "research_count": 17,
         },
     },
 ]
@@ -556,7 +652,7 @@ TECH_TREE_DATA: dict[str, dict] = {
     },
     "agriculture": {
         "name": "Agriculture",
-        "description": "Cultivate crops for steady food supply",
+        "description": "Cultivate crops at Farms for a steady food supply",
         "cost": {"WOOD": 20, "FIBER": 15},
         "time": 45.0,
         "prerequisites": [],
@@ -584,11 +680,12 @@ TECH_TREE_DATA: dict[str, dict] = {
     },
     "fortification": {
         "name": "Fortification",
-        "description": "Reinforce walls with iron studs",
+        "description": "Roll Steel Plates at the Forge for armoured construction",
         "cost": {"STONE": 30, "IRON": 10},
         "time": 55.0,
         "prerequisites": ["metallurgy"],
         "unlocks": [],
+        "unlock_resources": ["STEEL_PLATE"],
         "position": (2, 1),
     },
     "advanced_smelting": {
@@ -603,11 +700,12 @@ TECH_TREE_DATA: dict[str, dict] = {
     },
     "exploration": {
         "name": "Exploration",
-        "description": "Map the surrounding area and chart distant resources",
+        "description": "Mill Paper at the Workshop — needed by future research orders",
         "cost": {"WOOD": 25, "FIBER": 20},
         "time": 45.0,
         "prerequisites": ["advanced_logistics"],
         "unlocks": [],
+        "unlock_resources": ["PAPER"],
         "position": (0, 1),
     },
     # ═══════════════════════════════════════════════════════════
@@ -615,11 +713,12 @@ TECH_TREE_DATA: dict[str, dict] = {
     # ═══════════════════════════════════════════════════════════
     "masonry": {
         "name": "Masonry",
-        "description": "Better stonework: doubles Refinery brick output",
+        "description": "Cast Reinforced Concrete at the Refinery (Concrete + Steel Plate)",
         "cost": {"STONE": 40, "BRICKS": 10},
         "time": 70.0,
         "prerequisites": ["fortification"],
         "unlocks": [],
+        "unlock_resources": ["REINFORCED_CONCRETE"],
         "position": (2, 2),
     },
     "concrete_works": {
@@ -673,13 +772,24 @@ TECH_TREE_DATA: dict[str, dict] = {
         "unlock_resources": ["PLASTIC"],
         "position": (4, 3),
     },
+    "petroleum_engineering": {
+        "name": "Petroleum Engineering",
+        "description": "Drill surface oil deposits and refine them into Petroleum & Lubricant",
+        "cost": {"STEEL_BAR": 6, "GEARS": 6, "BRICKS": 8},
+        "time": 110.0,
+        "prerequisites": ["basic_chemistry"],
+        "unlocks": ["OIL_DRILL", "OIL_REFINERY"],
+        "unlock_resources": ["OIL", "PETROLEUM", "LUBRICANT"],
+        "position": (3, 3),
+    },
     "polymers": {
         "name": "Polymers",
-        "description": "Chemical Plants run 25% faster",
+        "description": "Synthesise Rubber from Petroleum at the Chemical Plant",
         "cost": {"PLASTIC": 15, "STEEL_BAR": 10},
         "time": 130.0,
-        "prerequisites": ["plastics"],
+        "prerequisites": ["plastics", "petroleum_engineering"],
         "unlocks": [],
+        "unlock_resources": ["RUBBER"],
         "position": (4, 4),
     },
     "microchips": {
@@ -713,20 +823,22 @@ TECH_TREE_DATA: dict[str, dict] = {
     },
     "advanced_electronics": {
         "name": "Advanced Electronics",
-        "description": "Assemblers run 25% faster",
+        "description": "Assemble Advanced Circuits (Circuit + Rubber) for next-gen tech",
         "cost": {"ELECTRONICS": 8, "CIRCUIT": 12},
         "time": 140.0,
-        "prerequisites": ["microchips"],
+        "prerequisites": ["microchips", "polymers"],
         "unlocks": [],
+        "unlock_resources": ["ADVANCED_CIRCUIT"],
         "position": (6, 3),
     },
     "automation_logistics": {
         "name": "Automation Logistics",
-        "description": "Logistics workers carry +50% per trip",
+        "description": "Build Robotic Arms — logistics workers carry +50% per trip",
         "cost": {"GEARS": 16, "ELECTRONICS": 4},
         "time": 130.0,
-        "prerequisites": ["conveyor_belts", "microchips"],
+        "prerequisites": ["conveyor_belts", "advanced_electronics"],
         "unlocks": [],
+        "unlock_resources": ["ROBOTIC_ARM"],
         "position": (0, 3),
     },
     # ═══════════════════════════════════════════════════════════
@@ -745,9 +857,9 @@ TECH_TREE_DATA: dict[str, dict] = {
     "orbital_assembly": {
         "name": "Orbital Assembly",
         "description": "Build the Rocket Silo and assemble Rocket Parts",
-        "cost": {"ELECTRONICS": 12, "CONCRETE": 20, "ROCKET_FUEL": 4},
+        "cost": {"ELECTRONICS": 12, "REINFORCED_CONCRETE": 10, "ROCKET_FUEL": 4},
         "time": 240.0,
-        "prerequisites": ["rocketry", "solar_panels", "concrete_works"],
+        "prerequisites": ["rocketry", "solar_panels", "concrete_works", "automation_logistics"],
         "unlocks": ["ROCKET_SILO"],
         "unlock_resources": ["ROCKET_PART"],
         "position": (5, 6),
@@ -818,6 +930,25 @@ ORE_COPPER_VEIN_SIZE_MAX: int = 20
 
 # Probability that a neighbor tile is added to the vein during BFS growth
 ORE_VEIN_NEIGHBOR_EXPAND_CHANCE: float = 0.72
+
+# ═══════════════════════════════════════════════════════════════════
+#  OIL DEPOSIT GENERATION
+# ═══════════════════════════════════════════════════════════════════
+
+# Oil deposits spawn as small isolated black-pool clusters scattered
+# across the map.  Each cluster is just 2-4 tiles (so an Oil Drill
+# claims one specific deposit, Factorio-style).
+OIL_DEPOSIT_CLUSTER_COUNT_MIN: int = 4
+OIL_DEPOSIT_CLUSTER_COUNT_BASE: int = 3
+OIL_DEPOSIT_CLUSTER_COUNT_RADIUS_DIVISOR: int = 18
+OIL_DEPOSIT_CLUSTER_SIZE_MIN: int = 2
+OIL_DEPOSIT_CLUSTER_SIZE_MAX: int = 4
+# Probability that a neighbour tile joins an oil pool during BFS growth.
+OIL_DEPOSIT_EXPAND_CHANCE: float = 0.55
+# Resource amount (units of OIL) per deposit tile.
+TILE_RESOURCE_OIL_DEPOSIT: tuple[float, float] = (300.0, 700.0)
+# Minimum hex distance from camp for any oil cluster centre.
+OIL_DEPOSIT_MIN_DISTANCE: int = 14
 
 # ═══════════════════════════════════════════════════════════════════
 #  TERRAIN GENERATION THRESHOLDS

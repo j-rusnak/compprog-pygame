@@ -56,6 +56,7 @@ class Terrain(Enum):
     MOUNTAIN = auto()
     IRON_VEIN = auto()    # iron ore crystals on existing terrain
     COPPER_VEIN = auto()  # copper ore crystals on existing terrain
+    OIL_DEPOSIT = auto()  # surface oil pool — only OIL_DRILL can build on it
 
 
 @dataclass(slots=True)

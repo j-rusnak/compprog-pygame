@@ -38,6 +38,8 @@ class BuildingType(Enum):
     CONVEYOR = auto()        # conveyor belt — workers walk faster on these tiles
     SOLAR_ARRAY = auto()     # solar array — boosts adjacent crafting stations
     ROCKET_SILO = auto()     # rocket silo — assemble & launch the colony rocket
+    OIL_DRILL = auto()       # oil drill — placed on OIL_DEPOSIT, auto-extracts OIL
+    OIL_REFINERY = auto()    # refines OIL into PETROLEUM and LUBRICANT
 
 
 @dataclass(slots=True)
@@ -76,6 +78,8 @@ BUILDING_COSTS: dict[BuildingType, BuildingCost] = {
     BuildingType.CONVEYOR: BuildingCost(_costs_from_dict(params.BUILDING_COST_CONVEYOR)),
     BuildingType.SOLAR_ARRAY: BuildingCost(_costs_from_dict(params.BUILDING_COST_SOLAR_ARRAY)),
     BuildingType.ROCKET_SILO: BuildingCost(_costs_from_dict(params.BUILDING_COST_ROCKET_SILO)),
+    BuildingType.OIL_DRILL: BuildingCost(_costs_from_dict(params.BUILDING_COST_OIL_DRILL)),
+    BuildingType.OIL_REFINERY: BuildingCost(_costs_from_dict(params.BUILDING_COST_OIL_REFINERY)),
 }
 
 # Max workers each building supports
@@ -103,6 +107,8 @@ BUILDING_MAX_WORKERS: dict[BuildingType, int] = {
     BuildingType.CONVEYOR: params.BUILDING_MAX_WORKERS_CONVEYOR,
     BuildingType.SOLAR_ARRAY: params.BUILDING_MAX_WORKERS_SOLAR_ARRAY,
     BuildingType.ROCKET_SILO: params.BUILDING_MAX_WORKERS_ROCKET_SILO,
+    BuildingType.OIL_DRILL: params.BUILDING_MAX_WORKERS_OIL_DRILL,
+    BuildingType.OIL_REFINERY: params.BUILDING_MAX_WORKERS_OIL_REFINERY,
 }
 
 # Housing capacity per building type (0 = not a dwelling)
@@ -130,6 +136,8 @@ BUILDING_HOUSING: dict[BuildingType, int] = {
     BuildingType.CONVEYOR: params.BUILDING_HOUSING_CONVEYOR,
     BuildingType.SOLAR_ARRAY: params.BUILDING_HOUSING_SOLAR_ARRAY,
     BuildingType.ROCKET_SILO: params.BUILDING_HOUSING_ROCKET_SILO,
+    BuildingType.OIL_DRILL: params.BUILDING_HOUSING_OIL_DRILL,
+    BuildingType.OIL_REFINERY: params.BUILDING_HOUSING_OIL_REFINERY,
 }
 
 # Storage capacity per building type.
@@ -160,6 +168,8 @@ BUILDING_STORAGE_CAPACITY: dict[BuildingType, int] = {
     BuildingType.CONVEYOR: params.BUILDING_STORAGE_CONVEYOR,
     BuildingType.SOLAR_ARRAY: params.BUILDING_STORAGE_SOLAR_ARRAY,
     BuildingType.ROCKET_SILO: params.BUILDING_STORAGE_ROCKET_SILO,
+    BuildingType.OIL_DRILL: params.BUILDING_STORAGE_OIL_DRILL,
+    BuildingType.OIL_REFINERY: params.BUILDING_STORAGE_OIL_REFINERY,
 }
 
 
@@ -257,4 +267,5 @@ BUILDING_HARVEST_RESOURCES: dict[BuildingType, set[Resource]] = {
     BuildingType.REFINERY: {Resource.IRON, Resource.COPPER},
     BuildingType.MINING_MACHINE: {Resource.IRON, Resource.COPPER},
     BuildingType.FARM: {Resource.FOOD},
+    BuildingType.OIL_DRILL: {Resource.OIL},
 }

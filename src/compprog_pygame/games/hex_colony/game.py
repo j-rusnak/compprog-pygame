@@ -88,6 +88,8 @@ BUILDABLE = [
     BuildingType.CONVEYOR,
     BuildingType.SOLAR_ARRAY,
     BuildingType.ROCKET_SILO,
+    BuildingType.OIL_DRILL,
+    BuildingType.OIL_REFINERY,
 ]
 
 
@@ -579,10 +581,19 @@ class Game:
 
     def _try_place_building(self, coord, silent: bool = False) -> bool:
         tile = self.world.grid[coord]
-        # Can't build on unbuildable terrain (water, mountain) — except bridges on water
+        # Can't build on unbuildable terrain (water, mountain, oil pool) —
+        # except bridges on water and oil drills on oil deposits.
         if tile.terrain in UNBUILDABLE:
-            if not (self.build_mode == BuildingType.BRIDGE and tile.terrain == Terrain.WATER):
+            if not (self.build_mode == BuildingType.BRIDGE and tile.terrain == Terrain.WATER) \
+               and not (self.build_mode == BuildingType.OIL_DRILL and tile.terrain == Terrain.OIL_DEPOSIT):
                 return False
+        # Oil drills must go on oil deposits — no exceptions.
+        if self.build_mode == BuildingType.OIL_DRILL and tile.terrain != Terrain.OIL_DEPOSIT:
+            if not silent:
+                self.notifications.push(
+                    "Oil Drill must be placed on an Oil Deposit", (255, 150, 80),
+                )
+            return False
         # Tech tree gate (bypassed in god mode)
         if not self.god_mode and not self.tech_tree.is_building_unlocked(self.build_mode):
             req = TECH_REQUIREMENTS.get(self.build_mode)

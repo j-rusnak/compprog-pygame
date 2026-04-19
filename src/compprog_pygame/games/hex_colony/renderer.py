@@ -90,6 +90,8 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_conveyor,
     draw_solar_array,
     draw_rocket_silo,
+    draw_oil_drill,
+    draw_oil_refinery,
 )
 from compprog_pygame.games.hex_colony.render_terrain import (
     DIR_EDGE,
@@ -102,7 +104,7 @@ from compprog_pygame.games.hex_colony.sprites import sprites
 sprites.load_all()
 
 # Building types that collect resources (show range ring)
-_COLLECTION_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER, BuildingType.REFINERY, BuildingType.MINING_MACHINE}
+_COLLECTION_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER, BuildingType.REFINERY, BuildingType.MINING_MACHINE, BuildingType.OIL_DRILL}
 
 class Renderer:
     """Draws the entire game scene."""
@@ -996,6 +998,10 @@ class Renderer:
                 draw_solar_array(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.ROCKET_SILO:
                 draw_rocket_silo(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.OIL_DRILL:
+                draw_oil_drill(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.OIL_REFINERY:
+                draw_oil_refinery(surface, sx, sy, r, zoom)
 
             # Overcrowding indicator: red ! above dwelling
             if (building.housing_capacity > 0
@@ -1377,6 +1383,10 @@ class Renderer:
                 draw_solar_array(bld_surf, cx_local, cy_local, r, zoom)
             elif btype == BuildingType.ROCKET_SILO:
                 draw_rocket_silo(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.OIL_DRILL:
+                draw_oil_drill(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.OIL_REFINERY:
+                draw_oil_refinery(bld_surf, cx_local, cy_local, r, zoom)
 
             if not self.ghost_valid:
                 red_tint = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)

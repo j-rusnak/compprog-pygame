@@ -21,6 +21,7 @@ TERRAIN_BASE_COLOR: dict[Terrain, tuple[int, int, int]] = {
     Terrain.MOUNTAIN:      (110, 100, 90),
     Terrain.IRON_VEIN:     (120, 90, 75),
     Terrain.COPPER_VEIN:   (100, 130, 85),
+    Terrain.OIL_DEPOSIT:   (28, 24, 30),
 }
 
 # Blending weight for neighbor influence (0 = no blend, 1 = full average)
@@ -48,6 +49,7 @@ _TERRAIN_CAT: dict[Terrain, int] = {
     Terrain.STONE_DEPOSIT: 2,
     Terrain.IRON_VEIN: 4,
     Terrain.COPPER_VEIN: 4,
+    Terrain.OIL_DEPOSIT: 5,
 }
 
 # ── Building colours ────────────────────────────────────────────
@@ -76,6 +78,8 @@ BUILDING_COLORS: dict[BuildingType, tuple[int, int, int]] = {
     BuildingType.CONVEYOR: (200, 180, 90),
     BuildingType.SOLAR_ARRAY: (60, 100, 200),
     BuildingType.ROCKET_SILO: (235, 235, 240),
+    BuildingType.OIL_DRILL: (60, 55, 65),
+    BuildingType.OIL_REFINERY: (90, 85, 105),
 }
 
 _PATH_BASE = (185, 165, 120)

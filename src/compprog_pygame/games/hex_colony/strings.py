@@ -33,6 +33,8 @@ BUILDING_LABELS: dict[str, str] = {
     "CONVEYOR":         "Conveyor Belt",
     "SOLAR_ARRAY":      "Solar Array",
     "ROCKET_SILO":      "Rocket Silo",
+    "OIL_DRILL":        "Oil Drill",
+    "OIL_REFINERY":     "Oil Refinery",
 }
 
 # Short label used in the buildings tab (bottom bar).
@@ -43,6 +45,8 @@ BUILDING_SHORT_LABELS: dict[str, str] = {
     "CONVEYOR":        "Conveyor",
     "SOLAR_ARRAY":     "Solar",
     "ROCKET_SILO":     "Rocket",
+    "OIL_DRILL":       "Drill",
+    "OIL_REFINERY":    "Refinery+",
 }
 
 
@@ -71,6 +75,8 @@ BUILDING_DESCRIPTIONS: dict[str, str] = {
     "CONVEYOR":         "Walking on belts is 2x faster",
     "SOLAR_ARRAY":      "Boosts adjacent crafting (passive)",
     "ROCKET_SILO":      "Assemble rocket parts to escape this world",
+    "OIL_DRILL":        "Place on an Oil Deposit to extract crude oil (no fuel needed)",
+    "OIL_REFINERY":     "Refines crude Oil into Petroleum and Lubricant",
 }
 
 
@@ -116,6 +122,15 @@ RESOURCE_NAMES: dict[str, str] = {
     "BATTERY":     "Battery",
     "ROCKET_FUEL": "Rocket Fuel",
     "ROCKET_PART": "Rocket Part",
+    "OIL":         "Crude Oil",
+    "PETROLEUM":   "Petroleum",
+    "LUBRICANT":   "Lubricant",
+    "RUBBER":      "Rubber",
+    "STEEL_PLATE": "Steel Plate",
+    "REINFORCED_CONCRETE": "Reinforced Concrete",
+    "ADVANCED_CIRCUIT":    "Advanced Circuit",
+    "ROBOTIC_ARM": "Robotic Arm",
+    "PAPER":       "Paper",
 }
 
 
@@ -636,6 +651,70 @@ TUTORIAL_STEPS: list[dict[str, object]] = [
             "",
             "Each Rocket Part needs Steel Bars, Electronics,",
             "and Concrete \u2014 plan your supply chains!",
+        ],
+    },
+    {
+        "id": "petrochemical_intro",
+        "title": "Petrochemical Tier",
+        "lines": [
+            "You've entered the Petrochemical tier! Black Oil",
+            "Deposits dot the world \u2014 surface pools of crude",
+            "oil waiting to be tapped.",
+            "",
+            "Research Petroleum Engineering to unlock the Oil",
+            "Drill and Oil Refinery, then refine Oil into",
+            "Petroleum, Lubricant, and Rubber.",
+        ],
+    },
+    {
+        "id": "oil_deposit_intro",
+        "title": "Oil Deposits",
+        "lines": [
+            "Those black pools scattered across the map are",
+            "Oil Deposits. Buildings can't be placed on them",
+            "\u2014 except for the Oil Drill, which sits directly",
+            "on top of one and pumps the crude oil out.",
+            "",
+            "Each deposit holds a finite amount of oil, so",
+            "spread your drills across multiple pools.",
+        ],
+    },
+    {
+        "id": "oil_drill_intro",
+        "title": "The Oil Drill",
+        "lines": [
+            "Place an Oil Drill directly onto an Oil Deposit",
+            "tile. It runs automatically with no fuel and",
+            "fills its own storage with Crude Oil.",
+            "",
+            "Logistics workers will haul the oil to your",
+            "Oil Refinery (or any Storage building).",
+        ],
+    },
+    {
+        "id": "oil_refinery_intro",
+        "title": "The Oil Refinery",
+        "lines": [
+            "The Oil Refinery is a new crafting station that",
+            "turns Crude Oil into Petroleum (a high-grade",
+            "fuel) and Lubricant (used in Robotic Arms).",
+            "",
+            "Petroleum can fuel Mining Machines 2.5x as long",
+            "as Charcoal, and feeds the Chemical Plant's",
+            "Rubber recipe.",
+        ],
+    },
+    {
+        "id": "advanced_materials_intro",
+        "title": "Advanced Materials",
+        "lines": [
+            "Late-game tech now unlocks new materials at",
+            "every node: Steel Plate, Reinforced Concrete,",
+            "Advanced Circuits, and Robotic Arms.",
+            "",
+            "These feed into Automation and Spacefarer tier",
+            "goals \u2014 and the Rocket Silo itself now demands",
+            "Reinforced Concrete and Robotic Arms.",
         ],
     },
 ]

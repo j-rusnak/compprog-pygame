@@ -42,12 +42,24 @@ class Resource(Enum):
     BATTERY = auto()      # assembled from COPPER_BAR + IRON_BAR + PLASTIC
     ROCKET_FUEL = auto()  # mixed at chemical plant from CHARCOAL + PLASTIC
     ROCKET_PART = auto()  # assembled from STEEL_BAR + ELECTRONICS + CONCRETE
+    # ── Petrochemical chain (oil-based) ────────────────────────
+    OIL = auto()          # raw resource pumped from oil deposits
+    PETROLEUM = auto()    # refined fuel from oil refinery
+    LUBRICANT = auto()    # heavy oil byproduct from oil refinery
+    RUBBER = auto()       # synthesised at chemical plant from PETROLEUM
+    # ── Late-game advanced materials ─────────────────────────
+    STEEL_PLATE = auto()         # rolled at the forge from STEEL_BAR
+    REINFORCED_CONCRETE = auto() # cast at the refinery from CONCRETE + STEEL_PLATE
+    ADVANCED_CIRCUIT = auto()    # assembled from CIRCUIT + RUBBER
+    ROBOTIC_ARM = auto()         # assembled from STEEL_PLATE + ADVANCED_CIRCUIT + LUBRICANT
+    PAPER = auto()               # workshop product from WOOD + FIBER (research aid)
 
 
 # Resources harvested directly from the map (not produced in a building).
 RAW_RESOURCES: frozenset[Resource] = frozenset({
     Resource.WOOD, Resource.FIBER, Resource.STONE,
     Resource.FOOD, Resource.IRON, Resource.COPPER,
+    Resource.OIL,
 })
 
 # Processed resources produced at crafting stations.
@@ -58,6 +70,9 @@ PROCESSED_RESOURCES: frozenset[Resource] = frozenset({
     Resource.GEARS, Resource.SILICON, Resource.CIRCUIT,
     Resource.CONCRETE, Resource.PLASTIC, Resource.ELECTRONICS,
     Resource.BATTERY, Resource.ROCKET_FUEL, Resource.ROCKET_PART,
+    Resource.PETROLEUM, Resource.LUBRICANT, Resource.RUBBER,
+    Resource.STEEL_PLATE, Resource.REINFORCED_CONCRETE,
+    Resource.ADVANCED_CIRCUIT, Resource.ROBOTIC_ARM, Resource.PAPER,
 })
 
 
@@ -70,6 +85,7 @@ TERRAIN_RESOURCE: dict[Terrain, Resource] = {
     Terrain.FIBER_PATCH: Resource.FIBER,
     Terrain.IRON_VEIN: Resource.IRON,
     Terrain.COPPER_VEIN: Resource.COPPER,
+    Terrain.OIL_DEPOSIT: Resource.OIL,
 }
 
 
@@ -147,6 +163,7 @@ STATION_FORGE = "FORGE"
 STATION_REFINERY = "REFINERY"
 STATION_ASSEMBLER = "ASSEMBLER"
 STATION_CHEMICAL_PLANT = "CHEMICAL_PLANT"
+STATION_OIL_REFINERY = "OIL_REFINERY"
 
 
 @dataclass(frozen=True, slots=True)

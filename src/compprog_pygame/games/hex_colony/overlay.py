@@ -188,6 +188,9 @@ def build_overlays(
             elif terrain in (Terrain.IRON_VEIN, Terrain.COPPER_VEIN):
                 tile = grid[coord]
                 items.extend(_gen_ore_tile(wx, wy, hex_size, terrain, tile, rng))
+            elif terrain == Terrain.OIL_DEPOSIT:
+                tile = grid[coord]
+                items.extend(_gen_oil_tile(wx, wy, hex_size, tile, rng))
 
     items.sort(key=lambda pair: pair[0])
     sorted_items = [item for _, item in items]
@@ -507,6 +510,51 @@ def _gen_ore_tile(
             color=rng.choice(colors),
             highlight_color=rng.choice(highlights),
             angle=angle,
+        )))
+    return items
+
+
+# ── Oil deposits (surface pools) ────────────────────────────────
+
+_OIL_POOL_COLORS = [(20, 16, 24), (30, 22, 30), (12, 10, 16)]
+_OIL_POOL_HIGHLIGHT = [(70, 55, 80), (55, 45, 60)]
+
+
+def _gen_oil_tile(
+    wx: float, wy: float, s: int, tile: HexTile, rng: _random.Random,
+) -> list[tuple[float, OverlayItem]]:
+    """Render a black surface oil pool over the underlying terrain."""
+    items: list[tuple[float, OverlayItem]] = []
+    underlying = tile.underlying_terrain
+    if underlying == Terrain.GRASS:
+        items.extend(_gen_grass_tile(wx, wy, s, rng))
+    elif underlying in (Terrain.FOREST, Terrain.DENSE_FOREST):
+        for _ in range(rng.randint(0, 2)):
+            ox = rng.uniform(-s * 0.45, s * 0.45)
+            oy = rng.uniform(-s * 0.4, s * 0.4)
+            items.append((wy + oy, OverlayGrassTuft(
+                wx=wx + ox, wy=wy + oy,
+                h=rng.uniform(2, 4),
+                color=rng.choice([(75, 140, 55), (65, 125, 48)]),
+            )))
+
+    # Big central pool plus 1-2 satellite blobs.
+    big_w = s * rng.uniform(0.85, 1.05)
+    big_h = big_w * rng.uniform(0.55, 0.75)
+    items.append((wy, OverlayRock(
+        wx=wx, wy=wy, w=big_w, h=big_h,
+        color=rng.choice(_OIL_POOL_COLORS),
+        highlight_color=rng.choice(_OIL_POOL_HIGHLIGHT),
+    )))
+    for _ in range(rng.randint(1, 2)):
+        ox = rng.uniform(-s * 0.3, s * 0.3)
+        oy = rng.uniform(-s * 0.25, s * 0.25)
+        w = s * rng.uniform(0.20, 0.40)
+        h = w * rng.uniform(0.55, 0.85)
+        items.append((wy + oy, OverlayRock(
+            wx=wx + ox, wy=wy + oy, w=w, h=h,
+            color=rng.choice(_OIL_POOL_COLORS),
+            highlight_color=rng.choice(_OIL_POOL_HIGHLIGHT),
         )))
     return items
 

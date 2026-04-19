@@ -65,6 +65,32 @@ def _population(world: "World") -> int:
     return world.population.count
 
 
+def _research_done(world: "World", node_id: str) -> bool:
+    """True if the named tech tree node has been researched."""
+    tt = getattr(world, "tech_tree", None)
+    if tt is None:
+        return False
+    completed = getattr(tt, "completed", None)
+    if completed is None:
+        return False
+    try:
+        return node_id in completed
+    except TypeError:
+        return False
+
+
+def _has_building(world: "World", type_name: str) -> bool:
+    """True if any building of the named BuildingType has been placed."""
+    from compprog_pygame.games.hex_colony.buildings import BuildingType
+    bt = getattr(BuildingType, type_name, None)
+    if bt is None:
+        return False
+    try:
+        return any(True for _ in world.buildings.by_type(bt))
+    except Exception:
+        return False
+
+
 # Build a lookup from step id -> text dict for quick access.
 _TEXT_BY_ID: dict[str, dict] = {d["id"]: d for d in _TUTORIAL_TEXT}  # type: ignore[arg-type]
 
@@ -229,7 +255,7 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         id="automation_intro",
         title=_text("automation_intro")[0],
         lines=_text("automation_intro")[1],
-        trigger=lambda w, ctx: ctx.get("current_tier_level", 0) >= 4,
+        trigger=lambda w, ctx: ctx.get("current_tier_level", 0) >= 5,
         after=None,
     ),
     _TutorialStep(
@@ -237,7 +263,7 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         title=_text("solar_array_intro")[0],
         lines=_text("solar_array_intro")[1],
         trigger=lambda w, ctx: (
-            ctx.get("current_tier_level", 0) >= 4
+            ctx.get("current_tier_level", 0) >= 5
             and ctx.get("time_in_tier", 0.0) >= 15.0
         ),
         after="automation_intro",
@@ -246,7 +272,7 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         id="spacefarer_intro",
         title=_text("spacefarer_intro")[0],
         lines=_text("spacefarer_intro")[1],
-        trigger=lambda w, ctx: ctx.get("current_tier_level", 0) >= 5,
+        trigger=lambda w, ctx: ctx.get("current_tier_level", 0) >= 6,
         after=None,
     ),
     _TutorialStep(
@@ -254,10 +280,55 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         title=_text("rocket_silo_intro")[0],
         lines=_text("rocket_silo_intro")[1],
         trigger=lambda w, ctx: (
-            ctx.get("current_tier_level", 0) >= 5
+            ctx.get("current_tier_level", 0) >= 6
             and ctx.get("time_in_tier", 0.0) >= 15.0
         ),
         after="spacefarer_intro",
+    ),
+    # ── Petrochemical tier (inserted between Industrial and Automation) ──
+    _TutorialStep(
+        id="petrochemical_intro",
+        title=_text("petrochemical_intro")[0],
+        lines=_text("petrochemical_intro")[1],
+        trigger=lambda w, ctx: ctx.get("current_tier_level", 0) >= 4,
+        after=None,
+    ),
+    _TutorialStep(
+        id="oil_deposit_intro",
+        title=_text("oil_deposit_intro")[0],
+        lines=_text("oil_deposit_intro")[1],
+        # Fire when the player has researched petroleum_engineering or
+        # has reached the Petrochemical tier and has discovered an oil
+        # tile (we proxy "has discovered" with time-in-tier).
+        trigger=lambda w, ctx: (
+            ctx.get("current_tier_level", 0) >= 4
+            and ctx.get("time_in_tier", 0.0) >= 8.0
+        ),
+        after="petrochemical_intro",
+    ),
+    _TutorialStep(
+        id="oil_drill_intro",
+        title=_text("oil_drill_intro")[0],
+        lines=_text("oil_drill_intro")[1],
+        trigger=lambda w, ctx: _research_done(w, "petroleum_engineering"),
+        after="oil_deposit_intro",
+    ),
+    _TutorialStep(
+        id="oil_refinery_intro",
+        title=_text("oil_refinery_intro")[0],
+        lines=_text("oil_refinery_intro")[1],
+        trigger=lambda w, ctx: (
+            _research_done(w, "petroleum_engineering")
+            and _has_building(w, "OIL_DRILL")
+        ),
+        after="oil_drill_intro",
+    ),
+    _TutorialStep(
+        id="advanced_materials_intro",
+        title=_text("advanced_materials_intro")[0],
+        lines=_text("advanced_materials_intro")[1],
+        trigger=lambda w, ctx: ctx.get("current_tier_level", 0) >= 5,
+        after="petrochemical_intro",
     ),
 ]
 

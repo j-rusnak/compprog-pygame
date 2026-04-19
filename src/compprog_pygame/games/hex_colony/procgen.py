@@ -90,7 +90,7 @@ IMPASSABLE = frozenset({Terrain.WATER, Terrain.MOUNTAIN, Terrain.STONE_DEPOSIT})
 
 # Terrain where buildings cannot be placed (subset of IMPASSABLE).
 # Stone deposits are impassable for people but players can build on them.
-UNBUILDABLE = frozenset({Terrain.WATER, Terrain.MOUNTAIN})
+UNBUILDABLE = frozenset({Terrain.WATER, Terrain.MOUNTAIN, Terrain.OIL_DEPOSIT})
 
 SAFE_RADIUS = params.SAFE_ZONE_RADIUS
 
@@ -451,6 +451,77 @@ def _generate_ore_veins(
         eligible = [c for c in eligible if c not in placed]
 
 
+# ── Oil deposit generation ────────────────────────────────
+
+def _generate_oil_deposits(
+    grid: HexGrid,
+    rng: _random.Random,
+    settings: HexColonySettings,
+    num_clusters: int,
+) -> None:
+    """Scatter small black oil pools across the map.
+
+    Oil deposits sit *on top of* their existing terrain (the underlying
+    terrain is preserved in ``tile.underlying_terrain``).  Each deposit
+    is a small 2-4 tile cluster, far from the camp, never on water,
+    mountain, or another resource node.  Only an Oil Drill can be built
+    on an OIL_DEPOSIT tile.
+    """
+    origin = HexCoord(0, 0)
+    min_dist = max(SAFE_RADIUS + 4, params.OIL_DEPOSIT_MIN_DISTANCE)
+    blocked = {Terrain.WATER, Terrain.MOUNTAIN,
+               Terrain.IRON_VEIN, Terrain.COPPER_VEIN, Terrain.OIL_DEPOSIT}
+    eligible = [
+        c for c in grid.coords()
+        if c.distance(origin) >= min_dist
+        and grid[c].terrain not in blocked
+    ]
+    if not eligible:
+        return
+
+    placed: set[HexCoord] = set()
+    lo, hi = params.TILE_RESOURCE_OIL_DEPOSIT
+
+    for _ in range(num_clusters):
+        if not eligible:
+            break
+        seed = rng.choice(eligible)
+        cluster_size = rng.randint(
+            params.OIL_DEPOSIT_CLUSTER_SIZE_MIN,
+            params.OIL_DEPOSIT_CLUSTER_SIZE_MAX,
+        )
+
+        frontier = [seed]
+        visited: set[HexCoord] = {seed}
+        cluster_tiles: list[HexCoord] = []
+
+        while frontier and len(cluster_tiles) < cluster_size:
+            rng.shuffle(frontier)
+            cur = frontier.pop(0)
+            tile = grid.get(cur)
+            if tile is None or cur in placed:
+                continue
+            if tile.terrain in blocked:
+                continue
+            if cur.distance(origin) < min_dist:
+                continue
+
+            tile.underlying_terrain = tile.terrain
+            tile.terrain = Terrain.OIL_DEPOSIT
+            tile.resource_amount = rng.uniform(lo, hi)
+            tile.food_amount = 0.0
+            cluster_tiles.append(cur)
+            placed.add(cur)
+
+            for nb in cur.neighbors():
+                if nb not in visited:
+                    visited.add(nb)
+                    if rng.random() < params.OIL_DEPOSIT_EXPAND_CHANCE:
+                        frontier.append(nb)
+
+        eligible = [c for c in eligible if c not in placed]
+
+
 # ── Public API ───────────────────────────────────────────────────
 
 def _generate_single_region(seed: str, settings: HexColonySettings) -> HexGrid:
@@ -636,6 +707,10 @@ def _build_multi_region_terrain(
                         num_veins=copper_veins,
                         vein_min=params.ORE_COPPER_VEIN_SIZE_MIN,
                         vein_max=params.ORE_COPPER_VEIN_SIZE_MAX)
+    oil_clusters = max(params.OIL_DEPOSIT_CLUSTER_COUNT_MIN,
+                       params.OIL_DEPOSIT_CLUSTER_COUNT_BASE
+                       + effective_radius // params.OIL_DEPOSIT_CLUSTER_COUNT_RADIUS_DIVISOR)
+    _generate_oil_deposits(grid, rng, ore_settings, num_clusters=oil_clusters)
     _report(0.92, "Scattering ore veins")
 
     # --- Pass 6: clear safe zone around centre origin ----------------

@@ -45,6 +45,17 @@ _PALETTE: dict[Resource, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
     Resource.BATTERY:     ((215, 180,  50), (250, 230, 110)),
     Resource.ROCKET_FUEL: ((185,  80,  45), (240, 140,  80)),
     Resource.ROCKET_PART: ((180, 190, 210), (235, 240, 250)),
+    # Petrochemical chain
+    Resource.OIL:               (( 25,  20,  28), ( 70,  55,  80)),
+    Resource.PETROLEUM:         ((170, 110,  40), (235, 185, 100)),
+    Resource.LUBRICANT:         ((205, 175,  85), (245, 220, 145)),
+    Resource.RUBBER:            (( 40,  40,  45), (110, 110, 115)),
+    # Late-game advanced materials
+    Resource.STEEL_PLATE:       ((150, 165, 195), (220, 230, 250)),
+    Resource.REINFORCED_CONCRETE: ((130, 140, 150), (195, 205, 215)),
+    Resource.ADVANCED_CIRCUIT:  (( 80, 145, 110), (170, 240, 200)),
+    Resource.ROBOTIC_ARM:       ((175, 185, 205), (235, 240, 250)),
+    Resource.PAPER:             ((235, 230, 215), (255, 252, 240)),
 }
 
 _DEFAULT = ((180, 180, 180), (230, 230, 230))

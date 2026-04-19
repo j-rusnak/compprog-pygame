@@ -1278,3 +1278,96 @@ def draw_rocket_silo(surface: pygame.Surface, sx: float, sy: float, r: int, z: f
         (isx + body_w // 3, body_rect.bottom),
         (isx, body_rect.bottom + max(2, int(r * 0.18))),
     ])
+
+
+def draw_oil_drill(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Oil Drill — small derrick + horse-head pump on top of an oil pool."""
+    if _try_sprite(surface, "buildings/oil_drill", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    base = (60, 55, 65)
+    metal = (140, 140, 150)
+    accent = (200, 90, 50)
+    # Concrete pad
+    pad_w = max(4, int(r * 1.3))
+    pad_h = max(2, int(r * 0.30))
+    pad_rect = pygame.Rect(isx - pad_w // 2, isy + max(2, int(r * 0.40)) - pad_h // 2, pad_w, pad_h)
+    pygame.draw.rect(surface, (130, 130, 125), pad_rect, border_radius=max(1, iz))
+    # Derrick legs (X frame)
+    leg_h = max(6, int(r * 1.0))
+    top_y = pad_rect.y - leg_h
+    pygame.draw.line(surface, metal,
+                     (pad_rect.x + iz, pad_rect.y),
+                     (isx, top_y), max(1, iz))
+    pygame.draw.line(surface, metal,
+                     (pad_rect.right - iz, pad_rect.y),
+                     (isx, top_y), max(1, iz))
+    pygame.draw.line(surface, metal,
+                     (pad_rect.x + pad_w // 4, pad_rect.y),
+                     (isx + pad_w // 6, top_y + leg_h // 3), max(1, iz))
+    pygame.draw.line(surface, metal,
+                     (pad_rect.right - pad_w // 4, pad_rect.y),
+                     (isx - pad_w // 6, top_y + leg_h // 3), max(1, iz))
+    # Pivot block at top
+    pygame.draw.rect(surface, base,
+                     pygame.Rect(isx - max(2, int(r * 0.18)), top_y,
+                                 max(4, int(r * 0.36)), max(3, int(r * 0.22))))
+    # Horse-head walking beam
+    beam_len = max(6, int(r * 1.2))
+    beam_thick = max(2, int(r * 0.18))
+    beam_y = top_y + beam_thick // 2
+    beam_rect = pygame.Rect(isx - beam_len // 2, beam_y, beam_len, beam_thick)
+    pygame.draw.rect(surface, accent, beam_rect, border_radius=max(1, iz))
+    # Horse head end
+    head_r = max(2, int(r * 0.20))
+    pygame.draw.circle(surface, accent, (beam_rect.right, beam_rect.centery), head_r)
+
+
+def draw_oil_refinery(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Oil Refinery — twin distillation columns linked by pipes."""
+    if _try_sprite(surface, "buildings/oil_refinery", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    base = (90, 85, 105)
+    dark = _darken(base, 0.65)
+    light = _lighten(base, 1.30)
+    pipe = (160, 140, 90)
+    # Foundation slab
+    slab_w = max(6, int(r * 1.5))
+    slab_h = max(2, int(r * 0.22))
+    slab_rect = pygame.Rect(isx - slab_w // 2, isy + max(2, int(r * 0.35)) - slab_h // 2,
+                             slab_w, slab_h)
+    pygame.draw.rect(surface, dark, slab_rect, border_radius=max(1, iz))
+    # Twin columns
+    col_w = max(3, int(r * 0.36))
+    col_h = max(8, int(r * 1.1))
+    col_top = slab_rect.y - col_h
+    left_col = pygame.Rect(isx - int(r * 0.55), col_top, col_w, col_h)
+    right_col = pygame.Rect(isx + int(r * 0.55) - col_w, col_top, col_w, col_h)
+    for col in (left_col, right_col):
+        pygame.draw.rect(surface, base, col, border_radius=max(1, iz))
+        pygame.draw.rect(surface, dark, col, iz, border_radius=max(1, iz))
+        # bands
+        for f in (0.25, 0.55, 0.85):
+            by = col.y + int(col.h * f)
+            pygame.draw.line(surface, light, (col.x + iz, by),
+                             (col.right - iz, by), max(1, iz))
+    # Cap domes
+    for col in (left_col, right_col):
+        pygame.draw.circle(surface, light, (col.centerx, col.y), max(2, col_w // 2))
+    # Linking pipe near the top
+    link_y = col_top + max(2, int(col_h * 0.18))
+    pygame.draw.line(surface, pipe,
+                     (left_col.right, link_y), (right_col.x, link_y), max(2, iz * 2))
+    # Vent flame on the left column
+    flame_y = col_top - max(2, int(r * 0.18))
+    pygame.draw.polygon(surface, (240, 160, 60), [
+        (left_col.centerx - max(1, iz), flame_y + iz),
+        (left_col.centerx + max(1, iz), flame_y + iz),
+        (left_col.centerx, flame_y - max(2, iz * 2)),
+    ])
+
+
+
