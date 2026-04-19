@@ -1358,9 +1358,23 @@ class World:
         ) and isinstance(b.recipe, Resource):
             mrec = MATERIAL_RECIPES.get(b.recipe)
             if mrec is not None:
+                # Reserve ~80% of storage for inputs so the output
+                # has room to accumulate between worker pickups.
+                budget = b.storage_capacity * 0.8
+                # Ignore fluid inputs when sizing the per-input cap —
+                # they don't occupy worker-deliverable storage.
+                solid = {r: a for r, a in mrec.inputs.items()
+                         if r not in FLUID_RESOURCES}
+                total = sum(solid.values()) or 1.0
+                # Default desired buffer is 2x the recipe amount, but
+                # scale every input down proportionally if 2x for all
+                # inputs would exceed the budget.
+                scale = min(2.0, budget / total)
                 for res, amt in mrec.inputs.items():
+                    if res in FLUID_RESOURCES:
+                        continue
                     have = b.storage.get(res, 0.0)
-                    target = amt * 2
+                    target = amt * scale
                     need = max(0.0, target - have)
                     if need > 0.5:
                         out[res] = need
@@ -1372,9 +1386,18 @@ class World:
         if isinstance(b.recipe, BuildingType):
             cost = BUILDING_COSTS.get(b.recipe)
             if cost is not None:
+                # Building recipes don't store an output, so the full
+                # storage capacity is available for inputs.
+                budget = b.storage_capacity
+                solid = {r: a for r, a in cost.costs.items()
+                         if r not in FLUID_RESOURCES}
+                total = sum(solid.values()) or 1.0
+                scale = min(2.0, budget / total)
                 for res, amt in cost.costs.items():
+                    if res in FLUID_RESOURCES:
+                        continue
                     have = b.storage.get(res, 0.0)
-                    target = amt * 2
+                    target = amt * scale
                     need = max(0.0, target - have)
                     if need > 0.5:
                         out[res] = need
@@ -1593,11 +1616,13 @@ class World:
             LOGISTICS_DELIVER → on arrival at dst, deposit cargo, then
                                 return to LOGISTICS_IDLE.
 
-        Job-finding (the expensive O(buildings²) scan) is throttled to
-        ``params.LOGISTICS_JOBS_PER_FRAME`` idle workers per frame in
-        round-robin order — when 50+ haulers all go idle on the same
-        tick this prevents a multi-second stall.  Active workers
-        (PICKUP / DELIVER) are still ticked unconditionally.
+        Job-finding (the expensive O(buildings²) scan) is throttled
+        to ``params.LOGISTICS_JOBS_PER_FRAME`` idle workers per frame
+        AND a hard wall-clock budget of
+        ``params.LOGISTICS_FIND_JOB_BUDGET_MS`` milliseconds — when
+        50+ haulers all go idle on the same tick this prevents a
+        multi-second stall.  Active workers (PICKUP / DELIVER) are
+        still ticked unconditionally.
         """
         idle_indices: list[int] = []
         for i, p in enumerate(self.population.people):
@@ -1614,6 +1639,14 @@ class World:
 
         budget = max(1, params.LOGISTICS_JOBS_PER_FRAME)
         n = len(idle_indices)
+        # Wall-clock fence so a single frame's job-finding can never
+        # blow out the frame budget regardless of how many idle
+        # workers happen to be in scope.  ``perf_counter`` is the
+        # cheapest monotonic high-resolution timer on Windows.
+        from time import perf_counter
+        deadline = perf_counter() + (
+            max(0, params.LOGISTICS_FIND_JOB_BUDGET_MS) / 1000.0
+        )
         # Process up to `budget` idle workers starting from the
         # round-robin cursor so every worker eventually gets a turn.
         start = self._logistics_search_cursor % n
@@ -1624,6 +1657,8 @@ class World:
             self._logistics_tick(p)
             processed += 1
             i = (i + 1) % n
+            if perf_counter() >= deadline:
+                break
         self._logistics_search_cursor = (start + processed) % n
 
     def _logistics_tick(self, p) -> None:
@@ -1809,48 +1844,61 @@ class World:
         demands: list[tuple],
         supplies: list[tuple],
     ) -> list[tuple]:
-        """Restrict the demand pool to the highest-priority tier that
-        has at least one buyer matching an available supplier.
+        """Restrict the demand pool to the highest-priority tier *per
+        resource* that has at least one buyer matching an available
+        supplier.
 
         Each entry in ``demands`` is ``(building, resource, need,
-        empty_frac)``.  When the network's demand_priority list is
-        empty (e.g. brand-new colony) we return the input unchanged.
+        empty_frac)``.  Filtering happens per-resource so a high-tier
+        demand for resource X doesn't suppress a viable lower-tier
+        demand for resource Y when only Y is currently in supply.
+        When the network's demand_priority list is empty (e.g. a
+        brand-new colony) we return the input unchanged.
         """
         tiers = net.demand_priority
         if not tiers:
             return demands
         supply_res = {s[1] for s in supplies}
-        # Group demand entries by tier index.
-        by_tier: dict[int, list[tuple]] = {}
+        # by_res_tier[resource][tier_index] -> list of demand entries.
+        by_res_tier: dict[object, dict[int, list[tuple]]] = {}
         for d in demands:
+            if d[1] not in supply_res:
+                continue
             ti = self._demand_tier_of(d[0], net)
-            by_tier.setdefault(ti, []).append(d)
-        for ti in sorted(by_tier):
-            bucket = by_tier[ti]
-            if any(d[1] in supply_res for d in bucket):
-                return bucket
-        return demands
+            by_res_tier.setdefault(d[1], {}).setdefault(ti, []).append(d)
+        out: list[tuple] = []
+        for r, by_tier in by_res_tier.items():
+            best_ti = min(by_tier)
+            out.extend(by_tier[best_ti])
+        return out if out else demands
 
     def _filter_supplies_by_tier(
         self, net: "Network",
         supplies: list[tuple],
         demands: list[tuple],
     ) -> list[tuple]:
-        """Restrict the supply pool to the highest-priority tier whose
-        offerings can satisfy at least one outstanding demand."""
+        """Restrict the supply pool to the highest-priority tier *per
+        resource* whose offerings can satisfy an outstanding demand.
+
+        Per-resource filtering avoids the failure mode where the top
+        tier holds a useful resource A but suppresses lower-tier
+        suppliers of resource B that consumers also need.
+        """
         tiers = net.supply_priority
         if not tiers:
             return supplies
         demand_res = {d[1] for d in demands}
-        by_tier: dict[int, list[tuple]] = {}
+        by_res_tier: dict[object, dict[int, list[tuple]]] = {}
         for s in supplies:
+            if s[1] not in demand_res:
+                continue
             ti = self._supply_tier_of(s[0], net)
-            by_tier.setdefault(ti, []).append(s)
-        for ti in sorted(by_tier):
-            bucket = by_tier[ti]
-            if any(s[1] in demand_res for s in bucket):
-                return bucket
-        return supplies
+            by_res_tier.setdefault(s[1], {}).setdefault(ti, []).append(s)
+        out: list[tuple] = []
+        for r, by_tier in by_res_tier.items():
+            best_ti = min(by_tier)
+            out.extend(by_tier[best_ti])
+        return out if out else supplies
 
     # ── Population growth ────────────────────────────────────────
 
@@ -1962,32 +2010,50 @@ class World:
         # ── Reservation: subtract capacity already claimed by other
         # logistics workers so new workers spread to uncovered needs
         # instead of all piling onto the same highest-scoring route.
+        # Workers in PICKUP haven't deducted ``src.storage`` yet, so
+        # their pending pickup reserves the supply.  Workers in
+        # DELIVER have already physically removed the resource from
+        # ``src``; reserving it again would double-count and starve
+        # otherwise-viable matches at that supplier.  Destination
+        # demand is reserved in BOTH states (the cargo is en-route
+        # either way).
         claimed_supply: dict[tuple[int, object], float] = {}  # (id(b), res) → qty
         claimed_demand: dict[tuple[int, object], float] = {}
         carry_cap = params.LOGISTICS_CARRY_CAPACITY
         for other in self.population.people:
             if other is p or not other.is_logistics:
                 continue
-            if other.logistics_src is None or other.logistics_dst is None:
-                continue
-            if other.task not in (Task.LOGISTICS_PICKUP, Task.LOGISTICS_DELIVER):
+            if other.logistics_dst is None:
                 continue
             res_key = other.logistics_res
-            sk = (id(other.logistics_src), res_key)
-            dk = (id(other.logistics_dst), res_key)
-            claimed_supply[sk] = claimed_supply.get(sk, 0.0) + carry_cap
-            claimed_demand[dk] = claimed_demand.get(dk, 0.0) + carry_cap
+            if other.task == Task.LOGISTICS_PICKUP and other.logistics_src is not None:
+                sk = (id(other.logistics_src), res_key)
+                claimed_supply[sk] = claimed_supply.get(sk, 0.0) + carry_cap
+                dk = (id(other.logistics_dst), res_key)
+                claimed_demand[dk] = claimed_demand.get(dk, 0.0) + carry_cap
+            elif other.task == Task.LOGISTICS_DELIVER:
+                # Reserve only the destination — the supply has
+                # already been physically consumed at pickup.  Use the
+                # carrying amount (more accurate than carry_cap when
+                # the worker is hauling a partial load).
+                amt = float(other.logistics_amount or 0.0) or float(carry_cap)
+                dk = (id(other.logistics_dst), res_key)
+                claimed_demand[dk] = claimed_demand.get(dk, 0.0) + amt
 
-        best_score = -1e9
-        best_src = best_dst = None
-        best_res = None
-        # Fairness term: a consumer that hasn't received a delivery
-        # for ``FAIR_FULL_BONUS_AFTER`` seconds gets the full bonus,
-        # ramping up linearly from zero.  This breaks ties between
-        # equally-attractive demands and prevents one building in a
-        # demand tier from monopolising the haulers.
-        FAIR_FULL_BONUS_AFTER = 30.0
-        FAIR_BONUS_WEIGHT = 0.6
+        # Collect every viable (sb, db, res) candidate with its score
+        # so that if the absolute-best pair turns out to be unreachable
+        # from the worker's current hex, we can fall back to the next
+        # best instead of giving up for the frame (which used to leave
+        # supply/demand pairs unserved indefinitely whenever the top
+        # pair had a transient pathing issue).
+        candidates: list[tuple[float, "Building", "Building", "Resource"]] = []
+        # Fairness term: a consumer that just received a delivery is
+        # deprioritised for a few seconds so siblings in the same
+        # demand tier can catch up.  The window is short on purpose —
+        # within a tier we want the haulers to rotate every dispatch,
+        # not just settle on the most-empty building.
+        FAIR_FULL_BONUS_AFTER = 4.0
+        FAIR_BONUS_WEIGHT = 1.5
         now = self.time_elapsed
         for sb, sres, samt, sfill in supplies:
             # Effective supply after subtracting claimed reservations.
@@ -1995,7 +2061,18 @@ class World:
             for db, dres, dneed, dempty in demands:
                 if sres != dres or sb is db:
                     continue
-                eff_dneed = dneed - claimed_demand.get((id(db), dres), 0.0)
+                # Effective need after pending deliveries.  We use it
+                # for both magnitude AND urgency so a building with
+                # workers already en-route stops out-scoring siblings
+                # that haven't been dispatched to yet — the previous
+                # behaviour kept piling all haulers onto whichever
+                # building started the frame most empty.
+                claimed = claimed_demand.get((id(db), dres), 0.0)
+                eff_dneed = dneed - claimed
+                if dneed > 0:
+                    eff_dempty = max(0.0, eff_dneed) / dneed * dempty
+                else:
+                    eff_dempty = 0.0
                 # Bonus for storage→consumer (feeding stockpiles back
                 # into the production chain).  We deliberately do NOT
                 # bonus producer→storage anymore — non-storage demands
@@ -2006,10 +2083,11 @@ class World:
                 link_bonus = 0.0
                 if storage_to_consumer:
                     link_bonus += 0.8
-                # Urgency from fill ratios.  Empty demand buildings
-                # edge out full supply buildings by a small margin so
-                # that consumers are kept fed before producers unclog.
-                urgency = sfill * 0.55 + dempty * 0.65
+                # Urgency from fill ratios.  ``eff_dempty`` already
+                # reflects pending deliveries, so equally-empty
+                # tier-mates only diverge once one of them has
+                # incoming cargo.
+                urgency = sfill * 0.55 + eff_dempty * 0.65
                 # Magnitude: what we can actually transport (effective).
                 qty = min(
                     carry_cap, eff_samt, eff_dneed,
@@ -2022,36 +2100,54 @@ class World:
                 )
                 wait = now - last_served
                 if wait <= 0:
-                    fairness = 0.0
+                    # Just served — penalise so siblings catch up.
+                    fairness = -FAIR_BONUS_WEIGHT
                 elif wait >= FAIR_FULL_BONUS_AFTER:
-                    fairness = FAIR_BONUS_WEIGHT
+                    fairness = 0.0
                 else:
-                    fairness = (wait / FAIR_FULL_BONUS_AFTER) * FAIR_BONUS_WEIGHT
+                    # Linear ramp from -W (just served) to 0 (cooled
+                    # off).  Buildings that haven't been served at
+                    # all (last_served = -1e9) land in the ``>=
+                    # FAIR_FULL_BONUS_AFTER`` branch above with
+                    # fairness = 0, which is the neutral baseline.
+                    frac = wait / FAIR_FULL_BONUS_AFTER
+                    fairness = -FAIR_BONUS_WEIGHT * (1.0 - frac)
                 score = (
                     urgency * 1.0
                     + link_bonus
                     + magnitude * 0.3
                     + fairness
                 )
-                if score > best_score:
-                    best_score = score
-                    best_src = sb
-                    best_dst = db
-                    best_res = sres
+                candidates.append((score, sb, db, sres))
 
-        if best_src is None or best_dst is None or best_res is None:
+        if not candidates:
             return
-        path = self._find_building_path(p.hex_pos, best_src.coord)
-        if not path and p.hex_pos != best_src.coord:
+        # Try candidates from best score down — the top pair is the
+        # natural pick, but if its source isn't reachable from the
+        # worker's current hex we fall back to the next-best instead
+        # of leaving the worker idle for another round-robin slot.
+        candidates.sort(key=lambda c: c[0], reverse=True)
+        for _score, best_src, best_dst, best_res in candidates[:8]:
+            if best_src.coord == p.hex_pos:
+                p.logistics_src = best_src
+                p.logistics_dst = best_dst
+                p.logistics_res = best_res
+                p.path = []
+                p.task = Task.LOGISTICS_PICKUP
+                self._demand_last_served[(id(best_dst), best_res)] = now
+                return
+            path = self._find_building_path(p.hex_pos, best_src.coord)
+            if not path:
+                continue
+            p.logistics_src = best_src
+            p.logistics_dst = best_dst
+            p.logistics_res = best_res
+            p.path = path
+            p.task = Task.LOGISTICS_PICKUP
+            # Record the assignment so siblings in the same demand tier
+            # are preferred next time a hauler is dispatched.
+            self._demand_last_served[(id(best_dst), best_res)] = now
             return
-        p.logistics_src = best_src
-        p.logistics_dst = best_dst
-        p.logistics_res = best_res
-        p.path = path
-        p.task = Task.LOGISTICS_PICKUP
-        # Record the assignment so siblings in the same demand tier
-        # are preferred next time a hauler is dispatched.
-        self._demand_last_served[(id(best_dst), best_res)] = now
 
     def _refresh_unreachable_caches(self) -> None:
         """Recompute the unreachable / starved id-sets and push any

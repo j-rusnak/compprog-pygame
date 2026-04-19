@@ -68,13 +68,20 @@ _PHASE_CRASHING = "crashing"   # ship falls, screen shakes
 _PHASE_FADING = "fading"       # fade to black
 _PHASE_DONE = "done"
 
-_FADE_IN_TIME = 1.0
-_OPENING_HOLD = 1.5     # seconds
+_FADE_IN_TIME = 1.2
+_OPENING_HOLD = 2.0     # seconds
 _MIN_BEAT_TIME = 0.6    # min seconds before a click can advance
-_IMPACT_FLASH_TIME = 0.45
-_CRASH_TIME = 3.2
-_FADE_TIME = 1.5
+_IMPACT_FLASH_TIME = 0.55
+_CRASH_TIME = 3.6
+_FADE_TIME = 1.6
 _BEAT_INDEX_OF_IMPACT = 3  # the first "damaged" beat — flash happens before it
+
+# How far the ship is offset to the left of centre, as a fraction of
+# screen width.  Negative = leftwards.
+_SHIP_X_OFFSET_FRAC = -0.06
+# Ship width as a fraction of screen width.  Slightly larger than the
+# previous 0.42 for more presence on screen.
+_SHIP_WIDTH_FRAC = 0.50
 
 
 @dataclass
@@ -181,9 +188,18 @@ class IntroCutscene:
         # Visuals.
         self._ship_offset = (0.0, 0.0)
         self._ship_rot = 0.0
+        self._ship_extra_scale = 1.0  # subtle breathing during dialog
         self._shake = 0.0
         self._flash_alpha = 0.0
         self._fade_alpha = 0.0
+        # Smoothed shake — interpolated toward ``_shake`` so the
+        # wobble doesn't pop on/off between phases.
+        self._shake_smooth = 0.0
+        # Dialog-box slide-in progress (0..1).  Reset every beat so a
+        # new line gracefully eases in instead of popping.
+        self._dialog_anim = 0.0
+        # Pre-rolled debris particles spawned during the crash.
+        self._debris: list[dict] = []
 
         # Fonts.
         self._name_font = pygame.font.Font(None, 32)
@@ -247,10 +263,38 @@ class IntroCutscene:
         self._phase_t += dt
         if self._phase == _PHASE_DIALOG:
             self._beat_t += dt
+            # Ease the dialog box in over ~0.35s.
+            self._dialog_anim = min(1.0, self._dialog_anim + dt / 0.35)
+
+        # Idle ship animation: a gentle bob + sway + breathing scale
+        # while the ship is intact.  After the impact the ship
+        # trembles instead until the crash phase takes over.
+        if self._phase in (_PHASE_FADE_IN, _PHASE_OPENING, _PHASE_DIALOG,
+                           _PHASE_IMPACT_FLASH):
+            if self._current_ship_state() == "intact":
+                bob_y = math.sin(self._total_t * 1.1) * 6.0
+                sway_x = math.sin(self._total_t * 0.7) * 4.0
+                self._ship_offset = (sway_x, bob_y)
+                self._ship_rot = math.sin(self._total_t * 0.9) * 1.5
+                # Keep the ship at a constant scale during the
+                # idle hover — size pulsing read as a rendering
+                # bug rather than "alive".
+                self._ship_extra_scale = 1.0
+            else:
+                # Damaged but pre-crash: jittery, listing to one side.
+                tremor_x = math.sin(self._total_t * 11.0) * 3.5
+                tremor_y = math.sin(self._total_t * 13.0 + 0.7) * 2.5
+                self._ship_offset = (tremor_x - 6.0, tremor_y + 4.0)
+                self._ship_rot = -3.0 + math.sin(
+                    self._total_t * 6.0,
+                ) * 1.5
+                self._ship_extra_scale = 1.0
 
         if self._phase == _PHASE_FADE_IN:
             t = min(1.0, self._phase_t / _FADE_IN_TIME)
-            self._fade_alpha = 255 * (1.0 - t)
+            # Ease-out cubic so the fade settles gently.
+            eased = 1.0 - (1.0 - t) ** 3
+            self._fade_alpha = 255 * (1.0 - eased)
             if self._phase_t >= _FADE_IN_TIME:
                 self._fade_alpha = 0.0
                 self._enter_phase(_PHASE_OPENING)
@@ -261,36 +305,54 @@ class IntroCutscene:
                 self._beat_t = 0.0
 
         elif self._phase == _PHASE_IMPACT_FLASH:
-            # Flash ramps up fast then decays.
-            t = self._phase_t / _IMPACT_FLASH_TIME
-            self._flash_alpha = max(0.0, 255 * (1.0 - t))
-            self._shake = 14.0 * max(0.0, 1.0 - t * 1.5)
+            # Flash ramps up fast then decays (smooth ease-out).
+            t = min(1.0, self._phase_t / _IMPACT_FLASH_TIME)
+            self._flash_alpha = max(0.0, 255 * (1.0 - t * t))
+            self._shake = 18.0 * max(0.0, 1.0 - t * 1.4)
             if self._phase_t >= _IMPACT_FLASH_TIME:
                 self._flash_alpha = 0.0
                 self._shake = 0.0
                 self._enter_phase(_PHASE_DIALOG)
                 self._beat_t = 0.0
+                self._dialog_anim = 0.0
 
         elif self._phase == _PHASE_CRASHING:
             t = min(1.0, self._phase_t / _CRASH_TIME)
-            # Ship falls down-left and tilts.
+            # Quadratic ease-in on the fall; gentler leftward drift
+            # so the trajectory feels heavy rather than swinging.
             self._ship_offset = (
-                -120.0 * t,
-                self.h * 0.55 * (t * t),
+                -90.0 * t - 15.0 * (t * t),
+                self.h * 0.65 * (t * t),
             )
-            self._ship_rot = -45.0 * t
-            self._shake = 18.0 * (1.0 - t * 0.4)
+            # Tumbling: accelerating spin with a subtler wobble.
+            self._ship_rot = -55.0 * t * t + math.sin(
+                self._total_t * 9.0,
+            ) * 1.5
+            # Shake decays gradually instead of cutting off.
+            self._shake = 22.0 * (1.0 - t) + 4.0
+            # Spawn debris particles intermittently.
+            if self._rng.random() < dt * 18.0:
+                self._spawn_debris()
+            self._update_debris(dt)
             if self._phase_t >= _CRASH_TIME:
                 self._shake = 0.0
                 self._enter_phase(_PHASE_FADING)
 
         elif self._phase == _PHASE_FADING:
             t = min(1.0, self._phase_t / _FADE_TIME)
-            self._fade_alpha = 255 * t
+            # Smoothstep so the fade starts slow and settles slow.
+            eased = t * t * (3 - 2 * t)
+            self._fade_alpha = 255 * eased
+            self._update_debris(dt)
             if self._phase_t >= _FADE_TIME:
                 self._fade_alpha = 255
                 self._enter_phase(_PHASE_DONE)
                 self.done = True
+
+        # Smooth the shake value so it ramps in/out instead of popping.
+        rate = 14.0
+        a = 1.0 - math.exp(-rate * dt)
+        self._shake_smooth += (self._shake - self._shake_smooth) * a
 
     def draw(self, screen: pygame.Surface) -> None:
         # Background — starfield + Earth.
@@ -306,34 +368,38 @@ class IntroCutscene:
                     if ship_state == "damaged" else "cutscene/ship")
         ship = sprites.get(ship_key)
         if ship is not None:
-            sw = int(self.w * 0.42)
+            sw = int(self.w * _SHIP_WIDTH_FRAC * self._ship_extra_scale)
             sh = int(sw * 0.5)
             ship_surf = ship.get(sw, sh)
-            if self._ship_rot != 0:
+            if abs(self._ship_rot) > 0.05:
                 ship_surf = pygame.transform.rotozoom(
                     ship_surf, self._ship_rot, 1.0,
                 )
-            cx = self.w // 2 + int(self._ship_offset[0])
+            cx = (
+                self.w // 2
+                + int(self.w * _SHIP_X_OFFSET_FRAC)
+                + int(self._ship_offset[0])
+            )
             cy = int(self.h * 0.42) + int(self._ship_offset[1])
-            if self._shake > 0:
-                cx += self._rng.randint(
-                    -int(self._shake), int(self._shake),
-                )
-                cy += self._rng.randint(
-                    -int(self._shake), int(self._shake),
-                )
+            if self._shake_smooth > 0.5:
+                amp = int(self._shake_smooth)
+                cx += self._rng.randint(-amp, amp)
+                cy += self._rng.randint(-amp, amp)
             screen.blit(
                 ship_surf,
                 (cx - ship_surf.get_width() // 2,
                  cy - ship_surf.get_height() // 2),
             )
 
+        # Debris drawn over the ship so chunks visibly fly off it.
+        self._draw_debris(screen)
+
         # Dialog (only during dialog phases).
         if self._phase == _PHASE_DIALOG:
             speaker, text, _state, side = _DIALOG[self._beat_index]
             self._draw_portrait(screen, speaker, side)
             click_alpha = self._click_pulse_alpha()
-            self._dialog.draw(screen, speaker, text, click_alpha)
+            self._draw_animated_dialog(screen, speaker, text, click_alpha)
 
         # Impact flash.
         if self._flash_alpha > 0:
@@ -369,6 +435,7 @@ class IntroCutscene:
             return
         self._beat_index = next_index
         self._beat_t = 0.0
+        self._dialog_anim = 0.0
 
     def _current_ship_state(self) -> str:
         if self._phase in (_PHASE_OPENING,):
@@ -409,6 +476,99 @@ class IntroCutscene:
         )
         screen.blit(bg, (px - 8, py - 8))
         screen.blit(portrait, (px, py))
+
+    # ── Debris particles ─────────────────────────────────────────
+
+    def _spawn_debris(self) -> None:
+        cx = self.w // 2 + int(self.w * _SHIP_X_OFFSET_FRAC) + int(
+            self._ship_offset[0],
+        )
+        cy = int(self.h * 0.42) + int(self._ship_offset[1])
+        # Spawn from a small region around the ship centre.
+        spread = int(self.w * _SHIP_WIDTH_FRAC * 0.35)
+        x = cx + self._rng.randint(-spread, spread)
+        y = cy + self._rng.randint(-int(spread * 0.2), int(spread * 0.2))
+        # Velocity: mostly outward & downward, with some upward kick.
+        vx = self._rng.uniform(-260.0, 80.0)
+        vy = self._rng.uniform(-220.0, 60.0)
+        self._debris.append({
+            "x": float(x), "y": float(y),
+            "vx": vx, "vy": vy,
+            "size": self._rng.randint(3, 7),
+            "color": self._rng.choice([
+                (220, 200, 170), (180, 150, 110),
+                (240, 180, 90), (160, 140, 120),
+            ]),
+            "life": 1.6,
+            "age": 0.0,
+        })
+
+    def _update_debris(self, dt: float) -> None:
+        gravity = 520.0
+        alive: list[dict] = []
+        for d in self._debris:
+            d["age"] += dt
+            if d["age"] >= d["life"]:
+                continue
+            d["vy"] += gravity * dt
+            d["x"] += d["vx"] * dt
+            d["y"] += d["vy"] * dt
+            alive.append(d)
+        self._debris = alive
+
+    def _draw_debris(self, screen: pygame.Surface) -> None:
+        for d in self._debris:
+            t = d["age"] / d["life"]
+            alpha = max(0, int(255 * (1.0 - t)))
+            size = max(1, int(d["size"] * (1.0 - t * 0.4)))
+            surf = pygame.Surface((size * 2, size * 2), pygame.SRCALPHA)
+            pygame.draw.circle(
+                surf, (*d["color"], alpha), (size, size), size,
+            )
+            screen.blit(
+                surf,
+                (int(d["x"] - size), int(d["y"] - size)),
+            )
+
+    # ── Animated dialog box wrapper ──────────────────────────────
+
+    def _draw_animated_dialog(
+        self,
+        screen: pygame.Surface,
+        speaker: str,
+        text: str,
+        click_alpha: int,
+    ) -> None:
+        """Wrap :meth:`_DialogBox.draw` with a slide-up + fade-in
+        animation driven by ``self._dialog_anim`` (0..1)."""
+        anim = max(0.0, min(1.0, self._dialog_anim))
+        # Ease-out cubic for both translation and alpha.
+        eased = 1.0 - (1.0 - anim) ** 3
+        if eased >= 0.999:
+            self._dialog.draw(screen, speaker, text, click_alpha)
+            return
+        offset_y = int((1.0 - eased) * 32)
+        alpha = int(255 * eased)
+        layer = pygame.Surface(
+            (self._dialog.rect.width, self._dialog.rect.height + 64),
+            pygame.SRCALPHA,
+        )
+        # Render the dialog into the layer at (0, 32) so the
+        # translucency multiplies correctly.
+        tmp_surface = pygame.Surface(
+            (self.w, self.h), pygame.SRCALPHA,
+        )
+        # Temporarily move the dialog rect to draw into ``tmp_surface``.
+        original_rect = self._dialog.rect
+        self._dialog.rect = pygame.Rect(0, 0, original_rect.width, original_rect.height)
+        self._dialog.draw(tmp_surface, speaker, text, click_alpha)
+        self._dialog.rect = original_rect
+        layer.blit(tmp_surface, (0, 0))
+        layer.set_alpha(alpha)
+        screen.blit(
+            layer,
+            (original_rect.x, original_rect.y + offset_y),
+        )
 
 
 def run_cutscene(

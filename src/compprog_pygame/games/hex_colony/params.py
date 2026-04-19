@@ -199,6 +199,14 @@ LOGISTICS_CARRY_CAPACITY: int = 5
 # served promptly while large colonies don't stall.
 LOGISTICS_JOBS_PER_FRAME: int = 4
 
+# Hard wall-clock budget (in milliseconds) for per-frame logistics
+# job-finding.  Even when ``LOGISTICS_JOBS_PER_FRAME`` would allow
+# more, the loop bails out after this many ms so a single tick can
+# never blow the frame budget regardless of colony size.  Idle
+# workers that didn't get a turn this frame are picked up next
+# frame via the round-robin cursor.
+LOGISTICS_FIND_JOB_BUDGET_MS: int = 4
+
 # ═══════════════════════════════════════════════════════════════════
 #  POPULATION GROWTH
 # ═══════════════════════════════════════════════════════════════════
