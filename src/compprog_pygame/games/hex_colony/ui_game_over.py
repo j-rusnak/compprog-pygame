@@ -80,7 +80,7 @@ class GameOverOverlay(Panel):
         n_bld = len(world.buildings.buildings)
         info = render_text_clipped(
             Fonts.label(),
-            GAME_OVER_STATS.format(time=f"{mins}:{secs:02d}", count=n_bld),
+            GAME_OVER_STATS.format(time=f"{mins}:{secs:02d}", buildings=n_bld),
             UI_MUTED, pw - 40,
         )
         surface.blit(info, (

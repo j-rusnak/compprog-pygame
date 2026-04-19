@@ -69,6 +69,12 @@ class Inventory:
 
     def __init__(self) -> None:
         self._stock: dict[Resource, float] = {r: 0.0 for r in Resource}
+        # Cumulative amount ever added to this inventory, per resource.
+        # Used by tier-progression checks so that consumed resources
+        # still count toward "gather X total" requirements.
+        self._total_produced: dict[Resource, float] = {
+            r: 0.0 for r in Resource
+        }
 
     def __getitem__(self, res: Resource) -> float:
         return self._stock[res]
@@ -78,6 +84,8 @@ class Inventory:
 
     def add(self, res: Resource, amount: float) -> None:
         self._stock[res] += amount
+        if amount > 0:
+            self._total_produced[res] += amount
 
     def spend(self, res: Resource, amount: float) -> bool:
         """Try to spend *amount*. Returns True if successful."""
@@ -85,6 +93,10 @@ class Inventory:
             self._stock[res] -= amount
             return True
         return False
+
+    def total_produced(self, res: Resource) -> float:
+        """Cumulative amount ever added to this inventory for *res*."""
+        return self._total_produced[res]
 
     def items(self):
         return self._stock.items()

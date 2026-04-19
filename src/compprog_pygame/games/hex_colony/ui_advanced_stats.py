@@ -15,7 +15,11 @@ from typing import TYPE_CHECKING
 
 import pygame
 
+from compprog_pygame.games.hex_colony import params
+from compprog_pygame.games.hex_colony.buildings import BuildingType
+from compprog_pygame.games.hex_colony.hex_grid import Terrain
 from compprog_pygame.games.hex_colony.resources import (
+    MATERIAL_RECIPES,
     PROCESSED_RESOURCES,
     RAW_RESOURCES,
     Resource,
@@ -153,13 +157,6 @@ class StatsHistory:
         when their recipe outputs *res*; gatherers/farms/refineries
         contribute their per-worker rate × workers (× any bonus).
         """
-        from compprog_pygame.games.hex_colony import params
-        from compprog_pygame.games.hex_colony.buildings import BuildingType
-        from compprog_pygame.games.hex_colony.hex_grid import Terrain
-        from compprog_pygame.games.hex_colony.resources import (
-            MATERIAL_RECIPES,
-        )
-
         s = world.settings
         total = 0.0
         for b in world.buildings.buildings:
@@ -233,10 +230,6 @@ class StatsHistory:
     def consumption_rate(self, world: "World", res: Resource) -> float:
         """Live units/sec *consumed* by currently-working crafting
         stations using *res* as a recipe input."""
-        from compprog_pygame.games.hex_colony.buildings import BuildingType
-        from compprog_pygame.games.hex_colony.resources import (
-            MATERIAL_RECIPES,
-        )
         total = 0.0
         for b in world.buildings.buildings:
             if not getattr(b, "active", False) or b.workers <= 0:

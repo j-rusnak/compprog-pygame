@@ -22,7 +22,11 @@ from compprog_pygame.games.hex_colony.ui_resource_bar import ResourceBar
 from compprog_pygame.games.hex_colony.ui_tile_info import TileInfoPanel
 from compprog_pygame.games.hex_colony.world import World
 from compprog_pygame.games.hex_colony.notifications import NotificationManager
-from compprog_pygame.games.hex_colony.tech_tree import TechTree, TierTracker, TECH_REQUIREMENTS, TECH_NODES
+from compprog_pygame.games.hex_colony.tech_tree import (
+    TechTree, TierTracker, TECH_REQUIREMENTS, TECH_NODES,
+    TIERS, TIER_BUILDING_REQUIREMENTS,
+)
+from compprog_pygame.games.hex_colony.procgen import UNBUILDABLE
 from compprog_pygame.games.hex_colony.blueprints import BlueprintManager
 from compprog_pygame.games.hex_colony.supply_chain import draw_supply_lines
 from compprog_pygame.games.hex_colony.ui_minimap import MinimapPanel
@@ -244,7 +248,6 @@ class Game:
                 # Research progress
                 completed = self.tech_tree.update(dt * self._sim_speed, self.world)
                 if completed:
-                    from compprog_pygame.games.hex_colony.tech_tree import TECH_NODES
                     node = TECH_NODES[completed]
                     self.notifications.push(
                         NOTIF_RESEARCH_COMPLETE.format(name=node.name), (100, 255, 100),
@@ -253,7 +256,6 @@ class Game:
                 self.world._tech_research_count = self.tech_tree.researched_count
                 # Tier advancement
                 if self.tier_tracker.try_advance(self.world):
-                    from compprog_pygame.games.hex_colony.tech_tree import TIERS
                     tier = TIERS[self.tier_tracker.current_tier]
                     next_tier = (
                         TIERS[self.tier_tracker.current_tier + 1]
@@ -474,7 +476,6 @@ class Game:
     def _try_place_building(self, coord, silent: bool = False) -> bool:
         tile = self.world.grid[coord]
         # Can't build on unbuildable terrain (water, mountain) — except bridges on water
-        from compprog_pygame.games.hex_colony.procgen import UNBUILDABLE
         if tile.terrain in UNBUILDABLE:
             if not (self.build_mode == BuildingType.BRIDGE and tile.terrain == Terrain.WATER):
                 return False
@@ -489,7 +490,6 @@ class Game:
             return False
         # Tier gate (bypassed in god mode)
         if not self.god_mode and not self.tier_tracker.is_building_unlocked(self.build_mode):
-            from compprog_pygame.games.hex_colony.tech_tree import TIER_BUILDING_REQUIREMENTS, TIERS
             req_tier = TIER_BUILDING_REQUIREMENTS.get(self.build_mode, 0)
             tier_info = TIERS[req_tier]
             if not silent:

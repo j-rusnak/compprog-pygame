@@ -126,6 +126,17 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         after="build_woodcutter",
     ),
     _TutorialStep(
+        id="tier_goal",
+        title=_text("tier_goal")[0],
+        lines=_text("tier_goal")[1],
+        # Fires once the player has actually placed their first
+        # habitat — i.e. immediately after the habitat hint becomes
+        # obsolete.  ``after="build_habitat"`` ensures the previous
+        # step has already been dismissed.
+        trigger=lambda w, ctx: _has_building_count(w, BuildingType.HABITAT),
+        after="build_habitat",
+    ),
+    _TutorialStep(
         id="workshop_crafting",
         title=_text("workshop_crafting")[0],
         lines=_text("workshop_crafting")[1],

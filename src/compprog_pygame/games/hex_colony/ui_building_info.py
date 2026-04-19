@@ -300,6 +300,12 @@ class BuildingInfoPanel(Panel):
         if max_scroll > 0:
             self._draw_scrollbar(surface, max_scroll)
 
+        # Floating recipe-options overlay (drawn last so it sits on top
+        # of the rest of the panel and does not push other content).
+        if (self._recipe_dropdown_open
+                and self._recipe_dropdown_btn is not None):
+            self._draw_recipe_dropdown_overlay(surface, world)
+
     def _draw_recipe_btn(
         self, surface: pygame.Surface, x: int, cy: int, item: _RecipeBtn,
         world: World,
@@ -447,6 +453,111 @@ class BuildingInfoPanel(Panel):
         )
         surface.blit(surf, (btn_rect.x + 6, btn_rect.y + 3))
         self._recipe_dropdown_btn = btn_rect
+
+    def _gather_recipe_options(
+        self, world: World,
+    ) -> tuple[
+        list[tuple[BuildingType, bool]],
+        list[tuple[MaterialRecipe, bool]],
+    ]:
+        """Return (building_recipes, material_recipes) lists of
+        (recipe, selected) tuples for the current crafting building,
+        already filtered by tech/tier (unless god-mode)."""
+        b = self.building
+        assert b is not None
+        god = bool(self.god_mode_getter and self.god_mode_getter())
+
+        building_recipes: list[tuple[BuildingType, bool]] = []
+        for bname, sname in params.BUILDING_RECIPE_STATION.items():
+            if sname != b.type.name:
+                continue
+            craft_type = BuildingType[bname]
+            if not god and not is_building_available(
+                craft_type, self.tech_tree, self.tier_tracker,
+            ):
+                continue
+            building_recipes.append(
+                (craft_type, b.recipe == craft_type),
+            )
+
+        station_recipes = recipes_for_station(b.type.name)
+        if not god:
+            station_recipes = [
+                mr for mr in station_recipes
+                if is_resource_available(
+                    mr.output, self.tech_tree, self.tier_tracker,
+                )
+            ]
+        material_recipes = [
+            (mr, b.recipe == mr.output) for mr in station_recipes
+        ]
+        return building_recipes, material_recipes
+
+    def _draw_recipe_dropdown_overlay(
+        self, surface: pygame.Surface, world: World,
+    ) -> None:
+        """Draw the open recipe list as a floating overlay anchored to
+        the dropdown header.  Populates ``_recipe_rects`` /
+        ``_mat_recipe_rects`` so click handling continues to work."""
+        assert self._recipe_dropdown_btn is not None
+        b = self.building
+        if b is None:
+            return
+
+        building_recipes, material_recipes = self._gather_recipe_options(world)
+        if not building_recipes and not material_recipes:
+            return
+
+        # Reset the rects — they're populated only in the overlay now.
+        self._recipe_rects = []
+        self._mat_recipe_rects = []
+
+        gap = 2
+        row_h = _LINE_H + gap
+        header_pad = _SMALL_LINE_H + gap
+        n_rows = len(building_recipes) + len(material_recipes)
+        total_h = (
+            n_rows * row_h
+            + (header_pad if material_recipes else 0)
+            + _PADDING
+        )
+
+        x = self._recipe_dropdown_btn.x
+        w = self._recipe_dropdown_btn.w
+        # Open below the header by default; flip up if it would
+        # overflow the screen.
+        y = self._recipe_dropdown_btn.bottom + 2
+        if y + total_h > self._screen_h - _BOTTOM_MARGIN:
+            y = self._recipe_dropdown_btn.top - total_h - 2
+            if y < _TOP_MARGIN:
+                # Last resort: clip to screen bottom.
+                y = max(_TOP_MARGIN, self._screen_h - _BOTTOM_MARGIN - total_h)
+
+        rect = pygame.Rect(x, y, w, total_h)
+        bg = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
+        bg.fill((20, 26, 34, 245))
+        surface.blit(bg, rect.topleft)
+        pygame.draw.rect(surface, UI_ACCENT, rect, width=2, border_radius=4)
+
+        cy = y + _PADDING // 2
+        for craft_type, selected in building_recipes:
+            self._draw_recipe_btn(
+                surface, x - _PADDING, cy,
+                _RecipeBtn(craft_type, selected=selected), world,
+            )
+            cy += row_h
+        if material_recipes:
+            hdr = render_text_clipped(
+                Fonts.small(), INFO_MATERIALS_HEADER, UI_MUTED, w - 12,
+            )
+            surface.blit(hdr, (x + 6, cy))
+            cy += header_pad
+            for mrec, selected in material_recipes:
+                self._draw_material_recipe_btn(
+                    surface, x - _PADDING, cy,
+                    _MaterialRecipeBtn(mrec, selected=selected), world,
+                )
+                cy += row_h
 
     def _draw_tech_btn(self, surface: pygame.Surface, x: int, cy: int) -> None:
         btn_rect = pygame.Rect(
@@ -764,46 +875,9 @@ class BuildingInfoPanel(Panel):
             ))
             items.append(_Spacer(2))
 
-            if self._recipe_dropdown_open:
-                # Building recipes for this station type.
-                building_recipes_for_station = [
-                    BuildingType[bname]
-                    for bname, sname in params.BUILDING_RECIPE_STATION.items()
-                    if sname == b.type.name
-                ]
-                if building_recipes_for_station:
-                    god = bool(
-                        self.god_mode_getter and self.god_mode_getter()
-                    )
-                    for craft_type in building_recipes_for_station:
-                        if not god and not is_building_available(
-                            craft_type, self.tech_tree, self.tier_tracker,
-                        ):
-                            continue
-                        items.append(_RecipeBtn(
-                            craft_type, selected=(b.recipe == craft_type),
-                        ))
-                        items.append(_Spacer(2))
-
-                # Material recipes for this station.
-                station_recipes = recipes_for_station(b.type.name)
-                if not bool(
-                    self.god_mode_getter and self.god_mode_getter()
-                ):
-                    station_recipes = [
-                        mr for mr in station_recipes
-                        if is_resource_available(
-                            mr.output, self.tech_tree, self.tier_tracker,
-                        )
-                    ]
-                if station_recipes:
-                    items.append(_Spacer(2))
-                    line(INFO_MATERIALS_HEADER, UI_MUTED, Fonts.small())
-                    for mrec in station_recipes:
-                        items.append(_MaterialRecipeBtn(
-                            mrec, selected=(b.recipe == mrec.output),
-                        ))
-                        items.append(_Spacer(2))
+            # NOTE: Recipe option list is drawn as a floating overlay
+            # in ``_draw_recipe_dropdown_overlay`` so it does not push
+            # the rest of the panel content around when opened.
 
         # Research Center button
         if b.type == BuildingType.RESEARCH_CENTER:
@@ -862,8 +936,27 @@ class BuildingInfoPanel(Panel):
             return False
         if not hasattr(event, "pos"):
             return False
-        if not self.rect.collidepoint(event.pos):
-            return False
+        # When the recipe dropdown is open, allow clicks on the
+        # floating option rects even if they fall outside the panel.
+        in_panel = self.rect.collidepoint(event.pos)
+        if not in_panel:
+            if (event.type == pygame.MOUSEBUTTONDOWN
+                    and self._recipe_dropdown_open):
+                for btn_rect, _ in self._recipe_rects:
+                    if btn_rect.collidepoint(event.pos):
+                        break
+                else:
+                    for btn_rect, _ in self._mat_recipe_rects:
+                        if btn_rect.collidepoint(event.pos):
+                            break
+                    else:
+                        # Click outside both panel and overlay options
+                        # closes the dropdown without consuming the
+                        # event.
+                        self._recipe_dropdown_open = False
+                        return False
+            else:
+                return False
 
         if event.type == pygame.MOUSEWHEEL:
             self._scroll -= event.y * 30

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import pygame
 
+from compprog_pygame.games.hex_colony.tech_tree import TECH_NODES
 from compprog_pygame.games.hex_colony.ui import (
     Fonts,
     Panel,
@@ -207,7 +208,6 @@ class ResourceBar(Panel):
             rx -= _ITEM_GAP
 
         if self.tech_tree is not None and self.tech_tree.current_research is not None:
-            from compprog_pygame.games.hex_colony.tech_tree import TECH_NODES
             node = TECH_NODES.get(self.tech_tree.current_research)
             if node is not None:
                 pct = int(self.tech_tree.research_progress / node.time * 100)

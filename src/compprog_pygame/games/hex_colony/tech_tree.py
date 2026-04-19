@@ -341,7 +341,9 @@ class TierTracker:
             from compprog_pygame.games.hex_colony.resources import Resource
             for res_name, target in reqs["resource_gathered"].items():
                 res = Resource[res_name]
-                current = world.inventory[res]
+                # Use total produced (lifetime gathered/crafted) so that
+                # spending the resource does not erase progress.
+                current = world.inventory.total_produced(res)
                 progress[res_name.capitalize()] = (float(current), float(target))
         if "research_count" in reqs:
             count = getattr(world, '_tech_research_count', 0)

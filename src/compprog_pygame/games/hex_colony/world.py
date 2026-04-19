@@ -9,12 +9,19 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 
-from compprog_pygame.games.hex_colony.buildings import Building, BuildingManager, BuildingType, BUILDING_MAX_WORKERS
+from compprog_pygame.games.hex_colony.buildings import (
+    Building, BuildingManager, BuildingType,
+    BUILDING_COSTS, BUILDING_HARVEST_RESOURCES, BUILDING_MAX_WORKERS,
+)
 from compprog_pygame.games.hex_colony.hex_grid import HexCoord, HexGrid, Terrain
 from compprog_pygame.games.hex_colony.people import PopulationManager, Task
-from compprog_pygame.games.hex_colony.procgen import generate_terrain
-from compprog_pygame.games.hex_colony.resources import BuildingInventory, Inventory, Resource
+from compprog_pygame.games.hex_colony.procgen import generate_terrain, UNBUILDABLE
+from compprog_pygame.games.hex_colony.resources import (
+    BuildingInventory, Inventory, MATERIAL_RECIPES, Resource, TERRAIN_RESOURCE,
+)
 from compprog_pygame.games.hex_colony.settings import HexColonySettings
+from compprog_pygame.games.hex_colony.supply_chain import _hex_range
+from compprog_pygame.games.hex_colony.tech_tree import TECH_NODES
 from compprog_pygame.games.hex_colony import params
 from compprog_pygame.games.hex_colony.strings import (
     building_label,
@@ -91,6 +98,18 @@ class World:
         # the player can edit them independently in the UI.
         self.networks: list[Network] = []
         self._next_network_id: int = 1
+        # Per-frame caches rebuilt by ``_rebuild_networks``.  Used by
+        # the hot logistics / housing / unreachable-check loops to
+        # avoid repeatedly scanning ``self.buildings.buildings`` (a
+        # potentially large list) and ``self.networks`` (a small but
+        # non-trivial list).  Both are keyed by ``id(building)``.
+        self._bid_to_network: dict[int, Network] = {}
+        self._valid_bids: set[int] = set()
+        # Set of network ids that contain at least one populated
+        # dwelling.  Recomputed each frame in ``update`` so the two
+        # callers (``_check_unreachable_buildings`` and
+        # ``unreachable_buildings``) don't each scan the population.
+        self._populated_net_ids: set[int] = set()
         # Buildings we've already notified the player are unreachable
         # (no path from any populated house).  Tracked by ``id(b)`` so
         # the warning pushes exactly once per newly-stranded building.
@@ -403,19 +422,32 @@ class World:
         # Stable display order: by id ascending.
         new_networks.sort(key=lambda n: n.id)
         self.networks = new_networks
+        # Refresh per-frame lookup caches before any priority rebuild
+        # runs (the priority refreshers don't need them, but downstream
+        # update steps do).
+        self._valid_bids = {
+            id(b) for b in self.buildings.buildings
+        }
+        self._bid_to_network = {
+            id(b): net for net in self.networks for b in net.buildings
+        }
         # Rebuild demand-priority tiers for every network now that the
         # ``buildings`` lists are settled.
         self._refresh_demand_priorities(old_nets)
         self._refresh_supply_priorities(old_nets)
         self._refresh_worker_priorities(old_nets)
+        # Recompute populated-network ids from the refreshed map.
+        self._populated_net_ids = {
+            net.id
+            for p in self.population.people
+            if p.home is not None
+            and (net := self._bid_to_network.get(id(p.home))) is not None
+        }
 
     # ── Worker assignment & dispatch ─────────────────────────────
 
     def _network_of_building(self, b: Building) -> Network | None:
-        for n in self.networks:
-            if n.contains(b):
-                return n
-        return None
+        return self._bid_to_network.get(id(b))
 
     def _refresh_demand_priorities(
         self, old_nets: dict[int, Network],
@@ -465,7 +497,6 @@ class World:
         storage / camp on tier 1.  Roads / bridges (which have no
         demand) and standalone walls are skipped entirely so the UI
         doesn't fill with no-op cards."""
-        from compprog_pygame.games.hex_colony.buildings import BuildingType
         skip = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL}
         tier0: list[Building] = []
         tier1: list[Building] = []
@@ -527,7 +558,6 @@ class World:
         """Default split: producers / crafters on tier 0, storage /
         camp on tier 1.  Roads / bridges / walls (which have no supply)
         and pure dwellings are skipped."""
-        from compprog_pygame.games.hex_colony.buildings import BuildingType
         skip = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL,
                 BuildingType.HOUSE, BuildingType.HABITAT}
         tier0: list[Building] = []
@@ -551,12 +581,9 @@ class World:
     ) -> None:
         """When ``worker_auto`` is enabled on a network, flatten all
         worker-buildings into a single tier and auto-compute
-        ``logistics_target`` as 1 per every 3 buildings (rounded down).
+        ``logistics_target`` as 1 per every 4 buildings (rounded
+        down, minimum 1).
         """
-        from compprog_pygame.games.hex_colony.buildings import (
-            BUILDING_MAX_WORKERS,
-            BuildingType,
-        )
         for net in self.networks:
             if not net.worker_auto:
                 continue
@@ -567,8 +594,9 @@ class World:
                     continue
                 flat.append(b)
             net.priority = [flat] if flat else []
-            # Auto logistics: 1 worker per every 3 buildings
-            # (non-path, non-bridge, non-wall).
+            # Auto logistics: 1 worker per 4 buildings (rounded down,
+            # always at least 1 if the network has any countable
+            # buildings).  Excludes paths, bridges and walls.
             countable = [
                 b for b in net.buildings
                 if b.type not in (
@@ -576,7 +604,10 @@ class World:
                     BuildingType.WALL,
                 )
             ]
-            net.logistics_target = len(countable) // 3
+            if countable:
+                net.logistics_target = max(1, len(countable) // 4)
+            else:
+                net.logistics_target = 0
 
     def _supply_tier_of(
         self, b: Building, net: Network,
@@ -831,9 +862,6 @@ class World:
         self, b: "Building",
     ) -> set[Resource]:
         """Resources *b* is currently producing (and so supplies)."""
-        from compprog_pygame.games.hex_colony.resources import (
-            MATERIAL_RECIPES,
-        )
         t = b.type
         if t == BuildingType.WOODCUTTER:
             return {Resource.WOOD}
@@ -895,9 +923,6 @@ class World:
     def _building_demand(self, b: "Building") -> dict[Resource, float]:
         """Resources *b* wants delivered, with the free space/amount
         it can still accept."""
-        from compprog_pygame.games.hex_colony.resources import (
-            MATERIAL_RECIPES,
-        )
         out: dict[Resource, float] = {}
         free = self._storage_free(b)
         if free <= 0:
@@ -949,9 +974,6 @@ class World:
         # Check BUILDING_RECIPE_STATION so Forge, Assembler, etc.
         # also get deliveries — not just the Workshop.
         if isinstance(b.recipe, BuildingType):
-            from compprog_pygame.games.hex_colony.buildings import (
-                BUILDING_COSTS,
-            )
             cost = BUILDING_COSTS.get(b.recipe)
             if cost is not None:
                 for res, amt in cost.costs.items():
@@ -967,9 +989,6 @@ class World:
         if b.type == BuildingType.RESEARCH_CENTER:
             tt = self.tech_tree
             if tt is not None and getattr(tt, "current_research", None):
-                from compprog_pygame.games.hex_colony.tech_tree import (
-                    TECH_NODES,
-                )
                 node = TECH_NODES.get(tt.current_research)
                 if node is not None:
                     consumed = getattr(tt, "_consumed", {}) or {}
@@ -1131,7 +1150,7 @@ class World:
 
         if p.task == Task.LOGISTICS_PICKUP:
             src = p.logistics_src
-            if src is None or id(src) not in {id(b) for b in self.buildings.buildings}:
+            if src is None or id(src) not in self._valid_bids:
                 self._logistics_reset(p)
                 return
             if p.path:
@@ -1209,7 +1228,7 @@ class World:
 
         if p.task == Task.LOGISTICS_DELIVER:
             dst = p.logistics_dst
-            if dst is None or id(dst) not in {id(b) for b in self.buildings.buildings}:
+            if dst is None or id(dst) not in self._valid_bids:
                 # Destination gone.  Drop cargo at any storage we're
                 # on (best effort) or just discard to global inventory.
                 if p.logistics_res is not None and p.logistics_amount > 0:
@@ -1525,14 +1544,7 @@ class World:
         is in a network with no housed population."""
         if self.notifications is None:
             return
-        # Networks with at least one populated home (camp or house).
-        populated_net_ids: set[int] = set()
-        for p in self.population.people:
-            if p.home is None:
-                continue
-            net = self._network_of_building(p.home)
-            if net is not None:
-                populated_net_ids.add(net.id)
+        populated_net_ids = self._populated_net_ids
 
         current_unreachable: set[int] = set()
         for net in self.networks:
@@ -1547,7 +1559,7 @@ class World:
                     continue
                 label = building_label(b.type.name)
                 self.notifications.push(
-                    NOTIF_UNREACHABLE.format(label=label), (230, 100, 100),
+                    NOTIF_UNREACHABLE.format(name=label), (230, 100, 100),
                 )
                 self._unreachable_notified.add(bid)
         # Forget buildings that became reachable again (or were deleted)
@@ -1558,13 +1570,7 @@ class World:
         """Return ``id(b)`` for every worker-building in a network with
         no populated house.  Used by the renderer to draw a red "!"
         marker above the affected buildings."""
-        populated_net_ids: set[int] = set()
-        for p in self.population.people:
-            if p.home is None:
-                continue
-            net = self._network_of_building(p.home)
-            if net is not None:
-                populated_net_ids.add(net.id)
+        populated_net_ids = self._populated_net_ids
         result: set[int] = set()
         for net in self.networks:
             if net.id in populated_net_ids:
@@ -1582,13 +1588,6 @@ class World:
         nearby to switch to.  Used by the renderer to flag the
         building with the same red "!" marker as unreachable ones.
         """
-        from compprog_pygame.games.hex_colony.buildings import (
-            BUILDING_HARVEST_RESOURCES,
-        )
-        from compprog_pygame.games.hex_colony.resources import (
-            TERRAIN_RESOURCE,
-        )
-        from compprog_pygame.games.hex_colony.supply_chain import _hex_range
         result: set[int] = set()
         for b in self.buildings.buildings:
             if b.workers <= 0:
@@ -1803,7 +1802,6 @@ class World:
         requires more bridges than ``bridge_stock`` allows, the
         function falls back to a land-only route.
         """
-        from compprog_pygame.games.hex_colony.procgen import UNBUILDABLE
         if start == end:
             return []
         if end not in self.grid:
@@ -1931,9 +1929,6 @@ class World:
         Research Centers also use per-input caps for their active
         research's cost (treated as recipe inputs).
         """
-        from compprog_pygame.games.hex_colony.resources import (
-            MATERIAL_RECIPES,
-        )
         if b.type in (
             BuildingType.WORKSHOP, BuildingType.FORGE,
             BuildingType.REFINERY, BuildingType.ASSEMBLER,
@@ -1944,9 +1939,6 @@ class World:
         if b.type == BuildingType.RESEARCH_CENTER:
             tt = self.tech_tree
             if tt is not None and getattr(tt, "current_research", None):
-                from compprog_pygame.games.hex_colony.tech_tree import (
-                    TECH_NODES,
-                )
                 node = TECH_NODES.get(tt.current_research)
                 if node is not None:
                     rc_count = max(1, len(
@@ -1993,8 +1985,6 @@ class World:
 
         Also harvests food from fiber/berry patch ``food_amount``.
         """
-        from compprog_pygame.games.hex_colony.resources import TERRAIN_RESOURCE
-        from compprog_pygame.games.hex_colony.supply_chain import _hex_range
         if b.workers <= 0:
             return
         free = self._storage_free(b)
@@ -2116,8 +2106,6 @@ class World:
         # Refinery: if no active recipe, harvests ore from in-range
         # veins into its own storage.  If a recipe is set, it runs as
         # a crafting station (handled by _update_workshops).
-        from compprog_pygame.games.hex_colony.hex_grid import Terrain
-        from compprog_pygame.games.hex_colony.supply_chain import _hex_range
         for ref in self.buildings.by_type(BuildingType.REFINERY):
             if ref.recipe is not None:
                 continue
@@ -2233,11 +2221,6 @@ class World:
             :data:`MATERIAL_RECIPES`.  The output is added to the world
             inventory; inputs are consumed from it.
         """
-        from compprog_pygame.games.hex_colony.buildings import BUILDING_COSTS
-        from compprog_pygame.games.hex_colony.resources import (
-            MATERIAL_RECIPES, Resource,
-        )
-
         station_types = (
             BuildingType.WORKSHOP,
             BuildingType.FORGE,
@@ -2251,8 +2234,7 @@ class World:
 
                 if isinstance(station.recipe, BuildingType):
                     # Building recipe — check params for valid station.
-                    from compprog_pygame.games.hex_colony import params as _params
-                    expected_station = _params.BUILDING_RECIPE_STATION.get(
+                    expected_station = params.BUILDING_RECIPE_STATION.get(
                         station.recipe.name
                     )
                     if expected_station != stype.name:
