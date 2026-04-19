@@ -39,6 +39,12 @@ _PALETTE: dict[Resource, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
     Resource.GEARS:       ((130, 135, 150), (200, 205, 220)),
     Resource.SILICON:     (( 70,  75,  95), (150, 160, 200)),
     Resource.CIRCUIT:     (( 40, 100,  65), (130, 210, 150)),
+    Resource.CONCRETE:    ((155, 155, 150), (210, 210, 205)),
+    Resource.PLASTIC:     ((200, 200, 215), (240, 240, 250)),
+    Resource.ELECTRONICS: (( 35,  90,  60), (110, 200, 140)),
+    Resource.BATTERY:     ((215, 180,  50), (250, 230, 110)),
+    Resource.ROCKET_FUEL: ((185,  80,  45), (240, 140,  80)),
+    Resource.ROCKET_PART: ((180, 190, 210), (235, 240, 250)),
 }
 
 _DEFAULT = ((180, 180, 180), (230, 230, 230))

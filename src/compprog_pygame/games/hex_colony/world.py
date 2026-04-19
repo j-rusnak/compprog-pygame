@@ -929,6 +929,7 @@ class World:
         if t in (
             BuildingType.WORKSHOP, BuildingType.FORGE,
             BuildingType.REFINERY, BuildingType.ASSEMBLER,
+            BuildingType.CHEMICAL_PLANT,
         ):
             if isinstance(b.recipe, Resource):
                 mrec = MATERIAL_RECIPES.get(b.recipe)
@@ -1006,6 +1007,7 @@ class World:
         if b.type in (
             BuildingType.WORKSHOP, BuildingType.FORGE,
             BuildingType.REFINERY, BuildingType.ASSEMBLER,
+            BuildingType.CHEMICAL_PLANT,
         ) and isinstance(b.recipe, Resource):
             mrec = MATERIAL_RECIPES.get(b.recipe)
             if mrec is not None:
@@ -1068,6 +1070,7 @@ class World:
         ) or (b.type in (
             BuildingType.WORKSHOP, BuildingType.FORGE,
             BuildingType.REFINERY, BuildingType.ASSEMBLER,
+            BuildingType.CHEMICAL_PLANT,
         ) and isinstance(b.recipe, Resource))
 
     def _is_consumer(self, b: "Building") -> bool:
@@ -1076,6 +1079,7 @@ class World:
         if b.type in (
             BuildingType.WORKSHOP, BuildingType.FORGE,
             BuildingType.REFINERY, BuildingType.ASSEMBLER,
+            BuildingType.CHEMICAL_PLANT,
         ) and isinstance(b.recipe, Resource):
             return True
         if b.type == BuildingType.RESEARCH_CENTER:
@@ -1102,7 +1106,7 @@ class World:
         if bt in (
             BuildingType.WORKSHOP, BuildingType.FORGE,
             BuildingType.REFINERY, BuildingType.ASSEMBLER,
-            BuildingType.MINING_MACHINE,
+            BuildingType.CHEMICAL_PLANT, BuildingType.MINING_MACHINE,
         ):
             r = b.recipe
             return r if isinstance(r, Resource) else None
@@ -1983,6 +1987,7 @@ class World:
         if b.type in (
             BuildingType.WORKSHOP, BuildingType.FORGE,
             BuildingType.REFINERY, BuildingType.ASSEMBLER,
+            BuildingType.CHEMICAL_PLANT,
         ) and isinstance(b.recipe, Resource):
             mrec = MATERIAL_RECIPES.get(b.recipe)
             if mrec is not None:

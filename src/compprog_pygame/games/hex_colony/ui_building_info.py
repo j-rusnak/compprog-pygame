@@ -642,6 +642,7 @@ class BuildingInfoPanel(Panel):
                 b.type in (
                     BuildingType.WORKSHOP, BuildingType.FORGE,
                     BuildingType.REFINERY, BuildingType.ASSEMBLER,
+                    BuildingType.CHEMICAL_PLANT,
                 )
                 and isinstance(b.recipe, Resource)
             )
@@ -825,6 +826,7 @@ class BuildingInfoPanel(Panel):
             BuildingType.FORGE,
             BuildingType.REFINERY,
             BuildingType.ASSEMBLER,
+            BuildingType.CHEMICAL_PLANT,
         ):
             items.append(_Spacer())
 
@@ -974,6 +976,7 @@ class BuildingInfoPanel(Panel):
                 BuildingType.FORGE,
                 BuildingType.REFINERY,
                 BuildingType.ASSEMBLER,
+                BuildingType.CHEMICAL_PLANT,
             ):
                 # Dropdown header toggle.
                 if (self._recipe_dropdown_btn is not None

@@ -110,6 +110,12 @@ RESOURCE_NAMES: dict[str, str] = {
     "GEARS":       "Gears",
     "SILICON":     "Silicon",
     "CIRCUIT":     "Circuit",
+    "CONCRETE":    "Concrete",
+    "PLASTIC":     "Plastic",
+    "ELECTRONICS": "Electronics",
+    "BATTERY":     "Battery",
+    "ROCKET_FUEL": "Rocket Fuel",
+    "ROCKET_PART": "Rocket Part",
 }
 
 

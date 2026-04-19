@@ -221,6 +221,7 @@ class StatsHistory:
             elif t in (
                 BuildingType.WORKSHOP, BuildingType.FORGE,
                 BuildingType.REFINERY, BuildingType.ASSEMBLER,
+                BuildingType.CHEMICAL_PLANT,
             ) and isinstance(b.recipe, Resource):
                 mrec = MATERIAL_RECIPES.get(b.recipe)
                 if mrec is not None and mrec.output == res and mrec.time > 0:
@@ -237,6 +238,7 @@ class StatsHistory:
             if b.type not in (
                 BuildingType.WORKSHOP, BuildingType.FORGE,
                 BuildingType.REFINERY, BuildingType.ASSEMBLER,
+                BuildingType.CHEMICAL_PLANT,
             ):
                 continue
             if not isinstance(b.recipe, Resource):

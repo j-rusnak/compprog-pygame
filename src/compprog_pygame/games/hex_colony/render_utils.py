@@ -72,6 +72,10 @@ BUILDING_COLORS: dict[BuildingType, tuple[int, int, int]] = {
     BuildingType.ASSEMBLER: (120, 140, 165),
     BuildingType.RESEARCH_CENTER: (70, 100, 150),
     BuildingType.TRIBAL_CAMP: (140, 90, 50),  # primitive earth-toned camp
+    BuildingType.CHEMICAL_PLANT: (100, 160, 130),
+    BuildingType.CONVEYOR: (200, 180, 90),
+    BuildingType.SOLAR_ARRAY: (60, 100, 200),
+    BuildingType.ROCKET_SILO: (235, 235, 240),
 }
 
 _PATH_BASE = (185, 165, 120)
