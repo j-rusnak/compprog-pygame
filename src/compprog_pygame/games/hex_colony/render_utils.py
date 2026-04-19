@@ -21,6 +21,7 @@ TERRAIN_BASE_COLOR: dict[Terrain, tuple[int, int, int]] = {
     Terrain.MOUNTAIN:      (110, 100, 90),
     Terrain.IRON_VEIN:     (120, 90, 75),
     Terrain.COPPER_VEIN:   (100, 130, 85),
+    Terrain.OIL_DEPOSIT:   (28, 24, 30),
 }
 
 # Blending weight for neighbor influence (0 = no blend, 1 = full average)
@@ -48,6 +49,7 @@ _TERRAIN_CAT: dict[Terrain, int] = {
     Terrain.STONE_DEPOSIT: 2,
     Terrain.IRON_VEIN: 4,
     Terrain.COPPER_VEIN: 4,
+    Terrain.OIL_DEPOSIT: 5,
 }
 
 # ── Building colours ────────────────────────────────────────────
@@ -55,11 +57,29 @@ _TERRAIN_CAT: dict[Terrain, int] = {
 BUILDING_COLORS: dict[BuildingType, tuple[int, int, int]] = {
     BuildingType.CAMP: (120, 140, 170),   # spaceship hull — blue-grey metallic
     BuildingType.HOUSE: (170, 140, 90),
+    BuildingType.HABITAT: (140, 155, 175),  # futuristic pod — blue-grey metal
     BuildingType.PATH: (185, 165, 120),
+    BuildingType.BRIDGE: (140, 100, 55),
     BuildingType.WOODCUTTER: (160, 100, 50),
     BuildingType.QUARRY: (170, 170, 160),
     BuildingType.GATHERER: (100, 180, 80),
     BuildingType.STORAGE: (140, 120, 100),
+    BuildingType.REFINERY: (90, 80, 100),
+    BuildingType.MINING_MACHINE: (95, 95, 110),
+    BuildingType.FARM: (100, 70, 40),
+    BuildingType.WELL: (140, 135, 125),
+    BuildingType.WALL: (160, 155, 145),
+    BuildingType.WORKSHOP: (130, 110, 90),
+    BuildingType.FORGE: (90, 70, 60),
+    BuildingType.ASSEMBLER: (120, 140, 165),
+    BuildingType.RESEARCH_CENTER: (70, 100, 150),
+    BuildingType.TRIBAL_CAMP: (140, 90, 50),  # primitive earth-toned camp
+    BuildingType.CHEMICAL_PLANT: (100, 160, 130),
+    BuildingType.CONVEYOR: (200, 180, 90),
+    BuildingType.SOLAR_ARRAY: (60, 100, 200),
+    BuildingType.ROCKET_SILO: (235, 235, 240),
+    BuildingType.OIL_DRILL: (60, 55, 65),
+    BuildingType.OIL_REFINERY: (90, 85, 105),
 }
 
 _PATH_BASE = (185, 165, 120)

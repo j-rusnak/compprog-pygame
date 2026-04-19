@@ -9,6 +9,15 @@ from dataclasses import dataclass
 import pygame
 
 from compprog_pygame.games.hex_colony.settings import HexColonySettings
+from compprog_pygame.games.hex_colony.strings import (
+    MENU_TITLE,
+    MENU_SUBTITLE,
+    MENU_SEED_LABEL,
+    MENU_SEED_PLACEHOLDER,
+    MENU_MAP_SIZE_LABEL,
+    MENU_PLAY_BUTTON,
+    MENU_HINT,
+)
 
 # ── Colours ──────────────────────────────────────────────────────
 
@@ -184,16 +193,16 @@ class HexColonyMenu:
         surface.fill(BACKGROUND)
 
         # Title
-        title = self.title_font.render("Hex Colony", True, TITLE_COLOR)
+        title = self.title_font.render(MENU_TITLE, True, TITLE_COLOR)
         surface.blit(title, ((self.width - title.get_width()) // 2, self.height // 4 - 30))
 
         subtitle = self.subtitle_font.render(
-            "Survive on a re-evolved Earth", True, MUTED_TEXT
+            MENU_SUBTITLE, True, MUTED_TEXT
         )
         surface.blit(subtitle, ((self.width - subtitle.get_width()) // 2, self.height // 4 + 50))
 
         # ── Seed input ───────────────────────────────────────────
-        label = self.subtitle_font.render("World Seed", True, TEXT_COLOR)
+        label = self.subtitle_font.render(MENU_SEED_LABEL, True, TEXT_COLOR)
         ir = self._input_rect()
         surface.blit(label, (ir.x, ir.y - 28))
 
@@ -211,12 +220,12 @@ class HexColonyMenu:
             pygame.draw.line(surface, TEXT_COLOR, (cx, cy), (cx, cy + ir.h - 16), 2)
 
         if not self.seed_text:
-            ph = self.hint_font.render("Leave blank for random seed", True, MUTED_TEXT)
+            ph = self.hint_font.render(MENU_SEED_PLACEHOLDER, True, MUTED_TEXT)
             surface.blit(ph, (ir.x + 12, ir.y + (ir.h - ph.get_height()) // 2))
 
         # ── Map-size slider ──────────────────────────────────────
         sr = self._slider_rect()
-        slider_label = self.subtitle_font.render("Map Size", True, TEXT_COLOR)
+        slider_label = self.subtitle_font.render(MENU_MAP_SIZE_LABEL, True, TEXT_COLOR)
         surface.blit(slider_label, (sr.x, sr.y - 28))
 
         # Track
@@ -239,10 +248,10 @@ class HexColonyMenu:
         bg = BUTTON_HOVER if hovered else BUTTON_BG
         pygame.draw.rect(surface, bg, pr, border_radius=10)
         pygame.draw.rect(surface, ACCENT, pr, width=2, border_radius=10)
-        btn_text = self.button_font.render("Play", True, BUTTON_TEXT)
+        btn_text = self.button_font.render(MENU_PLAY_BUTTON, True, BUTTON_TEXT)
         surface.blit(btn_text, (pr.x + (pr.w - btn_text.get_width()) // 2,
                                 pr.y + (pr.h - btn_text.get_height()) // 2))
 
         # Hint
-        hint = self.hint_font.render("Enter seed  •  ENTER or click Play  •  ESC to go back", True, MUTED_TEXT)
+        hint = self.hint_font.render(MENU_HINT, True, MUTED_TEXT)
         surface.blit(hint, ((self.width - hint.get_width()) // 2, self.height - 40))

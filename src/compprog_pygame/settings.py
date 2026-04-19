@@ -4,9 +4,11 @@ from pathlib import Path
 
 @dataclass(frozen=True, slots=True)
 class GameSettings:
-    title: str = "Physics Tetris"
-    width: int = 900
-    height: int = 800
+    title: str = "CompProg Games"
+    # 16:9 aspect ratio so cutscene art and other 16:9 assets render
+    # without stretching at the default size.
+    width: int = 1280
+    height: int = 720
     fps: int = 60
 
     # Play-area grid (10 columns x 20 rows like classic Tetris)

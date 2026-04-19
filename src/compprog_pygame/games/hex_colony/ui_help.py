@@ -7,35 +7,29 @@ from typing import TYPE_CHECKING
 import pygame
 
 from compprog_pygame.games.hex_colony.ui import (
+    Fonts,
     Panel,
     UI_ACCENT,
-    UI_BG,
-    UI_BORDER,
     UI_MUTED,
+    UI_OVERLAY,
     UI_TEXT,
+    draw_titled_panel,
+)
+from compprog_pygame.games.hex_colony.strings import (
+    HELP_TITLE,
+    HELP_DISMISS,
+    HELP_BINDINGS,
 )
 
 if TYPE_CHECKING:
     from compprog_pygame.games.hex_colony.world import World
 
-_OVERLAY_COLOR = (0, 0, 0, 120)
-_PANEL_W = 400
-_LINE_H = 28
 
-_HELP_LINES: list[tuple[str, str]] = [
-    ("WASD / Arrows", "Pan camera"),
-    ("Scroll wheel", "Zoom in / out"),
-    ("Left click", "Select tile / place building"),
-    ("Right click", "Cancel build / deselect / pan"),
-    ("Middle click", "Pan camera"),
-    ("B", "Cycle build mode"),
-    ("X", "Toggle delete mode"),
-    ("H", "Toggle this help overlay"),
-    ("1 / 2 / 3", "Set game speed"),
-    ("Tab", "Toggle sandbox mode"),
-    ("Alt (hold)", "Show resource overlay"),
-    ("Escape", "Pause menu"),
-]
+_PANEL_W = 440
+_LINE_H = 28
+_MARGIN_X = 24
+
+_HELP_LINES = HELP_BINDINGS
 
 
 class HelpOverlay(Panel):
@@ -44,9 +38,6 @@ class HelpOverlay(Panel):
     def __init__(self) -> None:
         super().__init__()
         self.visible = False
-        self._title_font = pygame.font.Font(None, 40)
-        self._key_font = pygame.font.Font(None, 26)
-        self._desc_font = pygame.font.Font(None, 24)
 
     def toggle(self) -> None:
         self.visible = not self.visible
@@ -59,38 +50,42 @@ class HelpOverlay(Panel):
             return
         sw, sh = surface.get_size()
 
-        # Dark backdrop
         overlay = pygame.Surface((sw, sh), pygame.SRCALPHA)
-        overlay.fill(_OVERLAY_COLOR)
+        overlay.fill(UI_OVERLAY)
         surface.blit(overlay, (0, 0))
 
-        # Panel
-        ph = 80 + len(_HELP_LINES) * _LINE_H + 40
-        px = (sw - _PANEL_W) // 2
+        pw = min(_PANEL_W, sw - 40)
+        ph = 100 + len(_HELP_LINES) * _LINE_H + 50
+        ph = min(ph, sh - 40)
+        px = (sw - pw) // 2
         py = (sh - ph) // 2
-        panel_rect = pygame.Rect(px, py, _PANEL_W, ph)
-        bg = pygame.Surface((_PANEL_W, ph), pygame.SRCALPHA)
-        bg.fill(UI_BG)
-        surface.blit(bg, (px, py))
-        pygame.draw.rect(surface, UI_BORDER, panel_rect, width=2, border_radius=8)
-        pygame.draw.line(surface, UI_ACCENT, (px, py), (px + _PANEL_W, py), 2)
+        panel = pygame.Rect(px, py, pw, ph)
+        content_y = draw_titled_panel(surface, panel, HELP_TITLE)
 
-        # Title
-        title = self._title_font.render("Controls", True, UI_TEXT)
-        surface.blit(title, (px + (_PANEL_W - title.get_width()) // 2, py + 20))
+        # Compute the widest key so the column line aligns.
+        key_font = Fonts.label()
+        desc_font = Fonts.body()
+        max_key_w = max(key_font.size(k)[0] for k, _ in _HELP_LINES)
+        divider_x = px + _MARGIN_X + max_key_w + 20
+        # Ensure desc column fits inside panel
+        if divider_x + 20 > px + pw - _MARGIN_X:
+            divider_x = px + pw // 2
 
-        # Help lines
-        y = py + 70
+        y = content_y
         for key, desc in _HELP_LINES:
-            key_surf = self._key_font.render(key, True, UI_ACCENT)
-            desc_surf = self._desc_font.render(desc, True, UI_MUTED)
-            surface.blit(key_surf, (px + 20, y))
-            surface.blit(desc_surf, (px + 200, y))
+            if y + _LINE_H > py + ph - 40:
+                break
+            key_surf = key_font.render(key, True, UI_ACCENT)
+            desc_surf = desc_font.render(desc, True, UI_MUTED)
+            surface.blit(key_surf, (px + _MARGIN_X, y))
+            surface.blit(desc_surf, (divider_x, y + 2))
             y += _LINE_H
 
-        # Hint
-        hint = self._desc_font.render("Press H or ESC to close", True, UI_MUTED)
-        surface.blit(hint, (px + (_PANEL_W - hint.get_width()) // 2, y + 10))
+        hint = desc_font.render(HELP_DISMISS, True, UI_MUTED)
+        surface.blit(hint, (
+            px + (pw - hint.get_width()) // 2,
+            py + ph - hint.get_height() - 14,
+        ))
 
     def handle_event(self, event: pygame.event.Event) -> bool:
         if not self.visible:
@@ -99,5 +94,4 @@ class HelpOverlay(Panel):
             if event.key in (pygame.K_h, pygame.K_ESCAPE):
                 self.visible = False
                 return True
-        # Consume all events while visible
         return True

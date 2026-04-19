@@ -14,6 +14,7 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 from compprog_pygame.games.hex_colony.hex_grid import HexCoord, hex_to_pixel
+from compprog_pygame.games.hex_colony.buildings import BuildingType
 
 if TYPE_CHECKING:
     from compprog_pygame.games.hex_colony.world import World
@@ -25,6 +26,10 @@ class Task(Enum):
     BUILD = auto()        # constructing a building
     HAUL = auto()         # carrying resources back to camp
     RELOCATE = auto()     # moving to a new home (house)
+    COMMUTE = auto()      # walking along a path to an assigned workplace
+    LOGISTICS_IDLE = auto()   # logistics worker waiting for an assignment
+    LOGISTICS_PICKUP = auto() # logistics worker walking to a supply source
+    LOGISTICS_DELIVER = auto()# logistics worker walking to a demand dest
 
 
 @dataclass(slots=True)
@@ -40,7 +45,28 @@ class Person:
     work_timer: float = 0.0     # time spent on current work action
     carry_resource: object | None = None  # (Resource, amount) tuple when hauling
     home: object | None = None  # Building reference (dwelling)
-    workplace: object | None = None  # Building reference (work assignment)
+    workplace: object | None = None  # Building reference — where they currently
+                                     # work.  Set only once the person has
+                                     # physically arrived at the assigned
+                                     # building.  Contributes to that
+                                     # building's active worker count.
+    workplace_target: object | None = None  # Building reference — where the
+                                            # worker-priority system wants
+                                            # this person to go.  While
+                                            # `workplace_target != workplace`
+                                            # the person is commuting.
+    # Logistics state.  ``is_logistics`` is True iff the worker has been
+    # assigned to the "Logistics" slot in the worker-priority menu for
+    # the network containing their home.  A logistics worker ignores
+    # ``workplace`` / ``workplace_target`` and instead carries items
+    # between supply and demand buildings.
+    is_logistics: bool = False
+    # Current logistics pickup and drop-off buildings.  ``None`` when
+    # the worker is between jobs (LOGISTICS_IDLE).
+    logistics_src: object | None = None
+    logistics_dst: object | None = None
+    logistics_res: object | None = None  # Resource being transported
+    logistics_amount: float = 0.0        # units currently carried
 
     def snap_to_hex(self, size: int) -> None:
         """Set pixel position to centre of current hex."""
@@ -75,6 +101,8 @@ class PopulationManager:
     def update(self, dt: float, world: World, hex_size: int) -> None:
         """Advance all people by *dt* seconds."""
         speed = world.settings.person_speed  # px/s
+        # Conveyor speed-boost multiplier (Tier 4+ tech).
+        conveyor_mult = 2.0
         for person in self.people:
             if person.path:
                 # Move toward next hex in path
@@ -83,13 +111,46 @@ class PopulationManager:
                 dx, dy = tx - person.px, ty - person.py
                 dist = math.hypot(dx, dy)
                 step = speed * dt
+                # Boost when stepping onto a Conveyor tile, or when
+                # already standing on one.
+                target_tile = world.grid.get(target)
+                cur_tile = world.grid.get(person.hex_pos)
+                on_conveyor = (
+                    (target_tile is not None
+                     and target_tile.building is not None
+                     and target_tile.building.type == BuildingType.CONVEYOR)
+                    or
+                    (cur_tile is not None
+                     and cur_tile.building is not None
+                     and cur_tile.building.type == BuildingType.CONVEYOR)
+                )
+                if on_conveyor:
+                    step *= conveyor_mult
                 if dist <= step:
                     person.px, person.py = tx, ty
                     person.hex_pos = target
                     person.path.pop(0)
-                    # Arrived at destination for RELOCATE
-                    if not person.path and person.task == Task.RELOCATE:
-                        person.task = Task.IDLE
+                    if not person.path:
+                        # Arrival hooks
+                        if person.task == Task.RELOCATE:
+                            person.task = Task.IDLE
+                        elif person.task == Task.COMMUTE:
+                            target_b = person.workplace_target
+                            if (target_b is not None
+                                    and person.hex_pos == target_b.coord):
+                                person.workplace = target_b
+                                person.task = Task.GATHER
+                            else:
+                                # Target vanished or moved; clear.
+                                person.task = Task.IDLE
+                        elif person.task == Task.LOGISTICS_PICKUP:
+                            # Signal to world._update_logistics to pick
+                            # up from logistics_src on the next tick.
+                            # The world runs after population.update so
+                            # it can react to the arrived state.
+                            pass
+                        elif person.task == Task.LOGISTICS_DELIVER:
+                            pass
                 else:
                     person.px += dx / dist * step
                     person.py += dy / dist * step

@@ -31,6 +31,7 @@ from compprog_pygame.games.hex_colony.overlay import (
     OverlayItem,
     OverlayRipple,
     OverlayRock,
+    OverlayRuin,
     OverlayTree,
     build_overlays,
 )
@@ -62,25 +63,48 @@ from compprog_pygame.games.hex_colony.render_overlays import (
     draw_bush,
     draw_grass,
     draw_crystal,
+    draw_ruin,
 )
 from compprog_pygame.games.hex_colony.render_buildings import (
     draw_overcrowded,
     draw_camp,
+    draw_habitat,
     draw_house,
     draw_woodcutter,
     draw_quarry,
     draw_gatherer,
     draw_storage,
     draw_path,
+    draw_bridge,
+    draw_refinery,
+    draw_mining_machine,
+    draw_farm,
+    draw_well,
+    draw_wall,
+    draw_workshop,
+    draw_forge,
+    draw_assembler,
+    draw_research_center,
+    draw_tribal_camp,
+    draw_chemical_plant,
+    draw_conveyor,
+    draw_solar_array,
+    draw_rocket_silo,
+    draw_oil_drill,
+    draw_oil_refinery,
 )
 from compprog_pygame.games.hex_colony.render_terrain import (
     DIR_EDGE,
     mountain_tile_color,
     draw_contours,
 )
+from compprog_pygame.games.hex_colony.sprites import sprites
+
+# Load sprite assets at import time
+sprites.load_all()
 
 # Building types that collect resources (show range ring)
-_COLLECTION_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER}
+_COLLECTION_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER, BuildingType.REFINERY, BuildingType.MINING_MACHINE, BuildingType.OIL_DRILL}
 
 class Renderer:
     """Draws the entire game scene."""
@@ -107,6 +131,12 @@ class Renderer:
         self._static_overlays: list[OverlayItem] = []
         self._edge_colors: dict[HexCoord, list[tuple[int, int, int]]] = {}
         self._cross_cat: dict[HexCoord, list[int]] = {}  # 0=same category, 2=cross-category: use own colour
+        self._dirty_tiles: set[HexCoord] = set()  # tiles needing targeted redraw
+        # Spatial index of overlays by hex coord — built lazily on the
+        # first call to ``remove_overlays_at`` so per-tile removal is
+        # O(items in that hex) instead of O(total overlays).
+        self._overlay_index: dict[tuple[int, int], list] | None = None
+        self._removed_overlay_count: int = 0
 
         # Alt resource overlay
         self.show_resource_overlay: bool = False
@@ -114,6 +144,18 @@ class Renderer:
         # Ghost building preview
         self.ghost_building: BuildingType | None = None
         self.ghost_coord: HexCoord | None = None  # snapped hex coord
+        self.ghost_valid: bool = False  # whether placement is valid
+
+        # Glowing-green chain placement preview for paths
+        self.path_preview: list[HexCoord] = []
+
+        # Reusable overlay surface for per-hex alpha blits
+        self._hex_overlay: pygame.Surface | None = None
+        self._hex_overlay_size: tuple[int, int] = (0, 0)
+
+        # Ghost building surface cache (avoid per-frame allocation)
+        self._ghost_cache: pygame.Surface | None = None
+        self._ghost_cache_key: tuple | None = None
 
     @property
     def graphics_quality(self) -> str:
@@ -126,6 +168,16 @@ class Renderer:
             self._tile_layer = None  # force rebuild
 
     # ── Cache helpers ────────────────────────────────────────────
+
+    def _get_hex_overlay(self, w: int, h: int) -> pygame.Surface:
+        """Return a reusable SRCALPHA surface, growing it if needed."""
+        if self._hex_overlay is None or w > self._hex_overlay_size[0] or h > self._hex_overlay_size[1]:
+            nw = max(w, self._hex_overlay_size[0]) + 16
+            nh = max(h, self._hex_overlay_size[1]) + 16
+            self._hex_overlay = pygame.Surface((nw, nh), pygame.SRCALPHA)
+            self._hex_overlay_size = (nw, nh)
+        self._hex_overlay.fill((0, 0, 0, 0), (0, 0, w, h))
+        return self._hex_overlay
 
     def _get_pixel(self, coord: HexCoord, size: int) -> tuple[float, float]:
         cached = self._pixel_cache.get(coord)
@@ -158,8 +210,11 @@ class Renderer:
             self._draw_ripples(surface, camera, world.settings.hex_size)
         self._draw_buildings(surface, world, camera)
         self._draw_people(surface, world, camera)
+        self._draw_unreachable_markers(surface, world, camera)
         if self.show_resource_overlay:
             self._draw_resource_overlay(surface, world, camera)
+        if self.path_preview:
+            self._draw_path_preview(surface, camera, world.settings.hex_size)
         if self.ghost_building is not None and self.ghost_coord is not None:
             self._draw_ghost_building(surface, world, camera)
         if self.selected_hex is not None:
@@ -176,6 +231,7 @@ class Renderer:
         if self._overlays is None:
             self._overlays, self._mountain_depths = build_overlays(
                 world.grid, world.settings.hex_size,
+                seed=abs(hash(getattr(world, "seed", "default"))) & 0xFFFFFFFF,
             )
             self._static_overlays = [
                 item for item in self._overlays
@@ -185,23 +241,86 @@ class Renderer:
                 item for item in self._overlays
                 if isinstance(item, OverlayRipple)
             ]
+        # Drain depleted-tile events from the simulation: strip stale
+        # overlays (trees / stones / ore crystals) from the now-grass
+        # tile and force a blended-colour rebuild so the tile blends
+        # with surrounding grass / underlying terrain.
+        depleted = getattr(world, "pending_depleted_tiles", None)
+        if depleted:
+            for coord in list(depleted):
+                self.remove_overlays_at(coord, world.settings.hex_size)
+            depleted.clear()
+            self._blended_colors = {}
+            self._edge_colors = {}
+            self._cross_cat = {}
+            self._tile_layer = None  # full rebuild on next frame
         self._ensure_blended_colors(world)
 
     def remove_overlays_at(self, coord: HexCoord, hex_size: int) -> None:
-        """Remove all overlay items that fall within the given hex tile."""
-        cx, cy = hex_to_pixel(coord, hex_size)
-        radius = hex_size * 0.85  # slightly smaller than full hex
-        r2 = radius * radius
-        self._static_overlays = [
-            item for item in self._static_overlays
-            if (item.wx - cx) ** 2 + (item.wy - cy) ** 2 > r2
-        ]
-        self._ripples = [
-            item for item in self._ripples
-            if (item.wx - cx) ** 2 + (item.wy - cy) ** 2 > r2
-        ]
-        # Invalidate tile layer cache so cleared tile is redrawn
-        self._tile_layer = None
+        """Remove all overlay items that fall within the given hex tile.
+
+        Uses a lazily-built spatial index keyed by hex coord so removal
+        is O(items in this hex) instead of O(total overlay count).  The
+        flat ``_static_overlays`` / ``_ripples`` lists are iterated for
+        rendering, so removed items are tagged with ``wx = nan`` and
+        skipped during draw and during periodic compaction.
+        """
+        from math import isnan, nan
+
+        # Build the per-coord index lazily.
+        if self._overlay_index is None:
+            self._overlay_index = {}
+            inv = 1.0 / max(1, hex_size)
+            from compprog_pygame.games.hex_colony.hex_grid import pixel_to_hex
+            for lst in (self._static_overlays, self._ripples):
+                for item in lst:
+                    if isnan(item.wx):
+                        continue
+                    c = pixel_to_hex(item.wx, item.wy, hex_size)
+                    key = (c.q, c.r)
+                    bucket = self._overlay_index.get(key)
+                    if bucket is None:
+                        self._overlay_index[key] = [item]
+                    else:
+                        bucket.append(item)
+            _ = inv  # silence unused
+
+        key = (coord.q, coord.r)
+        bucket = self._overlay_index.pop(key, None)
+        if bucket:
+            self._removed_overlay_count += len(bucket)
+            for item in bucket:
+                # Mark dead — render & blit loops skip nan positions.
+                item.wx = nan
+            # Periodically compact the flat lists so they don't grow
+            # without bound (skip-checks add a tiny per-item cost).
+            if self._removed_overlay_count > 256:
+                self._static_overlays = [
+                    it for it in self._static_overlays if not isnan(it.wx)
+                ]
+                self._ripples = [
+                    it for it in self._ripples if not isnan(it.wx)
+                ]
+                self._removed_overlay_count = 0
+
+        # Mark tile for targeted redraw instead of invalidating entire cache.
+        # The building drawn on top will cover stale overlay pixels until the
+        # next natural cache rebuild.
+        self._dirty_tiles.add(coord)
+
+    def invalidate_tile(self, coord: HexCoord) -> None:
+        """Mark a single hex as needing redraw on the tile layer."""
+        self._dirty_tiles.add(coord)
+
+    def has_ruin_at(self, coord: HexCoord) -> bool:
+        """True if any OverlayRuin was generated on the given hex."""
+        key = (coord.q, coord.r)
+        for item in self._static_overlays:
+            if item.wx != item.wx:  # NaN — removed
+                continue
+            if isinstance(item, OverlayRuin) and item.coord == key:
+                return True
+        return False
 
     # ── Blended tile colours (two-pass smoothing) ────────────────
 
@@ -355,33 +474,76 @@ class Renderer:
     def _blit_tile_layer(
         self, surface: pygame.Surface, world: World, camera: Camera,
     ) -> None:
-        """Blit the cached tile+overlay surface; rebuild when stale."""
+        """Blit the cached tile+overlay surface; rebuild when stale.
+
+        Uses zoom tolerance so the tile layer is NOT rebuilt for every
+        tiny zoom change during smooth-zoom animation.  Between rebuilds
+        the cached surface is scaled to approximate the current zoom.
+        """
         sw, sh = surface.get_size()
         zoom = camera.zoom
         cam_x, cam_y = camera.x, camera.y
 
+        # Don't rebuild while the camera is mid smooth-zoom animation —
+        # that would re-render every frame as zoom drifts toward target,
+        # producing the visible "lag" on each scroll.  Instead the
+        # cached layer is scaled into place each frame and the rebuild
+        # happens once the zoom settles.
+        target_zoom = getattr(camera, "_target_zoom", zoom)
+        zoom_settling = abs(zoom - target_zoom) > 1e-4
+
         need_rebuild = (
             self._tile_layer is None
             or self._tl_screen != (sw, sh)
-            or self._tl_zoom != zoom
         )
+
+        if not need_rebuild and self._tl_zoom > 0 and not zoom_settling:
+            # Only rebuild when zoom changes by more than 15 %
+            zoom_ratio = zoom / self._tl_zoom
+            if abs(zoom_ratio - 1.0) > 0.15:
+                need_rebuild = True
+
         if not need_rebuild:
-            dx = abs(cam_x - self._tl_cam[0]) * zoom
-            dy = abs(cam_y - self._tl_cam[1]) * zoom
-            pad_x = sw * (_TILE_LAYER_PAD - 1) * 0.5
-            pad_y = sh * (_TILE_LAYER_PAD - 1) * 0.5
-            if dx > pad_x or dy > pad_y:
+            # Check whether the source rect still fits inside the cache
+            cw, ch = self._tile_layer.get_size()
+            tl_z = self._tl_zoom
+            ratio = tl_z / zoom
+            src_w = sw * ratio
+            src_h = sh * ratio
+            src_cx = (cam_x - self._tl_cam[0]) * tl_z + cw * 0.5
+            src_cy = (cam_y - self._tl_cam[1]) * tl_z + ch * 0.5
+            src_x = src_cx - src_w * 0.5
+            src_y = src_cy - src_h * 0.5
+            if src_x < 0 or src_y < 0 or src_x + src_w > cw or src_y + src_h > ch:
                 need_rebuild = True
 
         if need_rebuild:
             self._rebuild_tile_layer(world, camera, sw, sh)
 
+        # Patch any tiles that were individually dirtied (building place/delete)
+        if self._dirty_tiles:
+            self._patch_dirty_tiles(world, world.settings.hex_size)
+
+        # Compute source rect on the cached surface
         cw, ch = self._tile_layer.get_size()
-        src_x = int((cam_x - self._tl_cam[0]) * zoom + cw * 0.5 - sw * 0.5)
-        src_y = int((cam_y - self._tl_cam[1]) * zoom + ch * 0.5 - sh * 0.5)
-        src_x = max(0, min(src_x, cw - sw))
-        src_y = max(0, min(src_y, ch - sh))
-        surface.blit(self._tile_layer, (0, 0), (src_x, src_y, sw, sh))
+        tl_z = self._tl_zoom
+        ratio = tl_z / zoom
+        isrc_w = max(1, int(sw * ratio))
+        isrc_h = max(1, int(sh * ratio))
+        src_cx = (cam_x - self._tl_cam[0]) * tl_z + cw * 0.5
+        src_cy = (cam_y - self._tl_cam[1]) * tl_z + ch * 0.5
+        isrc_x = int(src_cx - isrc_w * 0.5)
+        isrc_y = int(src_cy - isrc_h * 0.5)
+        isrc_x = max(0, min(isrc_x, cw - isrc_w))
+        isrc_y = max(0, min(isrc_y, ch - isrc_h))
+
+        if isrc_w == sw and isrc_h == sh:
+            # Exact zoom match — fast direct blit
+            surface.blit(self._tile_layer, (0, 0), (isrc_x, isrc_y, sw, sh))
+        else:
+            # Zoom mismatch — scale the relevant portion to the screen
+            sub = self._tile_layer.subsurface((isrc_x, isrc_y, isrc_w, isrc_h))
+            surface.blit(pygame.transform.scale(sub, (sw, sh)), (0, 0))
 
     def _rebuild_tile_layer(
         self, world: World, camera: Camera, sw: int, sh: int,
@@ -506,7 +668,10 @@ class Renderer:
             stride = 1 if lod_high else 2
             for idx in range(0, len(self._static_overlays), stride):
                 item = self._static_overlays[idx]
-                sx = (item.wx - cam_x) * zoom + half_cw
+                wx = item.wx
+                if wx != wx:  # NaN check — item was removed
+                    continue
+                sx = (wx - cam_x) * zoom + half_cw
                 sy = (item.wy - cam_y) * zoom + half_ch
                 if sx < -margin or sx > cw + margin or sy < -margin or sy > ch + margin:
                     continue
@@ -521,6 +686,117 @@ class Renderer:
                     draw_grass(cache, item, sx, sy, zoom, iz)
                 elif isinstance(item, OverlayCrystal):
                     draw_crystal(cache, item, sx, sy, zoom, iz)
+                elif isinstance(item, OverlayRuin):
+                    draw_ruin(cache, item, sx, sy, zoom, iz)
+
+    def _patch_dirty_tiles(self, world: World, hex_size: int) -> None:
+        """Redraw only the dirty tiles on the existing tile layer cache.
+
+        This avoids a full rebuild when a building is placed or deleted,
+        preventing the visible "pop" on all surrounding tiles.
+        """
+        if not self._dirty_tiles or self._tile_layer is None:
+            return
+
+        cache = self._tile_layer
+        zoom = self._tl_zoom
+        cam_x, cam_y = self._tl_cam
+        cw, ch = cache.get_size()
+        half_cw = cw * 0.5
+        half_ch = ch * 0.5
+        blended = self._blended_colors
+        mtn = self._mountain_depths
+
+        lod_high = zoom > 0.45 and self._graphics_quality == "high"
+        lod_mid = not lod_high and zoom >= 0.25 and self._graphics_quality != "low"
+        lod_low = self._graphics_quality == "low"
+
+        for coord in self._dirty_tiles:
+            tile = world.grid.get(coord)
+            if tile is None:
+                continue
+
+            wx, wy = self._get_pixel(coord, hex_size)
+            corners_world = self._get_corners(coord, wx, wy, hex_size)
+            corners = [
+                ((cx - cam_x) * zoom + half_cw,
+                 (cy - cam_y) * zoom + half_ch)
+                for cx, cy in corners_world
+            ]
+            base = blended.get(coord, (80, 80, 80))
+
+            # Redraw terrain polygon (same LOD logic as _rebuild_tile_layer)
+            if lod_low:
+                flat = TERRAIN_BASE_COLOR.get(tile.terrain, (80, 80, 80))
+                pygame.draw.polygon(cache, flat, corners)
+            elif lod_high:
+                ecols = self._edge_colors.get(coord)
+                xcat = self._cross_cat.get(coord)
+                if ecols is not None and xcat is not None:
+                    cxs = sum(c[0] for c in corners) / 6.0
+                    cys = sum(c[1] for c in corners) / 6.0
+                    for d in range(6):
+                        i1 = DIR_EDGE[d][0]
+                        i2 = DIR_EDGE[d][1]
+                        ax, ay = corners[i1]
+                        bx, by = corners[i2]
+                        xf = xcat[d]
+                        if xf == 2:
+                            pygame.draw.polygon(cache, base,
+                                                [(cxs, cys), (ax, ay), (bx, by)])
+                        else:
+                            ec = ecols[d]
+                            mca = ((cxs + ax) * 0.5, (cys + ay) * 0.5)
+                            mcb = ((cxs + bx) * 0.5, (cys + by) * 0.5)
+                            mab = ((ax + bx) * 0.5, (ay + by) * 0.5)
+                            mc = ((base[0] + ec[0]) >> 1,
+                                  (base[1] + ec[1]) >> 1,
+                                  (base[2] + ec[2]) >> 1)
+                            pygame.draw.polygon(cache, base, [(cxs, cys), mca, mcb])
+                            pygame.draw.polygon(cache, ec, [mca, (ax, ay), mab])
+                            pygame.draw.polygon(cache, ec, [mcb, mab, (bx, by)])
+                            pygame.draw.polygon(cache, mc, [mca, mab, mcb])
+                else:
+                    pygame.draw.polygon(cache, base, corners)
+            else:
+                pygame.draw.polygon(cache, base, corners)
+
+            # Mountain contours
+            if (lod_high or lod_mid) and not lod_low:
+                mtn_info = mtn.get(coord)
+                if mtn_info is not None and mtn_info[0] > 0:
+                    draw_contours(
+                        cache, coord, mtn_info[0], corners,
+                        base, mtn, zoom,
+                    )
+
+            # Re-draw any remaining overlays that overlap this hex
+            if (lod_high or lod_mid) and not lod_low:
+                patch_r2 = (hex_size * 1.5) ** 2
+                iz = max(1, int(zoom))
+                for item in self._static_overlays:
+                    iwx = item.wx
+                    if iwx != iwx:  # NaN — removed
+                        continue
+                    if (iwx - wx) ** 2 + (item.wy - wy) ** 2 > patch_r2:
+                        continue
+                    isx = (iwx - cam_x) * zoom + half_cw
+                    isy = (item.wy - cam_y) * zoom + half_ch
+                    if isinstance(item, OverlayTree):
+                        draw_tree(cache, item, isx, isy, zoom, iz)
+                    elif isinstance(item, OverlayRock):
+                        draw_rock(cache, item, isx, isy, zoom, iz)
+                    elif isinstance(item, OverlayBush):
+                        draw_bush(cache, item, isx, isy, zoom, iz)
+                    elif isinstance(item, OverlayGrassTuft):
+                        draw_grass(cache, item, isx, isy, zoom, iz)
+                    elif isinstance(item, OverlayCrystal):
+                        draw_crystal(cache, item, isx, isy, zoom, iz)
+                    elif isinstance(item, OverlayRuin):
+                        draw_ruin(cache, item, isx, isy, zoom, iz)
+
+        # Clear after patching so we don't redo these every frame
+        self._dirty_tiles.clear()
 
     # ── Animated overlays (ripples) ──────────────────────────────
 
@@ -538,7 +814,10 @@ class Renderer:
         stride = 1 if zoom > 0.7 else (2 if zoom > 0.4 else 3)
         for idx in range(0, len(self._ripples), stride):
             item = self._ripples[idx]
-            sx = (item.wx - cam_x) * zoom + half_sw
+            wx = item.wx
+            if wx != wx:  # NaN — removed
+                continue
+            sx = (wx - cam_x) * zoom + half_sw
             sy = (item.wy - cam_y) * zoom + half_sh
             if sx < -margin or sx > sw + margin or sy < -margin or sy > sh + margin:
                 continue
@@ -557,11 +836,28 @@ class Renderer:
         half_sw, half_sh = sw * 0.5, sh * 0.5
         margin = size * 2 * zoom
 
-        # First pass: paths (ground-level, drawn beneath other buildings)
+        # First pass: paths and bridges (ground-level, drawn beneath other buildings)
         # Also track non-path buildings that need a path disc underneath
         buildings_needing_path: set[HexCoord] = set()
+        _PATH_TYPES = {BuildingType.PATH, BuildingType.BRIDGE}
+        # Non-path buildings adjacent to other non-path buildings also
+        # get an implicit path disc so neighbouring buildings visually
+        # connect (workers can step directly between them, so it should
+        # not look like they're running on grass).
+        _IMPLICIT_PATH_SKIP = {
+            BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL,
+        }
         for building in world.buildings.buildings:
-            if building.type != BuildingType.PATH:
+            if building.type in _IMPLICIT_PATH_SKIP:
+                continue
+            for nb_coord in building.coord.neighbors():
+                nb_building = world.buildings.at(nb_coord)
+                if (nb_building is not None
+                        and nb_building.type not in _IMPLICIT_PATH_SKIP):
+                    buildings_needing_path.add(building.coord)
+                    break
+        for building in world.buildings.buildings:
+            if building.type not in _PATH_TYPES:
                 continue
             wx, wy = self._get_pixel(building.coord, size)
             sx = (wx - cam_x) * zoom + half_sw
@@ -581,9 +877,37 @@ class Renderer:
                     nsx = (nwx - cam_x) * zoom + half_sw
                     nsy = (nwy - cam_y) * zoom + half_sh
                     nb_positions.append((nsx, nsy))
-                    if nb_building.type != BuildingType.PATH:
+                    if nb_building.type not in _PATH_TYPES:
                         buildings_needing_path.add(nb_coord)
-            draw_path(surface, sx, sy, r, zoom, nb_positions,
+            if building.type == BuildingType.BRIDGE:
+                draw_bridge(surface, sx, sy, r, zoom, nb_positions,
+                            building.coord.q, building.coord.r)
+            else:
+                draw_path(surface, sx, sy, r, zoom, nb_positions,
+                          building.coord.q, building.coord.r)
+
+        # Walls pass: walls connect only to other walls
+        for building in world.buildings.buildings:
+            if building.type != BuildingType.WALL:
+                continue
+            wx, wy = self._get_pixel(building.coord, size)
+            sx = (wx - cam_x) * zoom + half_sw
+            sy = (wy - cam_y) * zoom + half_sh
+            if sx < -margin or sx > sw + margin or sy < -margin or sy > sh + margin:
+                continue
+            r = int(size * 0.75 * zoom)
+            if r < 2:
+                pygame.draw.circle(surface, (160, 155, 145), (int(sx), int(sy)), max(1, r))
+                continue
+            nb_positions_w: list[tuple[float, float]] = []
+            for nb_coord in building.coord.neighbors():
+                nb_building = world.buildings.at(nb_coord)
+                if nb_building is not None and nb_building.type == BuildingType.WALL:
+                    nwx, nwy = self._get_pixel(nb_coord, size)
+                    nsx = (nwx - cam_x) * zoom + half_sw
+                    nsy = (nwy - cam_y) * zoom + half_sh
+                    nb_positions_w.append((nsx, nsy))
+            draw_wall(surface, sx, sy, r, zoom, nb_positions_w,
                       building.coord.q, building.coord.r)
 
         # Draw path discs under non-path buildings adjacent to paths
@@ -600,11 +924,16 @@ class Renderer:
             if r < 2:
                 pygame.draw.circle(surface, _PATH_BASE, (int(sx), int(sy)), max(1, r))
                 continue
-            # Gather path neighbours for the under-building path disc
+            # Gather neighbours that should anchor the under-building
+            # path disc: real paths/bridges and other non-path/wall
+            # buildings (so adjacent buildings visually connect).
             nb_positions_b: list[tuple[float, float]] = []
             for nb_coord in coord.neighbors():
                 nb_building = world.buildings.at(nb_coord)
-                if nb_building is not None and nb_building.type == BuildingType.PATH:
+                if nb_building is None:
+                    continue
+                if (nb_building.type in _PATH_TYPES
+                        or nb_building.type not in _IMPLICIT_PATH_SKIP):
                     nwx, nwy = self._get_pixel(nb_coord, size)
                     nsx = (nwx - cam_x) * zoom + half_sw
                     nsy = (nwy - cam_y) * zoom + half_sh
@@ -612,9 +941,10 @@ class Renderer:
             draw_path(surface, sx, sy, r, zoom, nb_positions_b,
                       coord.q, coord.r)
 
-        # Second pass: non-path buildings
+        # Second pass: non-path, non-wall buildings
+        _SKIP_SECOND = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL}
         for building in world.buildings.buildings:
-            if building.type == BuildingType.PATH:
+            if building.type in _SKIP_SECOND:
                 continue
             wx, wy = self._get_pixel(building.coord, size)
             sx = (wx - cam_x) * zoom + half_sw
@@ -632,6 +962,8 @@ class Renderer:
                 draw_camp(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.HOUSE:
                 draw_house(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.HABITAT:
+                draw_habitat(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.WOODCUTTER:
                 draw_woodcutter(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.QUARRY:
@@ -640,6 +972,36 @@ class Renderer:
                 draw_gatherer(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.STORAGE:
                 draw_storage(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.REFINERY:
+                draw_refinery(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.MINING_MACHINE:
+                draw_mining_machine(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.FORGE:
+                draw_forge(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.ASSEMBLER:
+                draw_assembler(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.FARM:
+                draw_farm(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.WELL:
+                draw_well(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.WORKSHOP:
+                draw_workshop(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.RESEARCH_CENTER:
+                draw_research_center(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.TRIBAL_CAMP:
+                draw_tribal_camp(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.CHEMICAL_PLANT:
+                draw_chemical_plant(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.CONVEYOR:
+                draw_conveyor(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.SOLAR_ARRAY:
+                draw_solar_array(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.ROCKET_SILO:
+                draw_rocket_silo(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.OIL_DRILL:
+                draw_oil_drill(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.OIL_REFINERY:
+                draw_oil_refinery(surface, sx, sy, r, zoom)
 
             # Overcrowding indicator: red ! above dwelling
             if (building.housing_capacity > 0
@@ -675,6 +1037,17 @@ class Renderer:
                 pygame.draw.circle(surface, color, (isx, isy), max(1, int(3 * zoom)))
                 continue
 
+            # Try sprite first
+            person_key = "people/person_gather" if person.task == Task.GATHER else "people/person_idle"
+            person_sheet = sprites.get(person_key)
+            if person_sheet is not None:
+                bw, bh = person_sheet.base_size
+                tw = max(2, int(bw * zoom))
+                th = max(2, int(bh * zoom))
+                img = person_sheet.get(tw, th)
+                surface.blit(img, (isx - tw // 2, isy - th + 2))
+                continue
+
             head_r = max(2, int(2.5 * zoom))
             body_h = max(2, int(4 * zoom))
             leg_h = max(1, int(2 * zoom))
@@ -700,6 +1073,60 @@ class Renderer:
                                    max(1, int(zoom * 1.5)))
 
     # ── Selection highlight ──────────────────────────────────────
+
+    def _draw_unreachable_markers(
+        self, surface: pygame.Surface, world: World, camera: Camera,
+    ) -> None:
+        """Draw a red "!" above worker-buildings in networks with no
+        populated houses (and therefore no workers that can reach them).
+        """
+        try:
+            ids = world.unreachable_buildings()
+        except AttributeError:
+            return
+        try:
+            ids = ids | world.starved_producers()
+        except AttributeError:
+            pass
+        if not ids:
+            return
+        zoom = camera.zoom
+        cam_x, cam_y = camera.x, camera.y
+        sw, sh = surface.get_size()
+        half_sw, half_sh = sw * 0.5, sh * 0.5
+        size = world.settings.hex_size
+        glyph_font = pygame.font.Font(None, max(20, int(32 * zoom)))
+        glyph = glyph_font.render("!", True, (255, 80, 80))
+        shadow = glyph_font.render("!", True, (60, 0, 0))
+        for b in world.buildings.buildings:
+            if id(b) not in ids:
+                continue
+            wx, wy = self._get_pixel(b.coord, size)
+            sx = (wx - cam_x) * zoom + half_sw
+            sy = (wy - cam_y) * zoom + half_sh - size * zoom * 1.1
+            if sx < -30 or sx > sw + 30 or sy < -30 or sy > sh + 30:
+                continue
+            # Small circular badge behind the glyph for readability.
+            r = max(10, int(14 * zoom))
+            pygame.draw.circle(
+                surface, (40, 0, 0), (int(sx), int(sy)), r + 1,
+            )
+            pygame.draw.circle(
+                surface, (230, 60, 60), (int(sx), int(sy)), r,
+            )
+            pygame.draw.circle(
+                surface, (140, 0, 0), (int(sx), int(sy)), r, width=2,
+            )
+            surface.blit(
+                shadow,
+                (int(sx) - shadow.get_width() // 2 + 1,
+                 int(sy) - shadow.get_height() // 2 + 1),
+            )
+            surface.blit(
+                glyph,
+                (int(sx) - glyph.get_width() // 2,
+                 int(sy) - glyph.get_height() // 2),
+            )
 
     def _draw_hex_highlight(
         self, surface: pygame.Surface, coord: HexCoord,
@@ -727,10 +1154,50 @@ class Renderer:
         w = max_x - min_x
         h = max_y - min_y
         if w > 0 and h > 0:
-            overlay = pygame.Surface((w, h), pygame.SRCALPHA)
+            overlay = self._get_hex_overlay(w, h)
             shifted = [(px - min_x, py - min_y) for px, py in corners_screen]
             pygame.draw.polygon(overlay, (255, 255, 100, 30), shifted)
-            surface.blit(overlay, (min_x, min_y))
+            surface.blit(overlay, (min_x, min_y), area=(0, 0, w, h))
+
+    # ── Glowing path-placement preview ───────────────────────────
+
+    def _draw_path_preview(
+        self, surface: pygame.Surface, camera: Camera, size: int,
+    ) -> None:
+        """Draw a glowing-green overlay on every coord in path_preview."""
+        zoom = camera.zoom
+        cam_x, cam_y = camera.x, camera.y
+        sw, sh = surface.get_size()
+        half_sw, half_sh = sw * 0.5, sh * 0.5
+        pulse = 0.5 + 0.5 * math.sin(pygame.time.get_ticks() / 250)
+        fill_alpha = int(70 + 50 * pulse)
+        edge_alpha = int(200 + 50 * pulse)
+        fill_color = (90, 255, 120, fill_alpha)
+        edge_color = (160, 255, 170, edge_alpha)
+        edge_w = max(1, int(2 * zoom))
+        for coord in self.path_preview:
+            wx, wy = self._get_pixel(coord, size)
+            corners_world = self._get_corners(coord, wx, wy, size)
+            corners_screen = [
+                ((cx - cam_x) * zoom + half_sw,
+                 (cy - cam_y) * zoom + half_sh)
+                for cx, cy in corners_world
+            ]
+            xs = [p[0] for p in corners_screen]
+            ys = [p[1] for p in corners_screen]
+            min_x, max_x = int(min(xs)) - 2, int(max(xs)) + 2
+            min_y, max_y = int(min(ys)) - 2, int(max(ys)) + 2
+            w = max_x - min_x
+            h = max_y - min_y
+            if w <= 0 or h <= 0:
+                continue
+            if max_x < 0 or max_y < 0 or min_x > sw or min_y > sh:
+                continue
+            overlay = self._get_hex_overlay(w, h)
+            shifted = [(px - min_x, py - min_y) for px, py in corners_screen]
+            pygame.draw.polygon(overlay, fill_color, shifted)
+            pygame.draw.polygon(overlay, edge_color, shifted, width=edge_w)
+            surface.blit(overlay, (min_x, min_y), area=(0, 0, w, h))
 
     # ── Alt resource overlay ─────────────────────────────────────
 
@@ -761,7 +1228,7 @@ class Renderer:
             "housing":  (100, 160, 220, 70),
         }
         _RESOURCE_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER}
-        _HOUSING_BUILDINGS = {BuildingType.CAMP, BuildingType.HOUSE}
+        _HOUSING_BUILDINGS = {BuildingType.CAMP, BuildingType.HOUSE, BuildingType.HABITAT}
 
         # Spatial culling bounds
         half_world_w = (sw * 0.5) / zoom + size * 2
@@ -810,10 +1277,35 @@ class Renderer:
                 w = max_x - min_x
                 h = max_y - min_y
                 if w > 0 and h > 0:
-                    ov = pygame.Surface((w, h), pygame.SRCALPHA)
+                    ov = self._get_hex_overlay(w, h)
                     shifted = [(px - min_x, py - min_y) for px, py in corners_screen]
                     pygame.draw.polygon(ov, overlay_col, shifted)
-                    surface.blit(ov, (min_x, min_y))
+                    surface.blit(ov, (min_x, min_y), area=(0, 0, w, h))
+
+                # Building production / storage sprite overlay: draw a
+                # large copy of the resource sprite this building is
+                # producing (or storing) so the player can read the
+                # production chain at a glance.
+                if building is not None:
+                    icon_res = None
+                    if building.type == BuildingType.STORAGE:
+                        icon_res = building.stored_resource
+                    else:
+                        icon_res = world._building_output(building)
+                    if icon_res is not None:
+                        icon_size = max(8, int(size * zoom * 1.1))
+                        from compprog_pygame.games.hex_colony.resource_icons import (
+                            get_resource_icon,
+                        )
+                        icon = get_resource_icon(icon_res, icon_size)
+                        if icon is not None:
+                            cx = (wx - cam_x) * zoom + half_sw
+                            cy = (wy - cam_y) * zoom + half_sh
+                            surface.blit(
+                                icon,
+                                (int(cx - icon.get_width() / 2),
+                                 int(cy - icon.get_height() / 2)),
+                            )
 
     # ── Ghost building preview ───────────────────────────────────
 
@@ -839,31 +1331,82 @@ class Renderer:
         if r < 2:
             return
 
-        # Draw building at half alpha using a temp surface
+        # Cache the ghost surface by (type, radius, valid) to avoid
+        # creating new SRCALPHA surfaces every frame.
+        cache_key = (btype, r, self.ghost_valid)
+        if self._ghost_cache_key != cache_key:
+            bld_size = r * 4
+            bld_surf = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)
+            cx_local = bld_size // 2
+            cy_local = bld_size // 2
+            if btype == BuildingType.CAMP:
+                draw_camp(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.HOUSE:
+                draw_house(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.HABITAT:
+                draw_habitat(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.WOODCUTTER:
+                draw_woodcutter(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.QUARRY:
+                draw_quarry(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.GATHERER:
+                draw_gatherer(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.STORAGE:
+                draw_storage(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.PATH:
+                draw_path(bld_surf, cx_local, cy_local, r, zoom, [], coord.q, coord.r)
+            elif btype == BuildingType.WORKSHOP:
+                draw_workshop(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.FORGE:
+                draw_forge(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.ASSEMBLER:
+                draw_assembler(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.RESEARCH_CENTER:
+                draw_research_center(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.MINING_MACHINE:
+                draw_mining_machine(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.FARM:
+                draw_farm(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.WELL:
+                draw_well(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.WALL:
+                draw_wall(bld_surf, cx_local, cy_local, r, zoom, [], coord.q, coord.r)
+            elif btype == BuildingType.REFINERY:
+                draw_refinery(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.BRIDGE:
+                draw_bridge(bld_surf, cx_local, cy_local, r, zoom, [], coord.q, coord.r)
+            elif btype == BuildingType.CHEMICAL_PLANT:
+                draw_chemical_plant(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.CONVEYOR:
+                draw_conveyor(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.SOLAR_ARRAY:
+                draw_solar_array(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.ROCKET_SILO:
+                draw_rocket_silo(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.OIL_DRILL:
+                draw_oil_drill(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.OIL_REFINERY:
+                draw_oil_refinery(bld_surf, cx_local, cy_local, r, zoom)
+
+            if not self.ghost_valid:
+                red_tint = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)
+                red_tint.fill((255, 60, 60, 100))
+                bld_surf.blit(red_tint, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+                red_overlay = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)
+                red_overlay.fill((255, 50, 50, 80))
+                bld_surf.blit(red_overlay, (0, 0))
+
+            bld_surf.set_alpha(140 if self.ghost_valid else 100)
+            self._ghost_cache = bld_surf
+            self._ghost_cache_key = cache_key
+
         bld_size = r * 4
-        bld_surf = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)
         cx_local = bld_size // 2
         cy_local = bld_size // 2
-        # Draw the building shape onto the temp surface
-        if btype == BuildingType.CAMP:
-            draw_camp(bld_surf, cx_local, cy_local, r, zoom)
-        elif btype == BuildingType.HOUSE:
-            draw_house(bld_surf, cx_local, cy_local, r, zoom)
-        elif btype == BuildingType.WOODCUTTER:
-            draw_woodcutter(bld_surf, cx_local, cy_local, r, zoom)
-        elif btype == BuildingType.QUARRY:
-            draw_quarry(bld_surf, cx_local, cy_local, r, zoom)
-        elif btype == BuildingType.GATHERER:
-            draw_gatherer(bld_surf, cx_local, cy_local, r, zoom)
-        elif btype == BuildingType.STORAGE:
-            draw_storage(bld_surf, cx_local, cy_local, r, zoom)
-        elif btype == BuildingType.PATH:
-            draw_path(bld_surf, cx_local, cy_local, r, zoom, [], coord.q, coord.r)
-        bld_surf.set_alpha(140)
-        surface.blit(bld_surf, (int(sx) - cx_local, int(sy) - cy_local))
+        surface.blit(self._ghost_cache, (int(sx) - cx_local, int(sy) - cy_local))
 
-        # Range ring for collection buildings
-        if btype in _COLLECTION_BUILDINGS:
+        # Range ring for collection buildings (only when valid)
+        if self.ghost_valid and btype in _COLLECTION_BUILDINGS:
             self._draw_range_ring(surface, coord, camera, size)
 
     # ── Resource collection range ring ───────────────────────────
