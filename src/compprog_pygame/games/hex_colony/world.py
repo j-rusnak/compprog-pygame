@@ -17,7 +17,8 @@ from compprog_pygame.games.hex_colony.hex_grid import HexCoord, HexGrid, Terrain
 from compprog_pygame.games.hex_colony.people import PopulationManager, Task
 from compprog_pygame.games.hex_colony.procgen import generate_terrain, UNBUILDABLE
 from compprog_pygame.games.hex_colony.resources import (
-    BuildingInventory, Inventory, MATERIAL_RECIPES, Resource, TERRAIN_RESOURCE,
+    BuildingInventory, FLUID_RESOURCES, Inventory, MATERIAL_RECIPES,
+    Resource, TERRAIN_RESOURCE,
 )
 from compprog_pygame.games.hex_colony.settings import HexColonySettings
 from compprog_pygame.games.hex_colony.supply_chain import _hex_range
@@ -28,6 +29,21 @@ from compprog_pygame.games.hex_colony.strings import (
     NOTIF_NEW_COLONIST,
     NOTIF_UNREACHABLE,
 )
+
+
+# Buildings that can produce, consume, or buffer a fluid resource.
+# Fluid networks are formed by BFS over PIPE tiles and these buildings;
+# a building only counts as "fluid-capable" if it appears in this set
+# (so e.g. Habitats don't accidentally join a pipe network).
+FLUID_CAPABLE_BUILDINGS: frozenset[BuildingType] = frozenset({
+    BuildingType.OIL_DRILL,        # produces OIL
+    BuildingType.OIL_REFINERY,     # consumes OIL, produces PETROLEUM/LUBRICANT
+    BuildingType.CHEMICAL_PLANT,   # consumes PETROLEUM, produces ROCKET_FUEL/RUBBER
+    BuildingType.FLUID_TANK,       # buffers a single fluid
+    BuildingType.ROCKET_SILO,      # consumes ROCKET_FUEL
+    BuildingType.MINING_MACHINE,   # can run on PETROLEUM
+    BuildingType.RESEARCH_CENTER,  # consumes ROCKET_FUEL for late research
+})
 
 
 @dataclass
@@ -78,6 +94,23 @@ class Network:
 
     def contains(self, b: Building) -> bool:
         return id(b) in self._bids
+
+
+@dataclass
+class FluidNetwork:
+    """A pipe-connected group of fluid-capable buildings.
+
+    Built by BFS over PIPE tiles plus any
+    :data:`FLUID_CAPABLE_BUILDINGS` adjacent to them.  Each tick the
+    world balances every fluid type within the network: the total
+    surplus held by producers (above their internal recipe needs) is
+    redistributed to demanders (consumers + tanks) up to their free
+    capacity.  Pipes themselves hold no resources — they're pure
+    connectors.
+    """
+    id: int
+    buildings: list[Building] = field(default_factory=list)
+    pipes: list[Building] = field(default_factory=list)
 
 
 class World:
@@ -131,6 +164,11 @@ class World:
         # independently in the UI.
         self.networks: list[Network] = []
         self._next_network_id: int = 1
+        # Pipe-based fluid networks (parallel to self.networks).
+        # Rebuilt whenever the topology changes.  Fluids never travel
+        # through worker logistics — only through these networks.
+        self.fluid_networks: list[FluidNetwork] = []
+        self._next_fluid_network_id: int = 1
         # Per-frame caches rebuilt by ``_rebuild_networks``.  Used by
         # the hot logistics / housing / unreachable-check loops to
         # avoid repeatedly scanning ``self.buildings.buildings`` (a
@@ -140,7 +178,7 @@ class World:
         self._valid_bids: set[int] = set()
         # Set of network ids that contain at least one populated
         # dwelling.  Recomputed each frame in ``update`` so the two
-        # callers (``_check_unreachable_buildings`` and
+        # callers (``_refresh_unreachable_caches`` and
         # ``unreachable_buildings``) don't each scan the population.
         self._populated_net_ids: set[int] = set()
         # Buildings we've already notified the player are unreachable
@@ -160,6 +198,20 @@ class World:
         # of the depleted hex and refresh the blended-colour cache so
         # the tile blends with neighbouring grass.
         self.pending_depleted_tiles: set[HexCoord] = set()
+        # Worker-assignment is one of the heaviest per-frame passes
+        # (O(B*P) per network).  We only need to redo it when the
+        # population set changes, networks are rebuilt, or the player
+        # edits priorities.  Otherwise a low-frequency refresh keeps
+        # production targets responsive without paying the cost every
+        # frame.
+        self._workers_dirty: bool = True
+        self._workers_refresh_accum: float = 0.0
+        # Throttle for ``_refresh_unreachable_caches`` and the
+        # cached ``unreachable_buildings`` / ``starved_producers``
+        # queries the renderer asks for every frame.
+        self._unreachable_accum: float = 0.0
+        self._unreachable_cache: set[int] = set()
+        self._starved_cache: set[int] = set()
 
     @property
     def worker_priority(self) -> list[list[Building]]:
@@ -313,20 +365,33 @@ class World:
         # buildings.
         if self._networks_dirty:
             self._rebuild_networks()
+            self._rebuild_fluid_networks()
             self._networks_dirty = False
         # ``_populated_net_ids`` depends on people's home assignments
         # (which can shift between rebuilds), so refresh it every
         # frame — this is a cheap O(people) pass.
         self._refresh_populated_net_ids()
 
-        self._assign_workers()
-        self._dispatch_commuters()
+        # ``_assign_workers`` is the heaviest per-frame pass.  Run it
+        # only when something changed (housing rebuild, network
+        # rebuild, player priority edit, population change) or once
+        # per ~500 ms to keep effective_worker_demand responsive to
+        # stockpile shifts.
+        self._workers_refresh_accum += dt
+        if self._workers_dirty or self._workers_refresh_accum >= 0.5:
+            self._assign_workers()
+            self._dispatch_commuters()
+            self._workers_dirty = False
+            self._workers_refresh_accum = 0.0
 
         # Farm & Refinery production
         self._update_production(dt)
 
         # Workshop crafting
         self._update_workshops(dt)
+
+        # Fluid balancing through pipe networks (oil/petroleum/etc.).
+        self._update_fluids(dt)
 
         # Logistics dispatch (runs before population.update so newly
         # assigned paths are walked this same frame).
@@ -341,7 +406,13 @@ class World:
         # Finally, recount present workers (must be AFTER movement so
         # newly-arrived commuters are credited this frame).
         self._recount_present_workers()
-        self._check_unreachable_buildings()
+        # Unreachable / starved checks only need to run at human-
+        # noticeable rates (~2 Hz).  The cached id-sets are reused by
+        # the renderer every frame.
+        self._unreachable_accum += dt
+        if self._unreachable_accum >= 0.5:
+            self._unreachable_accum = 0.0
+            self._refresh_unreachable_caches()
 
     def mark_housing_dirty(self) -> None:
         """Flag that housing assignments need recalculation.
@@ -352,12 +423,22 @@ class World:
         """
         self._housing_dirty = True
         self._networks_dirty = True
+        self._workers_dirty = True
         self._topology_version += 1
 
     def mark_networks_dirty(self) -> None:
         """Flag that the network/component graph needs rebuilding."""
         self._networks_dirty = True
+        self._workers_dirty = True
         self._topology_version += 1
+
+    def mark_population_changed(self) -> None:
+        """Flag that people were added or removed.  Triggers a housing
+        reassignment and a worker re-allocation but *not* a network
+        rebuild — births / deaths don't change the building topology.
+        """
+        self._housing_dirty = True
+        self._workers_dirty = True
 
     def _refresh_populated_net_ids(self) -> None:
         """Recompute the set of network ids that house at least one
@@ -565,6 +646,148 @@ class World:
             if p.home is not None
             and (net := self._bid_to_network.get(id(p.home))) is not None
         }
+        # Topology-change implies worker assignments need a refresh.
+        self._workers_dirty = True
+
+    # ── Fluid networks (parallel to building networks) ───────────
+
+    def _rebuild_fluid_networks(self) -> None:
+        """Recompute :attr:`fluid_networks` from current PIPE tiles
+        and adjacent fluid-capable buildings.
+
+        Two PIPE tiles belong to the same fluid network when they're
+        directly adjacent.  A fluid-capable building (drill, refinery,
+        chemical plant, tank, silo, etc.) joins the network of any
+        pipe that touches it.  Pipes are pure connectors and never
+        hold a stored resource.
+        """
+        # Collect all pipes and a coord→building lookup.
+        all_buildings = self.buildings.buildings
+        by_coord: dict[HexCoord, Building] = {b.coord: b for b in all_buildings}
+        pipes = [b for b in all_buildings if b.type == BuildingType.PIPE]
+
+        visited_pipes: set[int] = set()
+        new_networks: list[FluidNetwork] = []
+        for seed in pipes:
+            if id(seed) in visited_pipes:
+                continue
+            comp_pipes: list[Building] = []
+            comp_buildings_set: dict[int, Building] = {}
+            queue: deque[Building] = deque([seed])
+            visited_pipes.add(id(seed))
+            while queue:
+                pipe = queue.popleft()
+                comp_pipes.append(pipe)
+                for nb_coord in pipe.coord.neighbors():
+                    nb = by_coord.get(nb_coord)
+                    if nb is None:
+                        continue
+                    if nb.type == BuildingType.PIPE:
+                        if id(nb) not in visited_pipes:
+                            visited_pipes.add(id(nb))
+                            queue.append(nb)
+                    elif nb.type in FLUID_CAPABLE_BUILDINGS:
+                        # Join, but do not BFS through buildings.
+                        comp_buildings_set.setdefault(id(nb), nb)
+            net_id = self._next_fluid_network_id
+            self._next_fluid_network_id += 1
+            new_networks.append(FluidNetwork(
+                id=net_id,
+                buildings=list(comp_buildings_set.values()),
+                pipes=comp_pipes,
+            ))
+
+        self.fluid_networks = new_networks
+
+    def _update_fluids(self, dt: float) -> None:
+        """Balance every fluid resource within each pipe network.
+
+        For each (network, fluid) pair: gather the total stored amount
+        held by member buildings, then redistribute it so that every
+        building in the network ends up holding the same fraction of
+        its per-fluid capacity (or as close as possible given total
+        supply).  This is conservative — total fluid in the network is
+        preserved, no rate limit is applied (pipes are assumed
+        instantaneous over a tick).
+
+        Tanks accept any single fluid (their ``stored_resource``
+        selection); other buildings only participate for the fluids
+        they natively produce or consume.
+        """
+        if not self.fluid_networks:
+            return
+        for net in self.fluid_networks:
+            if not net.buildings:
+                continue
+            # For each fluid, collect (building, current, capacity).
+            for fluid in FLUID_RESOURCES:
+                participants: list[tuple[Building, float, float]] = []
+                total = 0.0
+                for b in net.buildings:
+                    cap = self._fluid_capacity_for(b, fluid)
+                    if cap <= 0:
+                        continue
+                    cur = b.storage.get(fluid, 0.0)
+                    if cur > cap:
+                        cur = cap  # safety clamp
+                    participants.append((b, cur, cap))
+                    total += cur
+                if not participants:
+                    continue
+                total_cap = sum(c for _, _, c in participants)
+                if total_cap <= 0:
+                    continue
+                # Even-fill ratio across all participants.
+                target_ratio = min(1.0, total / total_cap)
+                for b, _cur, cap in participants:
+                    b.storage[fluid] = cap * target_ratio
+
+    def _fluid_capacity_for(
+        self, b: Building, fluid: Resource,
+    ) -> float:
+        """Per-fluid capacity of *b* (0 if it doesn't handle that fluid).
+
+        Used by :meth:`_update_fluids` to decide which network members
+        can receive a given fluid.  Capacity is dedicated per-fluid
+        within the building's own ``storage_capacity``: a refinery can
+        hold up to ~half its capacity in OIL plus half in PETROLEUM,
+        for instance.  Pipes have no capacity.
+        """
+        if b.type == BuildingType.PIPE:
+            return 0.0
+        # Fluid tank: only the player-selected fluid, full capacity.
+        if b.type == BuildingType.FLUID_TANK:
+            if b.stored_resource == fluid:
+                return float(b.storage_capacity)
+            return 0.0
+        # Storage building: only if configured for this fluid (rare;
+        # normally players use FLUID_TANK).
+        if b.type == BuildingType.STORAGE:
+            if b.stored_resource == fluid:
+                return float(b.storage_capacity)
+            return 0.0
+        # Producers / consumers: each fluid they natively use gets a
+        # half-capacity slot.  Numbers chosen to be generous so a
+        # refinery can buffer some OIL while still holding output.
+        slot = b.storage_capacity * 0.5
+        if b.type == BuildingType.OIL_DRILL and fluid == Resource.OIL:
+            return slot
+        if b.type == BuildingType.OIL_REFINERY and fluid in (
+            Resource.OIL, Resource.PETROLEUM, Resource.LUBRICANT,
+        ):
+            return slot
+        if b.type == BuildingType.CHEMICAL_PLANT and fluid in (
+            Resource.PETROLEUM, Resource.LUBRICANT,
+            Resource.ROCKET_FUEL,
+        ):
+            return slot
+        if b.type == BuildingType.MINING_MACHINE and fluid == Resource.PETROLEUM:
+            return slot
+        if b.type == BuildingType.ROCKET_SILO and fluid == Resource.ROCKET_FUEL:
+            return slot
+        if b.type == BuildingType.RESEARCH_CENTER and fluid == Resource.ROCKET_FUEL:
+            return slot
+        return 0.0
 
     # ── Worker assignment & dispatch ─────────────────────────────
 
@@ -776,6 +999,11 @@ class World:
 
         camp_coord = HexCoord(0, 0)
         camp = self.buildings.at(camp_coord)
+
+        # Pre-compute per-network demand caches so the per-building
+        # _effective_worker_demand calls are O(1) instead of O(B).
+        for net in self.networks:
+            self._precompute_network_demand_caches(net)
 
         for net in self.networks:
             people = by_network.get(net.id, [])
@@ -1024,14 +1252,23 @@ class World:
         other building offers any resource it currently holds *except*
         ones it is itself demanding (so logistics workers don't shuttle
         recipe inputs out of a workshop they were just delivered to).
+
+        Fluid resources (oil, petroleum, lubricant, rocket fuel) are
+        deliberately excluded — they only move through the parallel
+        pipe network and are never carried by workers.
         """
         out: dict[Resource, float] = {}
-        # STORAGE: supplies its configured resource.
+        # STORAGE: supplies its configured resource (unless it's a
+        # fluid; fluids belong to FLUID_TANK + the pipe network).
         if b.type == BuildingType.STORAGE:
-            if b.stored_resource is not None:
+            if (b.stored_resource is not None
+                    and b.stored_resource not in FLUID_RESOURCES):
                 amt = b.storage.get(b.stored_resource, 0.0)
                 if amt > 0:
                     out[b.stored_resource] = amt
+            return out
+        # Fluid tanks never offer their contents to worker logistics.
+        if b.type == BuildingType.FLUID_TANK:
             return out
         # Dwellings only consume FOOD — they never supply.  Treating
         # dwellings as suppliers caused workers to ping-pong food
@@ -1040,23 +1277,54 @@ class World:
         if b.housing_capacity > 0:
             return out
         # All other buildings: anything in storage that isn't on their
-        # own demand list is fair game as supply.
+        # own demand list is fair game as supply, except fluids.
+        # Crafting stations additionally never supply any ingredient
+        # of their currently selected recipe — even when their input
+        # buffer is full — so logistics workers can't shuttle a
+        # workshop's own recipe inputs back out of it.
+        reserved: set[Resource] = set()
+        if b.type in (
+            BuildingType.WORKSHOP, BuildingType.FORGE,
+            BuildingType.REFINERY, BuildingType.ASSEMBLER,
+            BuildingType.CHEMICAL_PLANT, BuildingType.OIL_REFINERY,
+        ):
+            if isinstance(b.recipe, Resource):
+                mrec = MATERIAL_RECIPES.get(b.recipe)
+                if mrec is not None:
+                    reserved.update(mrec.inputs.keys())
+            elif isinstance(b.recipe, BuildingType):
+                cost = BUILDING_COSTS.get(b.recipe)
+                if cost is not None:
+                    reserved.update(cost.costs.keys())
         demanded = set(self._building_demand(b).keys())
         for r, amt in b.storage.items():
-            if amt > 0 and r not in demanded:
+            if r in FLUID_RESOURCES:
+                continue
+            if r in reserved or r in demanded:
+                continue
+            if amt > 0:
                 out[r] = amt
         return out
 
     def _building_demand(self, b: "Building") -> dict[Resource, float]:
         """Resources *b* wants delivered, with the free space/amount
-        it can still accept."""
+        it can still accept.
+
+        Fluids are deliberately excluded from the result — they only
+        flow through the pipe network and are never carried by
+        workers.
+        """
         out: dict[Resource, float] = {}
         free = self._storage_free(b)
         if free <= 0:
             return out
+        # Fluid tanks never demand from the worker logistics.
+        if b.type == BuildingType.FLUID_TANK:
+            return out
         # STORAGE: demands its configured resource up to free space.
         if b.type == BuildingType.STORAGE:
-            if b.stored_resource is not None:
+            if (b.stored_resource is not None
+                    and b.stored_resource not in FLUID_RESOURCES):
                 out[b.stored_resource] = free
             return out
         # Dwellings: demand FOOD (capped at 50 worth of food on-site,
@@ -1133,6 +1401,12 @@ class World:
                         need = max(0.0, target - have)
                         if need > 0.5:
                             out[res] = need
+        # Fluids are never carried by workers — drop any that slipped
+        # through (e.g. PETROLEUM as mining-machine fuel, OIL into the
+        # refinery, ROCKET_FUEL into the silo / research center).
+        for fr in list(out):
+            if fr in FLUID_RESOURCES:
+                del out[fr]
         return out
 
     def _is_producer(self, b: "Building") -> bool:
@@ -1193,6 +1467,11 @@ class World:
     ) -> tuple[float, float]:
         """Return (total_stock, total_capacity) for ``res`` across all
         buildings in ``net`` plus the global inventory."""
+        cached = getattr(net, "_buffer_cache", None)
+        if cached is not None:
+            entry = cached.get(res)
+            if entry is not None:
+                return entry
         stock = float(self.inventory[res])
         cap = 0.0
         for b in net.buildings:
@@ -1202,6 +1481,44 @@ class World:
         # so brand-new networks still register pressure correctly.
         cap = max(cap, 1.0)
         return stock, cap
+
+    def _precompute_network_demand_caches(self, net: "Network") -> None:
+        """Populate per-network caches used by :meth:`_effective_worker_demand`
+        so the inner loop is O(1) per building instead of O(B).  Called
+        once at the top of :meth:`_assign_workers` for each network.
+        """
+        # Sum stock/cap per resource across the network (+ global inv
+        # for stock).  Capacity is the same for every resource (each
+        # building's full storage), so we sum it once.
+        total_cap = 0.0
+        per_res_stock: dict[Resource, float] = {}
+        consumers_per_res: dict[Resource, int] = {}
+        food_consumers = 0
+        for b in net.buildings:
+            total_cap += float(b.storage_capacity)
+            for r, amt in b.storage.items():
+                if amt:
+                    per_res_stock[r] = per_res_stock.get(r, 0.0) + float(amt)
+            recipe = getattr(b, "recipe", None)
+            if isinstance(recipe, Resource) and self._is_consumer(b):
+                consumers_per_res[recipe] = consumers_per_res.get(recipe, 0) + 1
+            if b.housing_capacity > 0:
+                food_consumers += 1
+        if food_consumers:
+            consumers_per_res[Resource.FOOD] = (
+                consumers_per_res.get(Resource.FOOD, 0) + food_consumers
+            )
+        total_cap = max(total_cap, 1.0)
+        buffer_cache: dict[Resource, tuple[float, float]] = {}
+        # Lazy-fill via _network_resource_buffer fallback for resources
+        # not present in storage; pre-seed the common ones from the
+        # accumulated stock map.
+        inv = self.inventory
+        for r in per_res_stock:
+            buffer_cache[r] = (per_res_stock[r] + float(inv[r]), total_cap)
+        net._buffer_cache = buffer_cache  # type: ignore[attr-defined]
+        net._buffer_cap = total_cap  # type: ignore[attr-defined]
+        net._consumers_per_res = consumers_per_res  # type: ignore[attr-defined]
 
     def _effective_worker_demand(
         self, b: "Building", net: "Network",
@@ -1223,22 +1540,36 @@ class World:
         out = self._building_output(b)
         if out is None or self._is_consumer(b):
             return max_w
+        # Per-network caches populated by
+        # :meth:`_precompute_network_demand_caches` collapse this from
+        # O(B) per call to O(1).  Fall back to the on-demand path when
+        # the cache hasn't been populated yet (edge cases / tests).
+        consumers_map = getattr(net, "_consumers_per_res", None)
+        if consumers_map is not None and out in consumers_map:
+            consumers_here = consumers_map[out]
+            # ``b`` itself counts in that map only if it's also a
+            # consumer of its own output — in practice that doesn't
+            # happen, but stay defensive.
+            recipe = getattr(b, "recipe", None)
+            if isinstance(recipe, Resource) and recipe == out and self._is_consumer(b):
+                consumers_here -= 1
+            if consumers_here > 0:
+                return max_w
+        else:
+            # Fallback path: original O(B) scan.
+            consumers_here = 0
+            for other in net.buildings:
+                if other is b or not self._is_consumer(other):
+                    continue
+                recipe = getattr(other, "recipe", None)
+                if isinstance(recipe, Resource) and recipe == out:
+                    consumers_here += 1
+                    continue
+                if other.housing_capacity > 0 and out == Resource.FOOD:
+                    consumers_here += 1
+            if consumers_here > 0:
+                return max_w
         stock, cap = self._network_resource_buffer(net, out)
-        # How many other buildings in this network consume ``out``?
-        consumers_here = 0
-        for other in net.buildings:
-            if other is b or not self._is_consumer(other):
-                continue
-            recipe = getattr(other, "recipe", None)
-            if isinstance(recipe, Resource) and recipe == out:
-                consumers_here += 1
-                continue
-            # Housing consumes food.
-            if other.housing_capacity > 0 and out == Resource.FOOD:
-                consumers_here += 1
-        # Active consumers ⇒ keep the producer fully staffed.
-        if consumers_here > 0:
-            return max_w
         # No internal consumer: scale by stockpile pressure.
         # 0 stock → full crew; ≥cap → single worker.
         ratio = min(1.0, stock / cap) if cap > 0 else 0.0
@@ -1570,7 +1901,9 @@ class World:
                         NOTIF_NEW_COLONIST, (180, 255, 180),
                     )
         if spawned_any:
-            self.mark_housing_dirty()
+            # Births don't change building topology — skip the costly
+            # network rebuild and only flag housing + worker reassign.
+            self.mark_population_changed()
 
     def _logistics_find_job(self, p) -> None:
         """Score every (supplier, consumer, resource) pair in *p*'s
@@ -1720,37 +2053,40 @@ class World:
         # are preferred next time a hauler is dispatched.
         self._demand_last_served[(id(best_dst), best_res)] = now
 
-    def _check_unreachable_buildings(self) -> None:
-        """Push a one-time notification for every worker-building that
-        is in a network with no housed population."""
-        if self.notifications is None:
-            return
-        populated_net_ids = self._populated_net_ids
-
-        current_unreachable: set[int] = set()
-        for net in self.networks:
-            if net.id in populated_net_ids:
-                continue
-            for b in net.buildings:
-                if BUILDING_MAX_WORKERS.get(b.type, 0) <= 0:
-                    continue
-                bid = id(b)
-                current_unreachable.add(bid)
-                if bid in self._unreachable_notified:
-                    continue
-                label = building_label(b.type.name)
-                self.notifications.push(
-                    NOTIF_UNREACHABLE.format(name=label), (230, 100, 100),
-                )
-                self._unreachable_notified.add(bid)
-        # Forget buildings that became reachable again (or were deleted)
-        # so a future disconnection re-notifies.
-        self._unreachable_notified &= current_unreachable
+    def _refresh_unreachable_caches(self) -> None:
+        """Recompute the unreachable / starved id-sets and push any
+        new \"unreachable\" notifications.  Cheap enough to run every
+        ~500 ms; the renderer reads the cached sets every frame."""
+        unreachable = self._compute_unreachable_buildings()
+        self._unreachable_cache = unreachable
+        self._starved_cache = self._compute_starved_producers()
+        if self.notifications is not None:
+            for bid in unreachable - self._unreachable_notified:
+                # Look up the building object for the toast label.
+                # The set is small in the common case.
+                for net in self.networks:
+                    found = False
+                    for b in net.buildings:
+                        if id(b) == bid:
+                            label = building_label(b.type.name)
+                            self.notifications.push(
+                                NOTIF_UNREACHABLE.format(name=label),
+                                (230, 100, 100),
+                            )
+                            found = True
+                            break
+                    if found:
+                        break
+            self._unreachable_notified = (
+                self._unreachable_notified | unreachable
+            ) & unreachable
 
     def unreachable_buildings(self) -> set[int]:
         """Return ``id(b)`` for every worker-building in a network with
-        no populated house.  Used by the renderer to draw a red "!"
-        marker above the affected buildings."""
+        no populated house.  Cached — refreshed every ~500 ms."""
+        return self._unreachable_cache
+
+    def _compute_unreachable_buildings(self) -> set[int]:
         populated_net_ids = self._populated_net_ids
         result: set[int] = set()
         for net in self.networks:
@@ -1763,12 +2099,11 @@ class World:
         return result
 
     def starved_producers(self) -> set[int]:
-        """Return ``id(b)`` for every harvest building that has at
-        least one worker assigned but no harvestable tile in range —
-        i.e. its resource patch ran dry and there is nothing else
-        nearby to switch to.  Used by the renderer to flag the
-        building with the same red "!" marker as unreachable ones.
-        """
+        """Return ``id(b)`` for every harvester whose resource patch
+        ran dry.  Cached — refreshed every ~500 ms."""
+        return self._starved_cache
+
+    def _compute_starved_producers(self) -> set[int]:
         result: set[int] = set()
         for b in self.buildings.buildings:
             if b.workers <= 0:

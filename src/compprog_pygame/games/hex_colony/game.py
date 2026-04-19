@@ -90,6 +90,8 @@ BUILDABLE = [
     BuildingType.ROCKET_SILO,
     BuildingType.OIL_DRILL,
     BuildingType.OIL_REFINERY,
+    BuildingType.PIPE,
+    BuildingType.FLUID_TANK,
 ]
 
 
@@ -918,7 +920,7 @@ class Game:
             if target.workplace is not None:
                 target.workplace.workers = max(0, target.workplace.workers - 1)
             pop.people.remove(target)
-        self.world.mark_housing_dirty()
+        self.world.mark_population_changed()
 
     # ── Alt overlay toggle ───────────────────────────────────────
 

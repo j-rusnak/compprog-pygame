@@ -39,8 +39,9 @@ class BuildingType(Enum):
     SOLAR_ARRAY = auto()     # solar array — boosts adjacent crafting stations
     ROCKET_SILO = auto()     # rocket silo — assemble & launch the colony rocket
     OIL_DRILL = auto()       # oil drill — placed on OIL_DEPOSIT, auto-extracts OIL
-    OIL_REFINERY = auto()    # refines OIL into PETROLEUM and LUBRICANT
-
+    OIL_REFINERY = auto()    # refines OIL into PETROLEUM and LUBRICANT    # ── Fluid handling (pipe network, parallel to worker logistics) ──
+    PIPE = auto()            # connects fluid producers/consumers/tanks
+    FLUID_TANK = auto()      # buffers a single fluid resource
 
 @dataclass(slots=True)
 class BuildingCost:
@@ -80,6 +81,8 @@ BUILDING_COSTS: dict[BuildingType, BuildingCost] = {
     BuildingType.ROCKET_SILO: BuildingCost(_costs_from_dict(params.BUILDING_COST_ROCKET_SILO)),
     BuildingType.OIL_DRILL: BuildingCost(_costs_from_dict(params.BUILDING_COST_OIL_DRILL)),
     BuildingType.OIL_REFINERY: BuildingCost(_costs_from_dict(params.BUILDING_COST_OIL_REFINERY)),
+    BuildingType.PIPE: BuildingCost(_costs_from_dict(params.BUILDING_COST_PIPE)),
+    BuildingType.FLUID_TANK: BuildingCost(_costs_from_dict(params.BUILDING_COST_FLUID_TANK)),
 }
 
 # Max workers each building supports
@@ -109,6 +112,8 @@ BUILDING_MAX_WORKERS: dict[BuildingType, int] = {
     BuildingType.ROCKET_SILO: params.BUILDING_MAX_WORKERS_ROCKET_SILO,
     BuildingType.OIL_DRILL: params.BUILDING_MAX_WORKERS_OIL_DRILL,
     BuildingType.OIL_REFINERY: params.BUILDING_MAX_WORKERS_OIL_REFINERY,
+    BuildingType.PIPE: params.BUILDING_MAX_WORKERS_PIPE,
+    BuildingType.FLUID_TANK: params.BUILDING_MAX_WORKERS_FLUID_TANK,
 }
 
 # Housing capacity per building type (0 = not a dwelling)
@@ -138,6 +143,8 @@ BUILDING_HOUSING: dict[BuildingType, int] = {
     BuildingType.ROCKET_SILO: params.BUILDING_HOUSING_ROCKET_SILO,
     BuildingType.OIL_DRILL: params.BUILDING_HOUSING_OIL_DRILL,
     BuildingType.OIL_REFINERY: params.BUILDING_HOUSING_OIL_REFINERY,
+    BuildingType.PIPE: params.BUILDING_HOUSING_PIPE,
+    BuildingType.FLUID_TANK: params.BUILDING_HOUSING_FLUID_TANK,
 }
 
 # Storage capacity per building type.
@@ -170,6 +177,8 @@ BUILDING_STORAGE_CAPACITY: dict[BuildingType, int] = {
     BuildingType.ROCKET_SILO: params.BUILDING_STORAGE_ROCKET_SILO,
     BuildingType.OIL_DRILL: params.BUILDING_STORAGE_OIL_DRILL,
     BuildingType.OIL_REFINERY: params.BUILDING_STORAGE_OIL_REFINERY,
+    BuildingType.PIPE: params.BUILDING_STORAGE_PIPE,
+    BuildingType.FLUID_TANK: params.BUILDING_STORAGE_FLUID_TANK,
 }
 
 

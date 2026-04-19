@@ -233,22 +233,16 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         id="conveyor_intro",
         title=_text("conveyor_intro")[0],
         lines=_text("conveyor_intro")[1],
-        # ~25 s after entering tier 4 \u2014 by then Conveyor research is realistic.
-        trigger=lambda w, ctx: (
-            ctx.get("current_tier_level", 0) >= 3
-            and ctx.get("time_in_tier", 0.0) >= 15.0
-        ),
+        # Only fire once the player has actually researched conveyors.
+        trigger=lambda w, ctx: _research_done(w, "conveyor_belts"),
         after="industrial_intro",
     ),
     _TutorialStep(
         id="chemical_plant_intro",
         title=_text("chemical_plant_intro")[0],
         lines=_text("chemical_plant_intro")[1],
-        # 60 s into tier 4 \u2014 player has likely started Basic Chemistry.
-        trigger=lambda w, ctx: (
-            ctx.get("current_tier_level", 0) >= 3
-            and ctx.get("time_in_tier", 0.0) >= 30.0
-        ),
+        # Only fire once Basic Chemistry has been researched.
+        trigger=lambda w, ctx: _research_done(w, "basic_chemistry"),
         after="industrial_intro",
     ),
     _TutorialStep(
@@ -262,10 +256,8 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         id="solar_array_intro",
         title=_text("solar_array_intro")[0],
         lines=_text("solar_array_intro")[1],
-        trigger=lambda w, ctx: (
-            ctx.get("current_tier_level", 0) >= 5
-            and ctx.get("time_in_tier", 0.0) >= 15.0
-        ),
+        # Gate on the Solar Panels tech so the hint matches reality.
+        trigger=lambda w, ctx: _research_done(w, "solar_panels"),
         after="automation_intro",
     ),
     _TutorialStep(
@@ -279,10 +271,8 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         id="rocket_silo_intro",
         title=_text("rocket_silo_intro")[0],
         lines=_text("rocket_silo_intro")[1],
-        trigger=lambda w, ctx: (
-            ctx.get("current_tier_level", 0) >= 6
-            and ctx.get("time_in_tier", 0.0) >= 15.0
-        ),
+        # Only after Orbital Assembly research unlocks the silo.
+        trigger=lambda w, ctx: _research_done(w, "orbital_assembly"),
         after="spacefarer_intro",
     ),
     # ── Petrochemical tier (inserted between Industrial and Automation) ──
@@ -297,13 +287,9 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         id="oil_deposit_intro",
         title=_text("oil_deposit_intro")[0],
         lines=_text("oil_deposit_intro")[1],
-        # Fire when the player has researched petroleum_engineering or
-        # has reached the Petrochemical tier and has discovered an oil
-        # tile (we proxy "has discovered" with time-in-tier).
-        trigger=lambda w, ctx: (
-            ctx.get("current_tier_level", 0) >= 4
-            and ctx.get("time_in_tier", 0.0) >= 8.0
-        ),
+        # Only fire after Petroleum Engineering has actually been
+        # researched so the hint matches what the player can build.
+        trigger=lambda w, ctx: _research_done(w, "petroleum_engineering"),
         after="petrochemical_intro",
     ),
     _TutorialStep(
@@ -314,6 +300,16 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         after="oil_deposit_intro",
     ),
     _TutorialStep(
+        id="pipe_intro",
+        title=_text("pipe_intro")[0],
+        lines=_text("pipe_intro")[1],
+        trigger=lambda w, ctx: (
+            _research_done(w, "petroleum_engineering")
+            and _has_building(w, "OIL_DRILL")
+        ),
+        after="oil_drill_intro",
+    ),
+    _TutorialStep(
         id="oil_refinery_intro",
         title=_text("oil_refinery_intro")[0],
         lines=_text("oil_refinery_intro")[1],
@@ -321,7 +317,7 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
             _research_done(w, "petroleum_engineering")
             and _has_building(w, "OIL_DRILL")
         ),
-        after="oil_drill_intro",
+        after="pipe_intro",
     ),
     _TutorialStep(
         id="advanced_materials_intro",

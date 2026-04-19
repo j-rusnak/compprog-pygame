@@ -37,6 +37,8 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_habitat,
     draw_mining_machine,
     draw_path,
+    draw_pipe,
+    draw_fluid_tank,
     draw_refinery,
     draw_research_center,
     draw_rocket_silo,
@@ -156,12 +158,15 @@ class BuildingsTabContent(TabContent):
         (BUILDING_CATEGORY_NAMES[1], [BuildingType.HABITAT]),
         (BUILDING_CATEGORY_NAMES[2], [BuildingType.WOODCUTTER, BuildingType.QUARRY,
                       BuildingType.GATHERER, BuildingType.FARM, BuildingType.WELL,
-                      BuildingType.MINING_MACHINE, BuildingType.SOLAR_ARRAY]),
+                      BuildingType.MINING_MACHINE, BuildingType.SOLAR_ARRAY,
+                      BuildingType.OIL_DRILL]),
         (BUILDING_CATEGORY_NAMES[3], [BuildingType.WORKSHOP, BuildingType.FORGE,
                         BuildingType.ASSEMBLER, BuildingType.REFINERY,
-                        BuildingType.CHEMICAL_PLANT, BuildingType.STORAGE]),
+                        BuildingType.CHEMICAL_PLANT, BuildingType.OIL_REFINERY,
+                        BuildingType.STORAGE, BuildingType.FLUID_TANK]),
         (BUILDING_CATEGORY_NAMES[4], [BuildingType.PATH, BuildingType.BRIDGE,
-                        BuildingType.CONVEYOR, BuildingType.WALL]),
+                        BuildingType.CONVEYOR, BuildingType.PIPE,
+                        BuildingType.WALL]),
     ]
 
     BUILDABLE: list[BuildingType] = []
@@ -189,6 +194,10 @@ class BuildingsTabContent(TabContent):
         BuildingType.CONVEYOR: "\u21d2",
         BuildingType.SOLAR_ARRAY: "\u2600",
         BuildingType.ROCKET_SILO: "\u29bf",
+        BuildingType.OIL_DRILL: "\u26fd",
+        BuildingType.OIL_REFINERY: "\u2697",
+        BuildingType.PIPE: "\u2550",
+        BuildingType.FLUID_TANK: "\u25d2",
     }
 
     _COLOR: dict[BuildingType, tuple[int, int, int]] = {
@@ -212,6 +221,10 @@ class BuildingsTabContent(TabContent):
         BuildingType.CONVEYOR: (200, 180, 90),
         BuildingType.SOLAR_ARRAY: (60, 100, 200),
         BuildingType.ROCKET_SILO: (235, 235, 240),
+        BuildingType.OIL_DRILL: (60, 55, 65),
+        BuildingType.OIL_REFINERY: (90, 85, 105),
+        BuildingType.PIPE: (155, 150, 145),
+        BuildingType.FLUID_TANK: (110, 130, 150),
     }
 
     _DESC: dict[BuildingType, str] = {
@@ -250,6 +263,8 @@ class BuildingsTabContent(TabContent):
         BuildingType.WALL: draw_wall,
         BuildingType.MINING_MACHINE: draw_mining_machine,
         BuildingType.PATH: draw_path,
+        BuildingType.PIPE: draw_pipe,
+        BuildingType.FLUID_TANK: draw_fluid_tank,
         BuildingType.CHEMICAL_PLANT: draw_chemical_plant,
         BuildingType.CONVEYOR: draw_conveyor,
         BuildingType.SOLAR_ARRAY: draw_solar_array,
@@ -281,6 +296,8 @@ class BuildingsTabContent(TabContent):
             drawer(surf, cx, cy, r, 1.0, [], 0, 0)
         elif btype == BuildingType.PATH:
             # Path preview: isolated hub centred in the icon.
+            drawer(surf, cx, size // 2, r, 1.0, [], 0, 0)
+        elif btype == BuildingType.PIPE:
             drawer(surf, cx, size // 2, r, 1.0, [], 0, 0)
         else:
             drawer(surf, cx, cy, r, 1.0)

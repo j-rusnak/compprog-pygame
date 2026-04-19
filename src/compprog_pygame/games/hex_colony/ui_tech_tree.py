@@ -254,20 +254,22 @@ class TechTreeOverlay(Panel):
                 nx + _NODE_W - time_surf.get_width() - 6, cost_y,
             ))
 
-            # ── Unlocks row (building previews + hover-cost tooltip) ──
-            if node.unlocks:
+            # ── Unlocks row (building previews + resource icons) ──
+            if node.unlocks or node.unlock_resources:
                 unlock_y = ny + 46
                 lbl_surf = Fonts.tiny().render("Unlocks:", True, UI_MUTED)
                 surface.blit(lbl_surf, (nx + 6, unlock_y))
                 ux = nx + 6 + lbl_surf.get_width() + 4
                 uy = unlock_y - 2
+                row_limit = nx + _NODE_W - 22
                 for unlock_bt in node.unlocks:
+                    if ux > row_limit:
+                        break
                     preview = _get_unlock_preview(unlock_bt, 18)
+                    preview_rect = pygame.Rect(ux, uy, 18, 18)
                     if preview is None:
-                        # Fallback: render the building type's name letter.
                         text = unlock_bt.name[:2].title()
                         ph = Fonts.tiny().render(text, True, UI_TEXT)
-                        preview_rect = pygame.Rect(ux, uy, 18, 18)
                         pygame.draw.rect(
                             surface, (45, 50, 60), preview_rect,
                             border_radius=3,
@@ -277,15 +279,24 @@ class TechTreeOverlay(Panel):
                             preview_rect.centery - ph.get_height() // 2,
                         ))
                     else:
-                        preview_rect = pygame.Rect(ux, uy, 18, 18)
                         surface.blit(preview, preview_rect.topleft)
                     if (self._viewport.collidepoint((mx_pos, my_pos))
                             and preview_rect.collidepoint(
                                 (mx_pos, my_pos))):
                         set_tooltip(_unlock_tooltip(unlock_bt))
                     ux += 22
-                    if ux > nx + _NODE_W - 22:
+                # Resource unlocks: render the resource icon so the
+                # player can see what materials a tech unlocks.
+                for unlock_res in node.unlock_resources:
+                    if ux > row_limit:
                         break
+                    icon = get_resource_icon(unlock_res, 18)
+                    icon_rect = pygame.Rect(ux, uy, 18, 18)
+                    surface.blit(icon, icon_rect.topleft)
+                    if (self._viewport.collidepoint((mx_pos, my_pos))
+                            and icon_rect.collidepoint((mx_pos, my_pos))):
+                        set_tooltip(unlock_res.name.replace("_", " ").title())
+                    ux += 22
 
         surface.set_clip(prev_clip)
 

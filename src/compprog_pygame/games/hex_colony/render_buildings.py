@@ -499,6 +499,103 @@ def draw_bridge(
                          (px, isy + max(2, int(r * 0.2))), max(1, int(z * 1.5)))
 
 
+def draw_pipe(
+    surface: pygame.Surface,
+    sx: float, sy: float,
+    r: int, z: float,
+    nb_positions: list[tuple[float, float]],
+    q: int, rr: int,
+) -> None:
+    """Steel pipe segment.  Renders as a metallic band that joins to
+    every adjacent pipe / fluid building given in ``nb_positions``,
+    matching the visual idiom of :func:`draw_path`."""
+    if _try_sprite(surface, "buildings/pipe", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    pipe_col = (155, 150, 145)
+    pipe_dark = _darken(pipe_col, 0.55)
+    pipe_light = _lighten(pipe_col, 1.15)
+    band_hw = max(2, int(r * 0.32))
+
+    for nsx, nsy in nb_positions:
+        dx = nsx - sx
+        dy = nsy - sy
+        length = math.hypot(dx, dy)
+        if length < 1:
+            continue
+        px = -dy / length * band_hw
+        py = dx / length * band_hw
+        mx = sx + dx * 0.5
+        my = sy + dy * 0.5
+        pts = [
+            (sx + px, sy + py), (sx - px, sy - py),
+            (mx - px, my - py), (mx + px, my + py),
+        ]
+        pygame.draw.polygon(surface, pipe_col, pts)
+        # Highlight strip down the centre of the pipe.
+        pygame.draw.line(
+            surface, pipe_light,
+            (int(sx), int(sy)), (int(mx), int(my)),
+            max(1, int(z)),
+        )
+        pygame.draw.line(
+            surface, pipe_dark,
+            (int(pts[0][0]), int(pts[0][1])),
+            (int(pts[3][0]), int(pts[3][1])), iz,
+        )
+        pygame.draw.line(
+            surface, pipe_dark,
+            (int(pts[1][0]), int(pts[1][1])),
+            (int(pts[2][0]), int(pts[2][1])), iz,
+        )
+
+    # Centre flange / hub.
+    hub_r = band_hw + max(1, int(r * 0.10))
+    pygame.draw.circle(surface, pipe_col, (isx, isy), hub_r)
+    pygame.draw.circle(surface, pipe_dark, (isx, isy), hub_r, iz)
+    pygame.draw.circle(
+        surface, pipe_light, (isx, isy),
+        max(1, hub_r // 2),
+    )
+
+
+def draw_fluid_tank(
+    surface: pygame.Surface, sx: float, sy: float, r: int, z: float,
+) -> None:
+    """Cylindrical fluid tank with riveted bands."""
+    if _try_sprite(surface, "buildings/fluid_tank", sx, sy, r, z):
+        return
+    iz = max(1, int(z))
+    tank_col = (110, 130, 150)
+    tank_light = _lighten(tank_col, 1.25)
+    tank_dark = _darken(tank_col, 0.55)
+    rim_col = (175, 180, 190)
+
+    rect = pygame.Rect(
+        int(sx - r * 0.55), int(sy - r * 0.55),
+        int(r * 1.10), int(r * 1.10),
+    )
+    pygame.draw.ellipse(surface, tank_col, rect)
+    hl = pygame.Rect(
+        rect.x + int(rect.w * 0.1), rect.y + int(rect.h * 0.1),
+        max(2, int(rect.w * 0.25)), int(rect.h * 0.8),
+    )
+    pygame.draw.ellipse(surface, tank_light, hl)
+    for frac in (0.30, 0.55, 0.80):
+        ly = rect.y + int(rect.h * frac)
+        pygame.draw.line(
+            surface, tank_dark,
+            (rect.x + iz, ly), (rect.right - iz, ly), iz,
+        )
+    cap = pygame.Rect(
+        rect.x + int(rect.w * 0.25), rect.y - max(1, int(z)),
+        int(rect.w * 0.5), max(2, int(z * 2)),
+    )
+    pygame.draw.rect(surface, rim_col, cap, border_radius=2)
+    pygame.draw.ellipse(surface, tank_dark, rect, iz)
+
+
 def draw_refinery(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
     if _try_sprite(surface, "buildings/refinery", sx, sy, r, z):
         return

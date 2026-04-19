@@ -76,6 +76,18 @@ PROCESSED_RESOURCES: frozenset[Resource] = frozenset({
 })
 
 
+# Liquid/gaseous resources that cannot be carried by workers.  These
+# are moved exclusively through the pipe network: producing buildings
+# (Oil Drill, Oil Refinery, Chemical Plant) feed pipe-connected
+# consumers (and Fluid Tanks for buffer storage) automatically every
+# tick.  Never appears in :func:`World._building_supply` /
+# :func:`World._building_demand`, which drive worker logistics.
+FLUID_RESOURCES: frozenset[Resource] = frozenset({
+    Resource.OIL, Resource.PETROLEUM, Resource.LUBRICANT,
+    Resource.ROCKET_FUEL,
+})
+
+
 # Mapping from terrain to the resource it yields
 
 TERRAIN_RESOURCE: dict[Terrain, Resource] = {

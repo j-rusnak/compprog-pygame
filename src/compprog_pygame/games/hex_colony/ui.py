@@ -93,6 +93,17 @@ RESOURCE_ICONS: dict[Resource, str] = {
     Resource.BATTERY: "\u26a1",
     Resource.ROCKET_FUEL: "\u2620",
     Resource.ROCKET_PART: "\u2b50",
+    # Petrochemical chain
+    Resource.OIL: "\u2b24",
+    Resource.PETROLEUM: "\u25c8",
+    Resource.LUBRICANT: "\u25cc",
+    Resource.RUBBER: "\u25cf",
+    # Late-game advanced materials
+    Resource.STEEL_PLATE: "\u25ad",
+    Resource.REINFORCED_CONCRETE: "\u2593",
+    Resource.ADVANCED_CIRCUIT: "\u25a6",
+    Resource.ROBOTIC_ARM: "\u2699",
+    Resource.PAPER: "\u25af",
 }
 
 RESOURCE_COLORS: dict[Resource, tuple[int, int, int]] = {
@@ -120,6 +131,17 @@ RESOURCE_COLORS: dict[Resource, tuple[int, int, int]] = {
     Resource.BATTERY: (240, 200, 60),
     Resource.ROCKET_FUEL: (200, 100, 60),
     Resource.ROCKET_PART: (200, 210, 230),
+    # Petrochemical chain
+    Resource.OIL: (40, 30, 45),
+    Resource.PETROLEUM: (200, 140, 70),
+    Resource.LUBRICANT: (225, 195, 110),
+    Resource.RUBBER: (60, 60, 65),
+    # Late-game advanced materials
+    Resource.STEEL_PLATE: (175, 190, 220),
+    Resource.REINFORCED_CONCRETE: (150, 160, 170),
+    Resource.ADVANCED_CIRCUIT: (100, 180, 140),
+    Resource.ROBOTIC_ARM: (200, 210, 230),
+    Resource.PAPER: (240, 235, 220),
 }
 
 

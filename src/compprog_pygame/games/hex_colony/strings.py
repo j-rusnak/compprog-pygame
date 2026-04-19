@@ -35,6 +35,8 @@ BUILDING_LABELS: dict[str, str] = {
     "ROCKET_SILO":      "Rocket Silo",
     "OIL_DRILL":        "Oil Drill",
     "OIL_REFINERY":     "Oil Refinery",
+    "PIPE":             "Pipe",
+    "FLUID_TANK":       "Fluid Tank",
 }
 
 # Short label used in the buildings tab (bottom bar).
@@ -47,6 +49,8 @@ BUILDING_SHORT_LABELS: dict[str, str] = {
     "ROCKET_SILO":     "Rocket",
     "OIL_DRILL":       "Drill",
     "OIL_REFINERY":    "Refinery+",
+    "PIPE":            "Pipe",
+    "FLUID_TANK":      "Tank",
 }
 
 
@@ -77,6 +81,8 @@ BUILDING_DESCRIPTIONS: dict[str, str] = {
     "ROCKET_SILO":      "Assemble rocket parts to escape this world",
     "OIL_DRILL":        "Place on an Oil Deposit to extract crude oil (no fuel needed)",
     "OIL_REFINERY":     "Refines crude Oil into Petroleum and Lubricant",
+    "PIPE":             "Carries fluids (Oil, Petroleum, Lubricant, Rocket Fuel) between buildings; workers cannot carry fluids",
+    "FLUID_TANK":       "Buffers a single fluid resource; must be connected by Pipes to producers and consumers",
 }
 
 
@@ -687,8 +693,23 @@ TUTORIAL_STEPS: list[dict[str, object]] = [
             "tile. It runs automatically with no fuel and",
             "fills its own storage with Crude Oil.",
             "",
-            "Logistics workers will haul the oil to your",
-            "Oil Refinery (or any Storage building).",
+            "Crude Oil is a fluid \u2014 workers cannot carry it.",
+            "Connect the drill to a refinery with Pipes.",
+        ],
+    },
+    {
+        "id": "pipe_intro",
+        "title": "Pipes & Fluid Tanks",
+        "lines": [
+            "Fluids (Oil, Petroleum, Lubricant, Rocket Fuel)",
+            "never travel by worker \u2014 only through Pipes.",
+            "",
+            "Place Pipes (made from Steel) to connect any",
+            "fluid-using buildings: drills, refineries,",
+            "chemical plants, mining machines, and silos.",
+            "",
+            "Fluid Tanks attach to a pipe network and buffer",
+            "one fluid of your choice for later use.",
         ],
     },
     {

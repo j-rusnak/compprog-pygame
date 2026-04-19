@@ -76,6 +76,8 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_storage,
     draw_path,
     draw_bridge,
+    draw_pipe,
+    draw_fluid_tank,
     draw_refinery,
     draw_mining_machine,
     draw_farm,
@@ -846,6 +848,7 @@ class Renderer:
         # not look like they're running on grass).
         _IMPLICIT_PATH_SKIP = {
             BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL,
+            BuildingType.PIPE,
         }
         for building in world.buildings.buildings:
             if building.type in _IMPLICIT_PATH_SKIP:
@@ -910,6 +913,37 @@ class Renderer:
             draw_wall(surface, sx, sy, r, zoom, nb_positions_w,
                       building.coord.q, building.coord.r)
 
+        # Pipes pass: pipes connect to other pipes and to fluid-capable
+        # buildings (drills, refineries, chemical plants, tanks, silos).
+        from compprog_pygame.games.hex_colony.world import (
+            FLUID_CAPABLE_BUILDINGS,
+        )
+        for building in world.buildings.buildings:
+            if building.type != BuildingType.PIPE:
+                continue
+            wx, wy = self._get_pixel(building.coord, size)
+            sx = (wx - cam_x) * zoom + half_sw
+            sy = (wy - cam_y) * zoom + half_sh
+            if sx < -margin or sx > sw + margin or sy < -margin or sy > sh + margin:
+                continue
+            r = int(size * 0.75 * zoom)
+            if r < 2:
+                pygame.draw.circle(surface, (155, 150, 145), (int(sx), int(sy)), max(1, r))
+                continue
+            nb_positions_p: list[tuple[float, float]] = []
+            for nb_coord in building.coord.neighbors():
+                nb_building = world.buildings.at(nb_coord)
+                if nb_building is None:
+                    continue
+                if (nb_building.type == BuildingType.PIPE
+                        or nb_building.type in FLUID_CAPABLE_BUILDINGS):
+                    nwx, nwy = self._get_pixel(nb_coord, size)
+                    nsx = (nwx - cam_x) * zoom + half_sw
+                    nsy = (nwy - cam_y) * zoom + half_sh
+                    nb_positions_p.append((nsx, nsy))
+            draw_pipe(surface, sx, sy, r, zoom, nb_positions_p,
+                      building.coord.q, building.coord.r)
+
         # Draw path discs under non-path buildings adjacent to paths
         for coord in buildings_needing_path:
             bld = world.buildings.at(coord)
@@ -942,7 +976,10 @@ class Renderer:
                       coord.q, coord.r)
 
         # Second pass: non-path, non-wall buildings
-        _SKIP_SECOND = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL}
+        _SKIP_SECOND = {
+            BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL,
+            BuildingType.PIPE,
+        }
         for building in world.buildings.buildings:
             if building.type in _SKIP_SECOND:
                 continue
@@ -1002,6 +1039,8 @@ class Renderer:
                 draw_oil_drill(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.OIL_REFINERY:
                 draw_oil_refinery(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.FLUID_TANK:
+                draw_fluid_tank(surface, sx, sy, r, zoom)
 
             # Overcrowding indicator: red ! above dwelling
             if (building.housing_capacity > 0
@@ -1387,6 +1426,10 @@ class Renderer:
                 draw_oil_drill(bld_surf, cx_local, cy_local, r, zoom)
             elif btype == BuildingType.OIL_REFINERY:
                 draw_oil_refinery(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.PIPE:
+                draw_pipe(bld_surf, cx_local, cy_local, r, zoom, [], coord.q, coord.r)
+            elif btype == BuildingType.FLUID_TANK:
+                draw_fluid_tank(bld_surf, cx_local, cy_local, r, zoom)
 
             if not self.ghost_valid:
                 red_tint = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)

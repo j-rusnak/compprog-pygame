@@ -83,6 +83,14 @@ BUILDING_COST_ROCKET_SILO: dict[str, int] = {"REINFORCED_CONCRETE": 20, "STEEL_P
 # ── Petrochemical chain ────────────────────────────────────
 BUILDING_COST_OIL_DRILL: dict[str, int] = {"STEEL_BAR": 6, "GEARS": 4, "PLANKS": 4}
 BUILDING_COST_OIL_REFINERY: dict[str, int] = {"BRICKS": 12, "STEEL_BAR": 6, "COPPER_WIRE": 4, "GEARS": 4}
+# ── Fluid handling (pipes & tanks) ─────────────────────────
+# Pipes are deliberately cheap so the player can lay long runs
+# between oil drills, refineries and tanks; they connect adjacent
+# fluid-capable buildings into a fluid network.
+BUILDING_COST_PIPE: dict[str, int] = {"STEEL_BAR": 1}
+# Fluid tanks buffer a single fluid resource and require pipes to
+# reach producers/consumers; sized between Storage and Refinery.
+BUILDING_COST_FLUID_TANK: dict[str, int] = {"STEEL_BAR": 6, "BRICKS": 4}
 
 # ═══════════════════════════════════════════════════════════════════
 #  BUILDING CAPACITY
@@ -114,6 +122,8 @@ BUILDING_MAX_WORKERS_SOLAR_ARRAY: int = 0
 BUILDING_MAX_WORKERS_ROCKET_SILO: int = 0
 BUILDING_MAX_WORKERS_OIL_DRILL: int = 0
 BUILDING_MAX_WORKERS_OIL_REFINERY: int = 2
+BUILDING_MAX_WORKERS_PIPE: int = 0
+BUILDING_MAX_WORKERS_FLUID_TANK: int = 0
 
 # Housing capacity (number of people that can live here; 0 = not a dwelling)
 BUILDING_HOUSING_CAMP: int = 10
@@ -141,6 +151,8 @@ BUILDING_HOUSING_SOLAR_ARRAY: int = 0
 BUILDING_HOUSING_ROCKET_SILO: int = 0
 BUILDING_HOUSING_OIL_DRILL: int = 0
 BUILDING_HOUSING_OIL_REFINERY: int = 0
+BUILDING_HOUSING_PIPE: int = 0
+BUILDING_HOUSING_FLUID_TANK: int = 0
 
 # Storage capacity (max total resources stored; 0 = none)
 # Camp capacity is set dynamically at placement time.
@@ -169,6 +181,10 @@ BUILDING_STORAGE_SOLAR_ARRAY: int = 0
 BUILDING_STORAGE_ROCKET_SILO: int = 200
 BUILDING_STORAGE_OIL_DRILL: int = 80
 BUILDING_STORAGE_OIL_REFINERY: int = 80
+BUILDING_STORAGE_PIPE: int = 0
+# Fluid tanks hold a single fluid resource; bigger than refinery
+# buffers so they're worth building between producers/consumers.
+BUILDING_STORAGE_FLUID_TANK: int = 200
 
 # ═══════════════════════════════════════════════════════════════════
 #  LOGISTICS
@@ -272,6 +288,8 @@ BUILDING_RECIPE_STATION: dict[str, str] = {
     "ROCKET_SILO":      "ASSEMBLER",
     "OIL_DRILL":        "ASSEMBLER",
     "OIL_REFINERY":     "ASSEMBLER",
+    "PIPE":             "WORKSHOP",
+    "FLUID_TANK":       "ASSEMBLER",
 }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -774,11 +792,11 @@ TECH_TREE_DATA: dict[str, dict] = {
     },
     "petroleum_engineering": {
         "name": "Petroleum Engineering",
-        "description": "Drill surface oil deposits and refine them into Petroleum & Lubricant",
+        "description": "Drill surface oil deposits, refine them into Petroleum & Lubricant, and lay Pipes & Fluid Tanks to move them",
         "cost": {"STEEL_BAR": 6, "GEARS": 6, "BRICKS": 8},
         "time": 110.0,
         "prerequisites": ["basic_chemistry"],
-        "unlocks": ["OIL_DRILL", "OIL_REFINERY"],
+        "unlocks": ["OIL_DRILL", "OIL_REFINERY", "PIPE", "FLUID_TANK"],
         "unlock_resources": ["OIL", "PETROLEUM", "LUBRICANT"],
         "position": (3, 3),
     },
