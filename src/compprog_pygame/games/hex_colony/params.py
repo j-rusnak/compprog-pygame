@@ -75,6 +75,11 @@ BUILDING_COST_FORGE: dict[str, int] = {"STONE": 20, "WOOD": 10}
 BUILDING_COST_ASSEMBLER: dict[str, int] = {"IRON_BAR": 8, "COPPER_BAR": 4, "PLANKS": 6, "BRICKS": 6}
 BUILDING_COST_RESEARCH_CENTER: dict[str, int] = {"PLANKS": 8, "STONE": 15, "FIBER": 6}
 BUILDING_COST_TRIBAL_CAMP: dict[str, int] = {}
+# ── Tier 4+ industrial buildings ────────────────────────────────
+BUILDING_COST_CHEMICAL_PLANT: dict[str, int] = {"BRICKS": 10, "STEEL_BAR": 4, "GLASS": 6, "GEARS": 4}
+BUILDING_COST_CONVEYOR: dict[str, int] = {"IRON_BAR": 1, "GEARS": 1}
+BUILDING_COST_SOLAR_ARRAY: dict[str, int] = {"GLASS": 6, "SILICON": 4, "STEEL_BAR": 4, "PLASTIC": 4}
+BUILDING_COST_ROCKET_SILO: dict[str, int] = {"CONCRETE": 30, "STEEL_BAR": 20, "ELECTRONICS": 10}
 
 # ═══════════════════════════════════════════════════════════════════
 #  BUILDING CAPACITY
@@ -100,6 +105,10 @@ BUILDING_MAX_WORKERS_FORGE: int = 2
 BUILDING_MAX_WORKERS_ASSEMBLER: int = 2
 BUILDING_MAX_WORKERS_RESEARCH_CENTER: int = 2
 BUILDING_MAX_WORKERS_TRIBAL_CAMP: int = 0
+BUILDING_MAX_WORKERS_CHEMICAL_PLANT: int = 2
+BUILDING_MAX_WORKERS_CONVEYOR: int = 0
+BUILDING_MAX_WORKERS_SOLAR_ARRAY: int = 0
+BUILDING_MAX_WORKERS_ROCKET_SILO: int = 0
 
 # Housing capacity (number of people that can live here; 0 = not a dwelling)
 BUILDING_HOUSING_CAMP: int = 10
@@ -121,6 +130,10 @@ BUILDING_HOUSING_FORGE: int = 0
 BUILDING_HOUSING_ASSEMBLER: int = 0
 BUILDING_HOUSING_RESEARCH_CENTER: int = 0
 BUILDING_HOUSING_TRIBAL_CAMP: int = 8
+BUILDING_HOUSING_CHEMICAL_PLANT: int = 0
+BUILDING_HOUSING_CONVEYOR: int = 0
+BUILDING_HOUSING_SOLAR_ARRAY: int = 0
+BUILDING_HOUSING_ROCKET_SILO: int = 0
 
 # Storage capacity (max total resources stored; 0 = none)
 # Camp capacity is set dynamically at placement time.
@@ -143,6 +156,10 @@ BUILDING_STORAGE_FORGE: int = 60
 BUILDING_STORAGE_ASSEMBLER: int = 60
 BUILDING_STORAGE_RESEARCH_CENTER: int = 80
 BUILDING_STORAGE_TRIBAL_CAMP: int = 100
+BUILDING_STORAGE_CHEMICAL_PLANT: int = 80
+BUILDING_STORAGE_CONVEYOR: int = 0
+BUILDING_STORAGE_SOLAR_ARRAY: int = 0
+BUILDING_STORAGE_ROCKET_SILO: int = 200
 
 # ═══════════════════════════════════════════════════════════════════
 #  LOGISTICS
@@ -229,6 +246,11 @@ BUILDING_RECIPE_STATION: dict[str, str] = {
     "MINING_MACHINE":   "ASSEMBLER",
     "ASSEMBLER":        "FORGE",
     "RESEARCH_CENTER":  "WORKSHOP",
+    # Tier 4+ industrial buildings
+    "CHEMICAL_PLANT":   "ASSEMBLER",
+    "CONVEYOR":         "WORKSHOP",
+    "SOLAR_ARRAY":      "ASSEMBLER",
+    "ROCKET_SILO":      "ASSEMBLER",
 }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -247,6 +269,7 @@ RECIPE_STATION_WORKSHOP: str = "WORKSHOP"
 RECIPE_STATION_FORGE: str = "FORGE"
 RECIPE_STATION_REFINERY: str = "REFINERY"
 RECIPE_STATION_ASSEMBLER: str = "ASSEMBLER"
+RECIPE_STATION_CHEMICAL_PLANT: str = "CHEMICAL_PLANT"
 
 RECIPE_PLANKS: dict = {
     "output_amount": 2,
@@ -321,6 +344,44 @@ RECIPE_CIRCUIT: dict = {
     "station": RECIPE_STATION_ASSEMBLER,
 }
 
+# ── Tier 4+ industrial recipes ──────────────────────────────────
+RECIPE_CONCRETE: dict = {
+    "output_amount": 2,
+    "inputs": {"STONE": 3, "IRON_BAR": 1},
+    "time": 9.0,
+    "station": RECIPE_STATION_REFINERY,
+}
+RECIPE_PLASTIC: dict = {
+    "output_amount": 2,
+    "inputs": {"CHARCOAL": 2},
+    "time": 10.0,
+    "station": RECIPE_STATION_CHEMICAL_PLANT,
+}
+RECIPE_ELECTRONICS: dict = {
+    "output_amount": 1,
+    "inputs": {"CIRCUIT": 1, "PLASTIC": 1},
+    "time": 14.0,
+    "station": RECIPE_STATION_ASSEMBLER,
+}
+RECIPE_BATTERY: dict = {
+    "output_amount": 1,
+    "inputs": {"COPPER_BAR": 1, "IRON_BAR": 1, "PLASTIC": 1},
+    "time": 12.0,
+    "station": RECIPE_STATION_ASSEMBLER,
+}
+RECIPE_ROCKET_FUEL: dict = {
+    "output_amount": 1,
+    "inputs": {"CHARCOAL": 2, "PLASTIC": 1},
+    "time": 16.0,
+    "station": RECIPE_STATION_CHEMICAL_PLANT,
+}
+RECIPE_ROCKET_PART: dict = {
+    "output_amount": 1,
+    "inputs": {"STEEL_BAR": 2, "ELECTRONICS": 2, "CONCRETE": 1},
+    "time": 25.0,
+    "station": RECIPE_STATION_ASSEMBLER,
+}
+
 # All material recipes, keyed by output-resource name.  resources.py
 # builds the typed MATERIAL_RECIPES registry from this dict.
 MATERIAL_RECIPE_DATA: dict[str, dict] = {
@@ -336,6 +397,12 @@ MATERIAL_RECIPE_DATA: dict[str, dict] = {
     "GEARS": RECIPE_GEARS,
     "SILICON": RECIPE_SILICON,
     "CIRCUIT": RECIPE_CIRCUIT,
+    "CONCRETE": RECIPE_CONCRETE,
+    "PLASTIC": RECIPE_PLASTIC,
+    "ELECTRONICS": RECIPE_ELECTRONICS,
+    "BATTERY": RECIPE_BATTERY,
+    "ROCKET_FUEL": RECIPE_ROCKET_FUEL,
+    "ROCKET_PART": RECIPE_ROCKET_PART,
 }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -411,11 +478,47 @@ TIER_DATA: list[dict] = [
     {
         "name": "Colony",
         "description": "Establish a self-sustaining colony",
-        "unlocks_buildings": [],  # future expansion
+        "unlocks_buildings": [],  # tier-4 industrial chain unlocked via tech
         "requirements": {
             "population": 25,
             "resource_gathered": {"IRON": 50, "COPPER": 25},
             "research_count": 3,
+        },
+    },
+    # ── Tier 4 ───────────────────────────────────────────────────
+    {
+        "name": "Industrial",
+        "description": "Build out an advanced production chain",
+        # Conveyor & Chemical Plant are unlocked via tech (gated by tier).
+        "unlocks_buildings": [],
+        "requirements": {
+            "population": 35,
+            "resource_gathered": {"STEEL_BAR": 10, "GEARS": 15, "BRICKS": 30},
+            "research_count": 6,
+        },
+    },
+    # ── Tier 5 ───────────────────────────────────────────────────
+    {
+        "name": "Automation",
+        "description": "Power and automate your colony",
+        # Solar Array is unlocked via tech (gated by tier).
+        "unlocks_buildings": [],
+        "requirements": {
+            "population": 50,
+            "resource_gathered": {"PLASTIC": 25, "CIRCUIT": 15, "BATTERY": 5},
+            "research_count": 10,
+        },
+    },
+    # ── Tier 6 ───────────────────────────────────────────────────
+    {
+        "name": "Spacefarer",
+        "description": "Reach for the stars and leave this world",
+        # Rocket Silo is unlocked via tech (gated by tier).
+        "unlocks_buildings": [],
+        "requirements": {
+            "population": 75,
+            "resource_gathered": {"ELECTRONICS": 25, "ROCKET_FUEL": 10},
+            "research_count": 14,
         },
     },
 ]
@@ -433,11 +536,14 @@ TIER_DATA: list[dict] = [
 # ═══════════════════════════════════════════════════════════════════
 
 TECH_TREE_DATA: dict[str, dict] = {
+    # ═══════════════════════════════════════════════════════════
+    #  EARLY GAME  (tier 1-2)
+    # ═══════════════════════════════════════════════════════════
     "advanced_logistics": {
         "name": "Advanced Logistics",
         "description": "Unlock bridges for crossing water",
         "cost": {"WOOD": 15, "STONE": 10},
-        "time": 20.0,
+        "time": 35.0,
         "prerequisites": [],
         "unlocks": ["BRIDGE"],
         "position": (0, 0),
@@ -446,7 +552,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "name": "Agriculture",
         "description": "Cultivate crops for steady food supply",
         "cost": {"WOOD": 20, "FIBER": 15},
-        "time": 30.0,
+        "time": 45.0,
         "prerequisites": [],
         "unlocks": ["FARM"],
         "position": (1, 0),
@@ -455,7 +561,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "name": "Metallurgy",
         "description": "Smelt raw ore into usable metal",
         "cost": {"STONE": 15, "WOOD": 10},
-        "time": 35.0,
+        "time": 50.0,
         "prerequisites": [],
         "unlocks": ["REFINERY"],
         "position": (2, 0),
@@ -464,16 +570,16 @@ TECH_TREE_DATA: dict[str, dict] = {
         "name": "Irrigation",
         "description": "Wells boost adjacent farm output",
         "cost": {"STONE": 20, "IRON": 5},
-        "time": 25.0,
+        "time": 40.0,
         "prerequisites": ["agriculture"],
         "unlocks": ["WELL"],
         "position": (1, 1),
     },
     "fortification": {
         "name": "Fortification",
-        "description": "Advanced wall construction techniques",
+        "description": "Reinforce walls with iron studs",
         "cost": {"STONE": 30, "IRON": 10},
-        "time": 40.0,
+        "time": 55.0,
         "prerequisites": ["metallurgy"],
         "unlocks": [],
         "position": (2, 1),
@@ -482,7 +588,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "name": "Advanced Smelting",
         "description": "Improved refinery efficiency",
         "cost": {"IRON": 15, "COPPER": 10},
-        "time": 45.0,
+        "time": 60.0,
         "prerequisites": ["metallurgy"],
         "unlocks": [],
         "position": (3, 1),
@@ -491,10 +597,145 @@ TECH_TREE_DATA: dict[str, dict] = {
         "name": "Exploration",
         "description": "Reveal more of the surrounding area",
         "cost": {"WOOD": 25, "FIBER": 20},
-        "time": 30.0,
+        "time": 45.0,
         "prerequisites": ["advanced_logistics"],
         "unlocks": [],
         "position": (0, 1),
+    },
+    # ═══════════════════════════════════════════════════════════
+    #  MID GAME  (tier 3-4 — industrial chain bootstrapping)
+    # ═══════════════════════════════════════════════════════════
+    "masonry": {
+        "name": "Masonry",
+        "description": "Better stonework: doubles refinery brick output",
+        "cost": {"STONE": 40, "BRICKS": 10},
+        "time": 70.0,
+        "prerequisites": ["fortification"],
+        "unlocks": [],
+        "position": (2, 2),
+    },
+    "concrete_works": {
+        "name": "Concrete Works",
+        "description": "Cast Concrete at the Refinery from Stone + Iron Bars",
+        "cost": {"BRICKS": 20, "IRON_BAR": 8},
+        "time": 90.0,
+        "prerequisites": ["masonry", "advanced_smelting"],
+        "unlocks": [],
+        "position": (3, 2),
+    },
+    "basic_chemistry": {
+        "name": "Basic Chemistry",
+        "description": "Build the Chemical Plant for synthesised materials",
+        "cost": {"GLASS": 8, "COPPER_BAR": 6, "STEEL_BAR": 2},
+        "time": 100.0,
+        "prerequisites": ["advanced_smelting"],
+        "unlocks": ["CHEMICAL_PLANT"],
+        "position": (4, 2),
+    },
+    "electronics_basics": {
+        "name": "Electronics Basics",
+        "description": "Foundational research for advanced electronics",
+        "cost": {"COPPER_WIRE": 8, "SILICON": 4},
+        "time": 100.0,
+        "prerequisites": ["advanced_smelting"],
+        "unlocks": [],
+        "position": (5, 2),
+    },
+    "conveyor_belts": {
+        "name": "Conveyor Belts",
+        "description": "Place Conveyors so workers walk twice as fast",
+        "cost": {"IRON_BAR": 10, "GEARS": 8, "PLANKS": 6},
+        "time": 80.0,
+        "prerequisites": ["advanced_logistics", "metallurgy"],
+        "unlocks": ["CONVEYOR"],
+        "position": (0, 2),
+    },
+    # ═══════════════════════════════════════════════════════════
+    #  LATE GAME  (tier 5 — chemistry, electronics, power)
+    # ═══════════════════════════════════════════════════════════
+    "plastics": {
+        "name": "Plastics",
+        "description": "Synthesise Plastic at the Chemical Plant",
+        "cost": {"CHARCOAL": 20, "GLASS": 10},
+        "time": 120.0,
+        "prerequisites": ["basic_chemistry"],
+        "unlocks": [],
+        "position": (4, 3),
+    },
+    "polymers": {
+        "name": "Polymers",
+        "description": "Chemical Plants run 25% faster",
+        "cost": {"PLASTIC": 15, "STEEL_BAR": 10},
+        "time": 130.0,
+        "prerequisites": ["plastics"],
+        "unlocks": [],
+        "position": (4, 4),
+    },
+    "microchips": {
+        "name": "Microchips",
+        "description": "Assemble Electronics from Circuits + Plastic",
+        "cost": {"CIRCUIT": 8, "PLASTIC": 6},
+        "time": 130.0,
+        "prerequisites": ["electronics_basics", "plastics"],
+        "unlocks": [],
+        "position": (5, 3),
+    },
+    "energy_storage": {
+        "name": "Energy Storage",
+        "description": "Craft Batteries at the Assembler",
+        "cost": {"COPPER_WIRE": 12, "PLASTIC": 8},
+        "time": 120.0,
+        "prerequisites": ["microchips"],
+        "unlocks": [],
+        "position": (5, 4),
+    },
+    "solar_panels": {
+        "name": "Solar Panels",
+        "description": "Solar Arrays boost adjacent crafting +25%",
+        "cost": {"SILICON": 10, "PLASTIC": 8, "BATTERY": 4},
+        "time": 150.0,
+        "prerequisites": ["energy_storage"],
+        "unlocks": ["SOLAR_ARRAY"],
+        "position": (5, 5),
+    },
+    "advanced_electronics": {
+        "name": "Advanced Electronics",
+        "description": "Assemblers run 25% faster",
+        "cost": {"ELECTRONICS": 8, "CIRCUIT": 12},
+        "time": 140.0,
+        "prerequisites": ["microchips"],
+        "unlocks": [],
+        "position": (6, 3),
+    },
+    "automation_logistics": {
+        "name": "Automation Logistics",
+        "description": "Logistics workers carry +50% per trip",
+        "cost": {"GEARS": 16, "ELECTRONICS": 4},
+        "time": 130.0,
+        "prerequisites": ["conveyor_belts", "microchips"],
+        "unlocks": [],
+        "position": (0, 3),
+    },
+    # ═══════════════════════════════════════════════════════════
+    #  END GAME  (tier 6 — spacefaring)
+    # ═══════════════════════════════════════════════════════════
+    "rocketry": {
+        "name": "Rocketry",
+        "description": "Mix Rocket Fuel at the Chemical Plant",
+        "cost": {"PLASTIC": 12, "STEEL_BAR": 16, "BATTERY": 5},
+        "time": 180.0,
+        "prerequisites": ["polymers", "advanced_electronics"],
+        "unlocks": [],
+        "position": (4, 5),
+    },
+    "orbital_assembly": {
+        "name": "Orbital Assembly",
+        "description": "Build the Rocket Silo and assemble Rocket Parts",
+        "cost": {"ELECTRONICS": 12, "CONCRETE": 20, "ROCKET_FUEL": 4},
+        "time": 240.0,
+        "prerequisites": ["rocketry", "solar_panels", "concrete_works"],
+        "unlocks": ["ROCKET_SILO"],
+        "position": (5, 6),
     },
 }
 

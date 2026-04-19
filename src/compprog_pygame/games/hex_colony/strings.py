@@ -29,12 +29,20 @@ BUILDING_LABELS: dict[str, str] = {
     "FORGE":            "Forge",
     "ASSEMBLER":        "Assembler",
     "RESEARCH_CENTER":  "Research Center",
+    "CHEMICAL_PLANT":   "Chemical Plant",
+    "CONVEYOR":         "Conveyor Belt",
+    "SOLAR_ARRAY":      "Solar Array",
+    "ROCKET_SILO":      "Rocket Silo",
 }
 
 # Short label used in the buildings tab (bottom bar).
 # Falls back to BUILDING_LABELS if a key is missing.
 BUILDING_SHORT_LABELS: dict[str, str] = {
     "RESEARCH_CENTER": "Research",
+    "CHEMICAL_PLANT":  "Chem Plant",
+    "CONVEYOR":        "Conveyor",
+    "SOLAR_ARRAY":     "Solar",
+    "ROCKET_SILO":     "Rocket",
 }
 
 
@@ -59,6 +67,10 @@ BUILDING_DESCRIPTIONS: dict[str, str] = {
     "FORGE":            "Smelts metal bars",
     "ASSEMBLER":        "Builds advanced parts",
     "RESEARCH_CENTER":  "Researches new technologies",
+    "CHEMICAL_PLANT":   "Synthesises plastic, fuel & batteries",
+    "CONVEYOR":         "Walking on belts is 2x faster",
+    "SOLAR_ARRAY":      "Boosts adjacent crafting (passive)",
+    "ROCKET_SILO":      "Assemble rocket parts to escape this world",
 }
 
 
@@ -67,7 +79,7 @@ BUILDING_DESCRIPTIONS: dict[str, str] = {
 # ═════════════════════════════════════════════════════════════════
 
 BUILDING_CATEGORY_NAMES: list[str] = [
-    "Core",
+    "Science",
     "Housing",
     "Resource",
     "Processing",
@@ -489,14 +501,15 @@ TUTORIAL_STEPS: list[dict[str, object]] = [
         ],
     },
     {
-        "id": "forge_smelting",
-        "title": "Forge \u2014 Smelt Ores",
+        "id": "mining_smelting",
+        "title": "Mining & Smelting",
         "lines": [
-            "The Forge smelts raw Iron and Copper into bars.",
+            "Iron and Copper ore tiles can be harvested by a",
+            "Quarry placed adjacent to them.",
             "",
-            "Click on the Forge and pick a material recipe",
-            "to start smelting. You'll need bars to craft",
-            "advanced buildings and components.",
+            "Once you have raw ore, build a Forge and pick a",
+            "smelting recipe to turn it into bars. You'll",
+            "need bars to craft advanced buildings.",
         ],
     },
     {
@@ -534,6 +547,89 @@ TUTORIAL_STEPS: list[dict[str, object]] = [
             "colony stats and controls reference.",
             "",
             "Press 1 / 2 / 3 to change the game speed.",
+        ],
+    },
+    # ── Tier 4+ feature tutorials ─────────────────────────────────
+    {
+        "id": "industrial_intro",
+        "title": "Welcome to the Industrial Age",
+        "lines": [
+            "You've reached the Industrial tier! Open the",
+            "Tech Tree to research new advanced unlocks:",
+            "",
+            "  - Conveyor Belts \u2014 colonists walk 2x faster",
+            "  - Basic Chemistry \u2014 unlocks the Chemical Plant",
+            "  - Concrete Works \u2014 a stone-and-iron material",
+            "    used for end-game buildings.",
+        ],
+    },
+    {
+        "id": "conveyor_intro",
+        "title": "Conveyor Belts",
+        "lines": [
+            "Place Conveyor tiles like paths. Anyone walking",
+            "onto a Conveyor moves at 2x speed \u2014 great for",
+            "long logistics routes between distant outposts.",
+            "",
+            "Crafted at the Workshop from Iron Bars + Gears.",
+        ],
+    },
+    {
+        "id": "chemical_plant_intro",
+        "title": "The Chemical Plant",
+        "lines": [
+            "The Chemical Plant synthesises advanced materials",
+            "your Forge can't produce: Plastic, Rocket Fuel,",
+            "and other polymers.",
+            "",
+            "Assign a worker and pick a recipe just like the",
+            "Forge or Refinery.",
+        ],
+    },
+    {
+        "id": "automation_intro",
+        "title": "Automation Tier",
+        "lines": [
+            "You've unlocked the Automation tier. Research",
+            "Solar Panels to build Solar Arrays \u2014 they boost",
+            "all adjacent crafting stations by 25%.",
+            "",
+            "You'll also need Batteries and Microchips to push",
+            "into the spacefaring endgame.",
+        ],
+    },
+    {
+        "id": "solar_array_intro",
+        "title": "Solar Arrays",
+        "lines": [
+            "Solar Arrays passively boost the speed of every",
+            "adjacent Assembler, Forge, Refinery, and Chemical",
+            "Plant by 25%.",
+            "",
+            "Cluster them around your busiest crafting hubs.",
+        ],
+    },
+    {
+        "id": "spacefarer_intro",
+        "title": "Spacefarer Tier",
+        "lines": [
+            "The final tier! Research Rocketry to make Rocket",
+            "Fuel, then Orbital Assembly to unlock the Rocket",
+            "Silo.",
+            "",
+            "Assemble Rocket Parts to escape this world and",
+            "win the game.",
+        ],
+    },
+    {
+        "id": "rocket_silo_intro",
+        "title": "The Rocket Silo",
+        "lines": [
+            "Build the Rocket Silo and feed it Rocket Parts to",
+            "launch your colony off-world.",
+            "",
+            "Each Rocket Part needs Steel Bars, Electronics,",
+            "and Concrete \u2014 plan your supply chains!",
         ],
     },
 ]

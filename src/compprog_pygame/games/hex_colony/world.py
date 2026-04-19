@@ -1857,7 +1857,7 @@ class World:
             return []
         if end not in self.grid:
             return []
-        _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE}
+        _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.CONVEYOR}
 
         def passable_land(coord: HexCoord) -> bool:
             tile = self.grid.get(coord)
@@ -2284,6 +2284,7 @@ class World:
             BuildingType.FORGE,
             BuildingType.REFINERY,
             BuildingType.ASSEMBLER,
+            BuildingType.CHEMICAL_PLANT,
         )
         for stype in station_types:
             for station in self.buildings.by_type(stype):

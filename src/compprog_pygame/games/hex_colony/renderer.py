@@ -86,6 +86,10 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_assembler,
     draw_research_center,
     draw_tribal_camp,
+    draw_chemical_plant,
+    draw_conveyor,
+    draw_solar_array,
+    draw_rocket_silo,
 )
 from compprog_pygame.games.hex_colony.render_terrain import (
     DIR_EDGE,
@@ -126,6 +130,11 @@ class Renderer:
         self._edge_colors: dict[HexCoord, list[tuple[int, int, int]]] = {}
         self._cross_cat: dict[HexCoord, list[int]] = {}  # 0=same category, 2=cross-category: use own colour
         self._dirty_tiles: set[HexCoord] = set()  # tiles needing targeted redraw
+        # Spatial index of overlays by hex coord — built lazily on the
+        # first call to ``remove_overlays_at`` so per-tile removal is
+        # O(items in that hex) instead of O(total overlays).
+        self._overlay_index: dict[tuple[int, int], list] | None = None
+        self._removed_overlay_count: int = 0
 
         # Alt resource overlay
         self.show_resource_overlay: bool = False
@@ -246,18 +255,52 @@ class Renderer:
         self._ensure_blended_colors(world)
 
     def remove_overlays_at(self, coord: HexCoord, hex_size: int) -> None:
-        """Remove all overlay items that fall within the given hex tile."""
-        cx, cy = hex_to_pixel(coord, hex_size)
-        radius = hex_size * 0.85  # slightly smaller than full hex
-        r2 = radius * radius
-        self._static_overlays = [
-            item for item in self._static_overlays
-            if (item.wx - cx) ** 2 + (item.wy - cy) ** 2 > r2
-        ]
-        self._ripples = [
-            item for item in self._ripples
-            if (item.wx - cx) ** 2 + (item.wy - cy) ** 2 > r2
-        ]
+        """Remove all overlay items that fall within the given hex tile.
+
+        Uses a lazily-built spatial index keyed by hex coord so removal
+        is O(items in this hex) instead of O(total overlay count).  The
+        flat ``_static_overlays`` / ``_ripples`` lists are iterated for
+        rendering, so removed items are tagged with ``wx = nan`` and
+        skipped during draw and during periodic compaction.
+        """
+        from math import isnan, nan
+
+        # Build the per-coord index lazily.
+        if self._overlay_index is None:
+            self._overlay_index = {}
+            inv = 1.0 / max(1, hex_size)
+            from compprog_pygame.games.hex_colony.hex_grid import pixel_to_hex
+            for lst in (self._static_overlays, self._ripples):
+                for item in lst:
+                    if isnan(item.wx):
+                        continue
+                    c = pixel_to_hex(item.wx, item.wy, hex_size)
+                    key = (c.q, c.r)
+                    bucket = self._overlay_index.get(key)
+                    if bucket is None:
+                        self._overlay_index[key] = [item]
+                    else:
+                        bucket.append(item)
+            _ = inv  # silence unused
+
+        key = (coord.q, coord.r)
+        bucket = self._overlay_index.pop(key, None)
+        if bucket:
+            self._removed_overlay_count += len(bucket)
+            for item in bucket:
+                # Mark dead — render & blit loops skip nan positions.
+                item.wx = nan
+            # Periodically compact the flat lists so they don't grow
+            # without bound (skip-checks add a tiny per-item cost).
+            if self._removed_overlay_count > 256:
+                self._static_overlays = [
+                    it for it in self._static_overlays if not isnan(it.wx)
+                ]
+                self._ripples = [
+                    it for it in self._ripples if not isnan(it.wx)
+                ]
+                self._removed_overlay_count = 0
+
         # Mark tile for targeted redraw instead of invalidating entire cache.
         # The building drawn on top will cover stale overlay pixels until the
         # next natural cache rebuild.
@@ -271,6 +314,8 @@ class Renderer:
         """True if any OverlayRuin was generated on the given hex."""
         key = (coord.q, coord.r)
         for item in self._static_overlays:
+            if item.wx != item.wx:  # NaN — removed
+                continue
             if isinstance(item, OverlayRuin) and item.coord == key:
                 return True
         return False
@@ -437,15 +482,23 @@ class Renderer:
         zoom = camera.zoom
         cam_x, cam_y = camera.x, camera.y
 
+        # Don't rebuild while the camera is mid smooth-zoom animation —
+        # that would re-render every frame as zoom drifts toward target,
+        # producing the visible "lag" on each scroll.  Instead the
+        # cached layer is scaled into place each frame and the rebuild
+        # happens once the zoom settles.
+        target_zoom = getattr(camera, "_target_zoom", zoom)
+        zoom_settling = abs(zoom - target_zoom) > 1e-4
+
         need_rebuild = (
             self._tile_layer is None
             or self._tl_screen != (sw, sh)
         )
 
-        if not need_rebuild and self._tl_zoom > 0:
-            # Only rebuild when zoom changes by more than 8 %
+        if not need_rebuild and self._tl_zoom > 0 and not zoom_settling:
+            # Only rebuild when zoom changes by more than 15 %
             zoom_ratio = zoom / self._tl_zoom
-            if abs(zoom_ratio - 1.0) > 0.08:
+            if abs(zoom_ratio - 1.0) > 0.15:
                 need_rebuild = True
 
         if not need_rebuild:
@@ -613,7 +666,10 @@ class Renderer:
             stride = 1 if lod_high else 2
             for idx in range(0, len(self._static_overlays), stride):
                 item = self._static_overlays[idx]
-                sx = (item.wx - cam_x) * zoom + half_cw
+                wx = item.wx
+                if wx != wx:  # NaN check — item was removed
+                    continue
+                sx = (wx - cam_x) * zoom + half_cw
                 sy = (item.wy - cam_y) * zoom + half_ch
                 if sx < -margin or sx > cw + margin or sy < -margin or sy > ch + margin:
                     continue
@@ -717,9 +773,12 @@ class Renderer:
                 patch_r2 = (hex_size * 1.5) ** 2
                 iz = max(1, int(zoom))
                 for item in self._static_overlays:
-                    if (item.wx - wx) ** 2 + (item.wy - wy) ** 2 > patch_r2:
+                    iwx = item.wx
+                    if iwx != iwx:  # NaN — removed
                         continue
-                    isx = (item.wx - cam_x) * zoom + half_cw
+                    if (iwx - wx) ** 2 + (item.wy - wy) ** 2 > patch_r2:
+                        continue
+                    isx = (iwx - cam_x) * zoom + half_cw
                     isy = (item.wy - cam_y) * zoom + half_ch
                     if isinstance(item, OverlayTree):
                         draw_tree(cache, item, isx, isy, zoom, iz)
@@ -753,7 +812,10 @@ class Renderer:
         stride = 1 if zoom > 0.7 else (2 if zoom > 0.4 else 3)
         for idx in range(0, len(self._ripples), stride):
             item = self._ripples[idx]
-            sx = (item.wx - cam_x) * zoom + half_sw
+            wx = item.wx
+            if wx != wx:  # NaN — removed
+                continue
+            sx = (wx - cam_x) * zoom + half_sw
             sy = (item.wy - cam_y) * zoom + half_sh
             if sx < -margin or sx > sw + margin or sy < -margin or sy > sh + margin:
                 continue
@@ -926,6 +988,14 @@ class Renderer:
                 draw_research_center(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.TRIBAL_CAMP:
                 draw_tribal_camp(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.CHEMICAL_PLANT:
+                draw_chemical_plant(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.CONVEYOR:
+                draw_conveyor(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.SOLAR_ARRAY:
+                draw_solar_array(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.ROCKET_SILO:
+                draw_rocket_silo(surface, sx, sy, r, zoom)
 
             # Overcrowding indicator: red ! above dwelling
             if (building.housing_capacity > 0
@@ -1299,6 +1369,14 @@ class Renderer:
                 draw_refinery(bld_surf, cx_local, cy_local, r, zoom)
             elif btype == BuildingType.BRIDGE:
                 draw_bridge(bld_surf, cx_local, cy_local, r, zoom, [], coord.q, coord.r)
+            elif btype == BuildingType.CHEMICAL_PLANT:
+                draw_chemical_plant(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.CONVEYOR:
+                draw_conveyor(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.SOLAR_ARRAY:
+                draw_solar_array(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.ROCKET_SILO:
+                draw_rocket_silo(bld_surf, cx_local, cy_local, r, zoom)
 
             if not self.ghost_valid:
                 red_tint = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)

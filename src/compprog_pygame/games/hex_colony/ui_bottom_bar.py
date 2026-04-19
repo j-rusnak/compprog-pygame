@@ -31,12 +31,16 @@ from compprog_pygame.games.hex_colony.resource_icons import get_resource_icon
 from compprog_pygame.games.hex_colony.render_buildings import (
     draw_assembler,
     draw_bridge,
+    draw_chemical_plant,
+    draw_conveyor,
     draw_forge,
     draw_habitat,
     draw_mining_machine,
     draw_path,
     draw_refinery,
     draw_research_center,
+    draw_rocket_silo,
+    draw_solar_array,
     draw_storage,
     draw_wall,
     draw_well,
@@ -148,15 +152,16 @@ class BuildingsTabContent(TabContent):
     """Categorised grid of buildings with inventory counts."""
 
     _CATEGORIES: list[tuple[str, list[BuildingType]]] = [
-        (BUILDING_CATEGORY_NAMES[0], [BuildingType.RESEARCH_CENTER]),
+        (BUILDING_CATEGORY_NAMES[0], [BuildingType.RESEARCH_CENTER, BuildingType.ROCKET_SILO]),
         (BUILDING_CATEGORY_NAMES[1], [BuildingType.HABITAT]),
         (BUILDING_CATEGORY_NAMES[2], [BuildingType.WOODCUTTER, BuildingType.QUARRY,
                       BuildingType.GATHERER, BuildingType.FARM, BuildingType.WELL,
-                      BuildingType.MINING_MACHINE]),
+                      BuildingType.MINING_MACHINE, BuildingType.SOLAR_ARRAY]),
         (BUILDING_CATEGORY_NAMES[3], [BuildingType.WORKSHOP, BuildingType.FORGE,
                         BuildingType.ASSEMBLER, BuildingType.REFINERY,
-                        BuildingType.STORAGE]),
-        (BUILDING_CATEGORY_NAMES[4], [BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL]),
+                        BuildingType.CHEMICAL_PLANT, BuildingType.STORAGE]),
+        (BUILDING_CATEGORY_NAMES[4], [BuildingType.PATH, BuildingType.BRIDGE,
+                        BuildingType.CONVEYOR, BuildingType.WALL]),
     ]
 
     BUILDABLE: list[BuildingType] = []
@@ -180,6 +185,10 @@ class BuildingsTabContent(TabContent):
         BuildingType.FORGE: "\u2692",
         BuildingType.ASSEMBLER: "\u25a6",
         BuildingType.RESEARCH_CENTER: "\u2261",
+        BuildingType.CHEMICAL_PLANT: "\u269b",
+        BuildingType.CONVEYOR: "\u21d2",
+        BuildingType.SOLAR_ARRAY: "\u2600",
+        BuildingType.ROCKET_SILO: "\u29bf",
     }
 
     _COLOR: dict[BuildingType, tuple[int, int, int]] = {
@@ -199,6 +208,10 @@ class BuildingsTabContent(TabContent):
         BuildingType.FORGE: (110, 100, 92),
         BuildingType.ASSEMBLER: (120, 140, 165),
         BuildingType.RESEARCH_CENTER: (70, 130, 200),
+        BuildingType.CHEMICAL_PLANT: (100, 160, 130),
+        BuildingType.CONVEYOR: (200, 180, 90),
+        BuildingType.SOLAR_ARRAY: (60, 100, 200),
+        BuildingType.ROCKET_SILO: (235, 235, 240),
     }
 
     _DESC: dict[BuildingType, str] = {
@@ -237,6 +250,10 @@ class BuildingsTabContent(TabContent):
         BuildingType.WALL: draw_wall,
         BuildingType.MINING_MACHINE: draw_mining_machine,
         BuildingType.PATH: draw_path,
+        BuildingType.CHEMICAL_PLANT: draw_chemical_plant,
+        BuildingType.CONVEYOR: draw_conveyor,
+        BuildingType.SOLAR_ARRAY: draw_solar_array,
+        BuildingType.ROCKET_SILO: draw_rocket_silo,
     }
 
     # Cache of building-sprite preview surfaces, keyed by (btype, size).

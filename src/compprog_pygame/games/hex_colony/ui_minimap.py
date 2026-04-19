@@ -35,6 +35,8 @@ class MinimapPanel(Panel):
         self._minimap_surf: pygame.Surface | None = None
         self._dirty = True
         self._world_bounds: tuple[float, float, float, float] = (0, 0, 1, 1)
+        self._scale: float = 1.0  # cached scale factor used by patches
+        self._pending_patches: list[HexCoord] = []
         self.camera: Camera | None = None
 
     def layout(self, screen_w: int, screen_h: int) -> None:
@@ -47,8 +49,18 @@ class MinimapPanel(Panel):
         )
         self._dirty = True
 
-    def invalidate(self) -> None:
-        self._dirty = True
+    def invalidate(self, coord: HexCoord | None = None) -> None:
+        """Mark the minimap as needing redraw.
+
+        If *coord* is given, just patch that one tile on the existing
+        cached surface (cheap — O(1)).  Without a coord the minimap is
+        flagged for a full rebuild on the next ``draw`` call.
+        """
+        if coord is None or self._minimap_surf is None:
+            self._dirty = True
+            return
+        # Try to incrementally patch this single tile.
+        self._pending_patches.append(coord)
 
     def _rebuild(self, world: World) -> None:
         """Render the minimap texture from world state."""
@@ -82,6 +94,7 @@ class MinimapPanel(Panel):
         surf.fill((16, 24, 45, 200))
 
         scale = min((_MAP_SIZE - 4) / w_range, (_MAP_SIZE - 4) / h_range)
+        self._scale = scale
 
         for coord in coords:
             wx, wy = hex_to_pixel(coord, size)
@@ -99,10 +112,37 @@ class MinimapPanel(Panel):
 
         self._minimap_surf = surf
         self._dirty = False
+        self._pending_patches.clear()
+
+    def _apply_patches(self, world: World) -> None:
+        """Redraw a small set of dirtied tiles on the existing surface."""
+        if self._minimap_surf is None or not self._pending_patches:
+            return
+        size = world.settings.hex_size
+        min_wx, min_wy, _, _ = self._world_bounds
+        scale = self._scale
+        r = max(1, int(size * scale * 0.5))
+        surf = self._minimap_surf
+        for coord in self._pending_patches:
+            tile = world.grid.get(coord)
+            if tile is None:
+                continue
+            wx, wy = hex_to_pixel(coord, size)
+            mx = int((wx - min_wx) * scale) + 2
+            my = int((wy - min_wy) * scale) + 2
+            building = world.buildings.at(coord)
+            if building is not None:
+                color = BUILDING_COLORS.get(building.type, (200, 200, 200))
+            else:
+                color = TERRAIN_BASE_COLOR.get(tile.terrain, (80, 80, 80))
+            pygame.draw.circle(surf, color, (mx, my), r)
+        self._pending_patches.clear()
 
     def draw(self, surface: pygame.Surface, world: World) -> None:
         if self._dirty or self._minimap_surf is None:
             self._rebuild(world)
+        elif self._pending_patches:
+            self._apply_patches(world)
         if self._minimap_surf is None:
             return
 

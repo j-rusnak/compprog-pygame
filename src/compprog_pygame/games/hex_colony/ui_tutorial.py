@@ -156,16 +156,13 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         after="build_habitat",
     ),
     _TutorialStep(
-        id="forge_smelting",
-        title=_text("forge_smelting")[0],
-        lines=_text("forge_smelting")[1],
+        id="mining_smelting",
+        title=_text("mining_smelting")[0],
+        lines=_text("mining_smelting")[1],
+        # 30 s after the player reaches tier 2 (Settlement).
         trigger=lambda w, ctx: (
-            _has_building_count(w, BuildingType.FORGE)
-            and _has_workers_at(w, BuildingType.FORGE)
-            and all(
-                b.recipe is None
-                for b in w.buildings.by_type(BuildingType.FORGE)
-            )
+            ctx.get("current_tier_level", 0) >= 2
+            and ctx.get("time_in_tier", 0.0) >= 30.0
         ),
         after=None,
     ),
@@ -173,10 +170,10 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         id="research",
         title=_text("research")[0],
         lines=_text("research")[1],
+        # 30 s after the player reaches tier 1 (Foothold).
         trigger=lambda w, ctx: (
-            _has_building_count(w, BuildingType.RESEARCH_CENTER)
-            and _has_workers_at(w, BuildingType.RESEARCH_CENTER)
-            and ctx.get("researched_count", 0) == 0
+            ctx.get("current_tier_level", 0) >= 1
+            and ctx.get("time_in_tier", 0.0) >= 30.0
         ),
         after=None,
     ),
@@ -193,6 +190,71 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         lines=_text("useful_controls")[1],
         trigger=lambda w, ctx: ctx.get("real_time", 0) >= 120.0,
         after=None,
+    ),
+    # ── Tier 4+ feature tutorials ─────────────────────────────────
+    _TutorialStep(
+        id="industrial_intro",
+        title=_text("industrial_intro")[0],
+        lines=_text("industrial_intro")[1],
+        # Fires immediately on entering tier 4 (Industrial).
+        trigger=lambda w, ctx: ctx.get("current_tier_level", 0) >= 4,
+        after=None,
+    ),
+    _TutorialStep(
+        id="conveyor_intro",
+        title=_text("conveyor_intro")[0],
+        lines=_text("conveyor_intro")[1],
+        # ~25 s after entering tier 4 \u2014 by then Conveyor research is realistic.
+        trigger=lambda w, ctx: (
+            ctx.get("current_tier_level", 0) >= 4
+            and ctx.get("time_in_tier", 0.0) >= 25.0
+        ),
+        after="industrial_intro",
+    ),
+    _TutorialStep(
+        id="chemical_plant_intro",
+        title=_text("chemical_plant_intro")[0],
+        lines=_text("chemical_plant_intro")[1],
+        # 60 s into tier 4 \u2014 player has likely started Basic Chemistry.
+        trigger=lambda w, ctx: (
+            ctx.get("current_tier_level", 0) >= 4
+            and ctx.get("time_in_tier", 0.0) >= 60.0
+        ),
+        after="industrial_intro",
+    ),
+    _TutorialStep(
+        id="automation_intro",
+        title=_text("automation_intro")[0],
+        lines=_text("automation_intro")[1],
+        trigger=lambda w, ctx: ctx.get("current_tier_level", 0) >= 5,
+        after=None,
+    ),
+    _TutorialStep(
+        id="solar_array_intro",
+        title=_text("solar_array_intro")[0],
+        lines=_text("solar_array_intro")[1],
+        trigger=lambda w, ctx: (
+            ctx.get("current_tier_level", 0) >= 5
+            and ctx.get("time_in_tier", 0.0) >= 30.0
+        ),
+        after="automation_intro",
+    ),
+    _TutorialStep(
+        id="spacefarer_intro",
+        title=_text("spacefarer_intro")[0],
+        lines=_text("spacefarer_intro")[1],
+        trigger=lambda w, ctx: ctx.get("current_tier_level", 0) >= 6,
+        after=None,
+    ),
+    _TutorialStep(
+        id="rocket_silo_intro",
+        title=_text("rocket_silo_intro")[0],
+        lines=_text("rocket_silo_intro")[1],
+        trigger=lambda w, ctx: (
+            ctx.get("current_tier_level", 0) >= 6
+            and ctx.get("time_in_tier", 0.0) >= 30.0
+        ),
+        after="spacefarer_intro",
     ),
 ]
 

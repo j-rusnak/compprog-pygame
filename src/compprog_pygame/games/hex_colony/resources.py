@@ -35,6 +35,13 @@ class Resource(Enum):
     GEARS = auto()        # machined from IRON_BAR at assembler
     SILICON = auto()      # refined from GLASS at assembler
     CIRCUIT = auto()      # assembled from COPPER_WIRE + SILICON at assembler
+    # ── Tier 4+ industrial chain ──────────────────────────────
+    CONCRETE = auto()     # cast at refinery from STONE + IRON_BAR
+    PLASTIC = auto()      # synthesised at chemical plant from CHARCOAL
+    ELECTRONICS = auto()  # assembled from CIRCUIT + PLASTIC
+    BATTERY = auto()      # assembled from COPPER_BAR + IRON_BAR + PLASTIC
+    ROCKET_FUEL = auto()  # mixed at chemical plant from CHARCOAL + PLASTIC
+    ROCKET_PART = auto()  # assembled from STEEL_BAR + ELECTRONICS + CONCRETE
 
 
 # Resources harvested directly from the map (not produced in a building).
@@ -49,6 +56,8 @@ PROCESSED_RESOURCES: frozenset[Resource] = frozenset({
     Resource.BRICKS, Resource.COPPER_WIRE, Resource.ROPE,
     Resource.CHARCOAL, Resource.GLASS, Resource.STEEL_BAR,
     Resource.GEARS, Resource.SILICON, Resource.CIRCUIT,
+    Resource.CONCRETE, Resource.PLASTIC, Resource.ELECTRONICS,
+    Resource.BATTERY, Resource.ROCKET_FUEL, Resource.ROCKET_PART,
 })
 
 
@@ -137,6 +146,7 @@ STATION_WORKSHOP = "WORKSHOP"
 STATION_FORGE = "FORGE"
 STATION_REFINERY = "REFINERY"
 STATION_ASSEMBLER = "ASSEMBLER"
+STATION_CHEMICAL_PLANT = "CHEMICAL_PLANT"
 
 
 @dataclass(frozen=True, slots=True)

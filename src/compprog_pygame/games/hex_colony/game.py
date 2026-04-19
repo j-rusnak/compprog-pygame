@@ -81,6 +81,11 @@ BUILDABLE = [
     BuildingType.WELL,
     BuildingType.WORKSHOP,
     BuildingType.RESEARCH_CENTER,
+    # Tier 4+ industrial buildings (visible after their unlocking tech)
+    BuildingType.CHEMICAL_PLANT,
+    BuildingType.CONVEYOR,
+    BuildingType.SOLAR_ARRAY,
+    BuildingType.ROCKET_SILO,
 ]
 
 
@@ -119,6 +124,9 @@ class Game:
         self._hint_font = pygame.font.Font(None, 26)
         self._sim_speed: float = 3.0  # 1x (=3), 2x (=6), 3x (=9)
         self._real_time_elapsed: float = 0.0
+        # Real-time seconds since the player most recently advanced a
+        # tier. Used by the tutorial system for tier-timed hints.
+        self._time_in_current_tier: float = 0.0
         self._drag_button: int = 0  # which mouse button started camera drag
 
         # Tech tree, tier tracker & notifications
@@ -276,6 +284,9 @@ class Game:
                         else None
                     )
                     self._tier_popup.show(tier, next_tier)
+                    self._time_in_current_tier = 0.0
+                else:
+                    self._time_in_current_tier += dt
                 self.notifications.update(dt)
                 self._real_time_elapsed += dt
                 # Tutorial triggers
@@ -284,6 +295,8 @@ class Game:
                     "real_time": self._real_time_elapsed,
                     "dt": dt,
                     "researched_count": self.tech_tree.researched_count,
+                    "current_tier_level": self.tier_tracker.current_tier,
+                    "time_in_tier": self._time_in_current_tier,
                 })
             self.camera.update(dt)
             self._resource_bar.delete_mode = self.delete_mode
@@ -514,7 +527,7 @@ class Game:
             return False
         # Check existing building
         existing = tile.building
-        _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE}
+        _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.CONVEYOR}
         if existing is not None:
             # Can only build on top of a path/bridge (not wall, camp, or other buildings)
             if existing.type not in _PATH_LIKE:
@@ -542,7 +555,7 @@ class Game:
         # ore / fiber sprite under the path tile.
         if self.build_mode not in _PATH_LIKE:
             self.renderer.remove_overlays_at(coord, self.settings.hex_size)
-        self._minimap.invalidate()
+        self._minimap.invalidate(coord)
         # Record to blueprint if recording
         if self.blueprints.is_recording:
             self.blueprints.record_building(coord, self.build_mode)
@@ -691,7 +704,7 @@ class Game:
         tile.building = None
         # Targeted tile layer redraw so cleared tile shows terrain
         self.renderer.invalidate_tile(coord)
-        self._minimap.invalidate()
+        self._minimap.invalidate(coord)
         self.world.mark_housing_dirty()
 
     def _on_building_selected(self, btype: BuildingType | None) -> None:
@@ -932,7 +945,7 @@ class Game:
         if not self.sandbox:
             if self.world.building_inventory[self.build_mode] < 1:
                 return False
-        _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE}
+        _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.CONVEYOR}
         existing = tile.building
         if existing is not None:
             if existing.type not in _PATH_LIKE:

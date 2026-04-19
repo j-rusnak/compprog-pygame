@@ -33,6 +33,11 @@ class BuildingType(Enum):
     ASSEMBLER = auto()      # higher-tier assembler — builds gears, silicon, circuits
     RESEARCH_CENTER = auto() # research center — opens the tech tree
     TRIBAL_CAMP = auto()    # primitive tribal camp — AI tribe centerpiece (not player-buildable)
+    # ── Tier 4+ industrial buildings ─────────────────────────
+    CHEMICAL_PLANT = auto()  # chemical plant — synthesises plastic, rocket fuel, etc.
+    CONVEYOR = auto()        # conveyor belt — workers walk faster on these tiles
+    SOLAR_ARRAY = auto()     # solar array — boosts adjacent crafting stations
+    ROCKET_SILO = auto()     # rocket silo — assemble & launch the colony rocket
 
 
 @dataclass(slots=True)
@@ -67,6 +72,10 @@ BUILDING_COSTS: dict[BuildingType, BuildingCost] = {
     BuildingType.ASSEMBLER: BuildingCost(_costs_from_dict(params.BUILDING_COST_ASSEMBLER)),
     BuildingType.RESEARCH_CENTER: BuildingCost(_costs_from_dict(params.BUILDING_COST_RESEARCH_CENTER)),
     BuildingType.TRIBAL_CAMP: BuildingCost(_costs_from_dict(params.BUILDING_COST_TRIBAL_CAMP)),
+    BuildingType.CHEMICAL_PLANT: BuildingCost(_costs_from_dict(params.BUILDING_COST_CHEMICAL_PLANT)),
+    BuildingType.CONVEYOR: BuildingCost(_costs_from_dict(params.BUILDING_COST_CONVEYOR)),
+    BuildingType.SOLAR_ARRAY: BuildingCost(_costs_from_dict(params.BUILDING_COST_SOLAR_ARRAY)),
+    BuildingType.ROCKET_SILO: BuildingCost(_costs_from_dict(params.BUILDING_COST_ROCKET_SILO)),
 }
 
 # Max workers each building supports
@@ -90,6 +99,10 @@ BUILDING_MAX_WORKERS: dict[BuildingType, int] = {
     BuildingType.ASSEMBLER: params.BUILDING_MAX_WORKERS_ASSEMBLER,
     BuildingType.RESEARCH_CENTER: params.BUILDING_MAX_WORKERS_RESEARCH_CENTER,
     BuildingType.TRIBAL_CAMP: params.BUILDING_MAX_WORKERS_TRIBAL_CAMP,
+    BuildingType.CHEMICAL_PLANT: params.BUILDING_MAX_WORKERS_CHEMICAL_PLANT,
+    BuildingType.CONVEYOR: params.BUILDING_MAX_WORKERS_CONVEYOR,
+    BuildingType.SOLAR_ARRAY: params.BUILDING_MAX_WORKERS_SOLAR_ARRAY,
+    BuildingType.ROCKET_SILO: params.BUILDING_MAX_WORKERS_ROCKET_SILO,
 }
 
 # Housing capacity per building type (0 = not a dwelling)
@@ -113,6 +126,10 @@ BUILDING_HOUSING: dict[BuildingType, int] = {
     BuildingType.ASSEMBLER: params.BUILDING_HOUSING_ASSEMBLER,
     BuildingType.RESEARCH_CENTER: params.BUILDING_HOUSING_RESEARCH_CENTER,
     BuildingType.TRIBAL_CAMP: params.BUILDING_HOUSING_TRIBAL_CAMP,
+    BuildingType.CHEMICAL_PLANT: params.BUILDING_HOUSING_CHEMICAL_PLANT,
+    BuildingType.CONVEYOR: params.BUILDING_HOUSING_CONVEYOR,
+    BuildingType.SOLAR_ARRAY: params.BUILDING_HOUSING_SOLAR_ARRAY,
+    BuildingType.ROCKET_SILO: params.BUILDING_HOUSING_ROCKET_SILO,
 }
 
 # Storage capacity per building type.
@@ -139,6 +156,10 @@ BUILDING_STORAGE_CAPACITY: dict[BuildingType, int] = {
     BuildingType.ASSEMBLER: params.BUILDING_STORAGE_ASSEMBLER,
     BuildingType.RESEARCH_CENTER: params.BUILDING_STORAGE_RESEARCH_CENTER,
     BuildingType.TRIBAL_CAMP: params.BUILDING_STORAGE_TRIBAL_CAMP,
+    BuildingType.CHEMICAL_PLANT: params.BUILDING_STORAGE_CHEMICAL_PLANT,
+    BuildingType.CONVEYOR: params.BUILDING_STORAGE_CONVEYOR,
+    BuildingType.SOLAR_ARRAY: params.BUILDING_STORAGE_SOLAR_ARRAY,
+    BuildingType.ROCKET_SILO: params.BUILDING_STORAGE_ROCKET_SILO,
 }
 
 

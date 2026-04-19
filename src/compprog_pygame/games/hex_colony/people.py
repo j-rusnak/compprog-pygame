@@ -14,6 +14,7 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 from compprog_pygame.games.hex_colony.hex_grid import HexCoord, hex_to_pixel
+from compprog_pygame.games.hex_colony.buildings import BuildingType
 
 if TYPE_CHECKING:
     from compprog_pygame.games.hex_colony.world import World
@@ -100,6 +101,8 @@ class PopulationManager:
     def update(self, dt: float, world: World, hex_size: int) -> None:
         """Advance all people by *dt* seconds."""
         speed = world.settings.person_speed  # px/s
+        # Conveyor speed-boost multiplier (Tier 4+ tech).
+        conveyor_mult = 2.0
         for person in self.people:
             if person.path:
                 # Move toward next hex in path
@@ -108,6 +111,21 @@ class PopulationManager:
                 dx, dy = tx - person.px, ty - person.py
                 dist = math.hypot(dx, dy)
                 step = speed * dt
+                # Boost when stepping onto a Conveyor tile, or when
+                # already standing on one.
+                target_tile = world.grid.get(target)
+                cur_tile = world.grid.get(person.hex_pos)
+                on_conveyor = (
+                    (target_tile is not None
+                     and target_tile.building is not None
+                     and target_tile.building.type == BuildingType.CONVEYOR)
+                    or
+                    (cur_tile is not None
+                     and cur_tile.building is not None
+                     and cur_tile.building.type == BuildingType.CONVEYOR)
+                )
+                if on_conveyor:
+                    step *= conveyor_mult
                 if dist <= step:
                     person.px, person.py = tx, ty
                     person.hex_pos = target

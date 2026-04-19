@@ -1080,3 +1080,201 @@ def draw_research_center(surface: pygame.Surface, sx: float, sy: float, r: int, 
     # Glowing dot at top
     dot_r = max(1, int(r * 0.06))
     pygame.draw.circle(surface, (100, 200, 255), (ant_x, ant_bot - ant_h), dot_r)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Tier 4+ industrial buildings
+# ═══════════════════════════════════════════════════════════════════════
+
+def draw_chemical_plant(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Chemical Plant — vat + bubbling pipes."""
+    if _try_sprite(surface, "buildings/chemical_plant", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    base = (90, 130, 110)
+    dark = _darken(base, 0.6)
+    light = _lighten(base, 1.3)
+    glow = (140, 220, 110)
+    # Tank body
+    tank_w = max(4, int(r * 0.95))
+    tank_h = max(4, int(r * 0.85))
+    tank_top = isy - tank_h
+    tank_rect = pygame.Rect(isx - tank_w // 2, tank_top, tank_w, tank_h)
+    pygame.draw.rect(surface, base, tank_rect, border_radius=max(2, iz * 2))
+    pygame.draw.rect(surface, dark, tank_rect, iz, border_radius=max(2, iz * 2))
+    # Liquid level (bright green)
+    liquid_h = max(2, int(tank_h * 0.55))
+    liquid_rect = pygame.Rect(
+        tank_rect.x + iz, tank_rect.bottom - liquid_h - iz,
+        tank_w - iz * 2, liquid_h,
+    )
+    pygame.draw.rect(surface, glow, liquid_rect)
+    # Bubbles
+    for i, fx in enumerate((0.25, 0.55, 0.8)):
+        bx = liquid_rect.x + int(liquid_rect.w * fx)
+        by = liquid_rect.y + max(2, int(liquid_rect.h * (0.3 + 0.15 * (i % 2))))
+        pygame.draw.circle(surface, light, (bx, by), max(1, iz))
+    # Top pipes
+    pipe_y = tank_top - max(2, int(r * 0.18))
+    pygame.draw.line(surface, dark,
+                     (tank_rect.x + tank_w // 4, pipe_y),
+                     (tank_rect.right - tank_w // 4, pipe_y), max(2, iz * 2))
+    # Vertical risers
+    pygame.draw.line(surface, dark,
+                     (tank_rect.x + tank_w // 4, pipe_y),
+                     (tank_rect.x + tank_w // 4, tank_top), max(2, iz * 2))
+    pygame.draw.line(surface, dark,
+                     (tank_rect.right - tank_w // 4, pipe_y),
+                     (tank_rect.right - tank_w // 4, tank_top), max(2, iz * 2))
+    # Cap valve
+    pygame.draw.circle(surface, dark, (isx, pipe_y), max(2, int(r * 0.10)))
+    pygame.draw.circle(surface, light, (isx, pipe_y), max(1, int(r * 0.05)))
+
+
+def draw_conveyor(
+    surface: pygame.Surface,
+    sx: float,
+    sy: float,
+    r: int,
+    z: float,
+    neighbour_dirs: list[int] | None = None,
+    q: int = 0,
+    rcoord: int = 0,
+) -> None:
+    """Conveyor belt — flat strip with arrow chevrons (path-like)."""
+    if _try_sprite(surface, "buildings/conveyor", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    belt = (70, 70, 80)
+    edge = (130, 130, 140)
+    chevron = (255, 200, 60)
+    # Belt strip across the hex
+    belt_w = max(4, int(r * 1.6))
+    belt_h = max(3, int(r * 0.55))
+    belt_rect = pygame.Rect(isx - belt_w // 2, isy - belt_h // 2, belt_w, belt_h)
+    pygame.draw.rect(surface, belt, belt_rect, border_radius=max(1, iz))
+    # Edge rails
+    pygame.draw.line(surface, edge,
+                     (belt_rect.x, belt_rect.y),
+                     (belt_rect.right, belt_rect.y), max(1, iz))
+    pygame.draw.line(surface, edge,
+                     (belt_rect.x, belt_rect.bottom),
+                     (belt_rect.right, belt_rect.bottom), max(1, iz))
+    # Arrow chevrons indicating flow
+    chev_count = 3
+    spacing = belt_w // (chev_count + 1)
+    for i in range(chev_count):
+        cx_ = belt_rect.x + spacing * (i + 1)
+        cy_ = isy
+        size = max(2, int(belt_h * 0.35))
+        pygame.draw.lines(surface, chevron, False, [
+            (cx_ - size, cy_ - size),
+            (cx_ + size, cy_),
+            (cx_ - size, cy_ + size),
+        ], max(1, iz))
+
+
+def draw_solar_array(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Solar Array — angled panel grid on a stand."""
+    if _try_sprite(surface, "buildings/solar_array", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    panel = (40, 70, 140)
+    panel_light = (90, 130, 220)
+    frame = (180, 180, 190)
+    stand = (90, 90, 100)
+    # Panel quad (trapezoid for tilt)
+    pw = max(4, int(r * 1.20))
+    ph = max(3, int(r * 0.55))
+    top_w = int(pw * 0.78)
+    top_y = isy - ph - max(2, int(r * 0.12))
+    bot_y = isy - max(2, int(r * 0.05))
+    poly = [
+        (isx - top_w // 2, top_y),
+        (isx + top_w // 2, top_y),
+        (isx + pw // 2, bot_y),
+        (isx - pw // 2, bot_y),
+    ]
+    pygame.draw.polygon(surface, panel, poly)
+    pygame.draw.polygon(surface, frame, poly, max(1, iz))
+    # Grid lines (3 cols × 2 rows)
+    for col in range(1, 3):
+        x_top = isx - top_w // 2 + (top_w * col) // 3
+        x_bot = isx - pw // 2 + (pw * col) // 3
+        pygame.draw.line(surface, frame, (x_top, top_y), (x_bot, bot_y), max(1, iz))
+    mid_y = (top_y + bot_y) // 2
+    pygame.draw.line(surface, frame,
+                     (isx - (top_w + pw) // 4, mid_y),
+                     (isx + (top_w + pw) // 4, mid_y), max(1, iz))
+    # Highlight on top-left cell
+    hl_x = isx - top_w // 2 + max(1, iz)
+    hl_y = top_y + max(1, iz)
+    pygame.draw.line(surface, panel_light, (hl_x, hl_y),
+                     (hl_x + top_w // 4, hl_y), max(1, iz))
+    # Stand
+    pygame.draw.line(surface, stand, (isx, bot_y),
+                     (isx, isy + max(2, int(r * 0.10))), max(2, iz * 2))
+
+
+def draw_rocket_silo(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Rocket Silo — tall white rocket with red fins on a launch pad."""
+    if _try_sprite(surface, "buildings/rocket_silo", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    body = (235, 235, 240)
+    body_dark = _darken(body, 0.7)
+    fin = (210, 60, 50)
+    pad = (90, 90, 95)
+    flame = (255, 180, 60)
+    # Launch pad
+    pad_w = max(5, int(r * 1.40))
+    pad_h = max(2, int(r * 0.18))
+    pad_rect = pygame.Rect(isx - pad_w // 2, isy - pad_h // 2, pad_w, pad_h)
+    pygame.draw.rect(surface, pad, pad_rect, border_radius=max(1, iz))
+    pygame.draw.rect(surface, _darken(pad, 0.7), pad_rect, max(1, iz),
+                     border_radius=max(1, iz))
+    # Rocket body
+    body_w = max(3, int(r * 0.55))
+    body_h = max(5, int(r * 1.40))
+    body_top = isy - body_h
+    body_rect = pygame.Rect(isx - body_w // 2, body_top, body_w, body_h - pad_h // 2)
+    pygame.draw.rect(surface, body, body_rect, border_radius=max(1, iz))
+    pygame.draw.rect(surface, body_dark, body_rect, max(1, iz),
+                     border_radius=max(1, iz))
+    # Nose cone (triangle)
+    nose_h = max(3, int(r * 0.45))
+    pygame.draw.polygon(surface, body, [
+        (isx - body_w // 2, body_top),
+        (isx + body_w // 2, body_top),
+        (isx, body_top - nose_h),
+    ])
+    pygame.draw.polygon(surface, body_dark, [
+        (isx - body_w // 2, body_top),
+        (isx + body_w // 2, body_top),
+        (isx, body_top - nose_h),
+    ], max(1, iz))
+    # Window
+    pygame.draw.circle(surface, (90, 160, 220), (isx, body_top + body_h // 4),
+                       max(2, int(r * 0.10)))
+    # Side fins
+    fin_h = max(3, int(r * 0.40))
+    pygame.draw.polygon(surface, fin, [
+        (isx - body_w // 2, body_rect.bottom - fin_h),
+        (isx - body_w // 2, body_rect.bottom),
+        (isx - body_w // 2 - max(2, int(r * 0.20)), body_rect.bottom),
+    ])
+    pygame.draw.polygon(surface, fin, [
+        (isx + body_w // 2, body_rect.bottom - fin_h),
+        (isx + body_w // 2, body_rect.bottom),
+        (isx + body_w // 2 + max(2, int(r * 0.20)), body_rect.bottom),
+    ])
+    # Engine flame hint
+    pygame.draw.polygon(surface, flame, [
+        (isx - body_w // 3, body_rect.bottom),
+        (isx + body_w // 3, body_rect.bottom),
+        (isx, body_rect.bottom + max(2, int(r * 0.18))),
+    ])
