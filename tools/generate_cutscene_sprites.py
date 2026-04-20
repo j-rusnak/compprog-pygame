@@ -169,8 +169,10 @@ def make_space_bg(w: int = 1920, h: int = 1080) -> pygame.Surface:
         pygame.draw.circle(s, (140, 140, 155), (cxx, cyy), cr)
         pygame.draw.circle(s, (210, 210, 220), (cxx - 1, cyy - 1), cr - 1)
 
-    # Earth in the lower-right (the destination).
-    ecx, ecy = int(w * 0.80), int(h * 0.74)
+    # Earth in the upper-right (the destination).  The cutscene
+    # crashes the ship into this point, so keep the position in sync
+    # with ``cutscene._EARTH_X_FRAC`` / ``_EARTH_Y_FRAC``.
+    ecx, ecy = int(w * 0.80), int(h * 0.30)
     er = int(min(w, h) * 0.24)
 
     # Atmospheric halo.

@@ -83,6 +83,15 @@ _SHIP_X_OFFSET_FRAC = -0.06
 # previous 0.42 for more presence on screen.
 _SHIP_WIDTH_FRAC = 0.50
 
+# Earth position in the background sprite, as fractions of screen.
+# These mirror ``tools/generate_cutscene_sprites.make_space_bg`` where
+# Earth is rendered in the upper-right of the frame.
+_EARTH_X_FRAC = 0.70
+_EARTH_Y_FRAC = 0.35
+_EARTH_R_FRAC = 0.24  # of min(w, h)
+# Background zoom-in during the crash + fade phases.  1.0 = no zoom.
+_BG_ZOOM_END = 2.4
+
 
 @dataclass
 class _DialogBox:
@@ -189,6 +198,14 @@ class IntroCutscene:
         self._ship_offset = (0.0, 0.0)
         self._ship_rot = 0.0
         self._ship_extra_scale = 1.0  # subtle breathing during dialog
+        # Crash-specific visual state: how much smaller the ship is
+        # relative to its idle size (1.0 → full, 0.0 → vanished),
+        # and the absolute pixel position to draw it at instead of the
+        # default centre-derived coordinates.
+        self._crash_scale = 1.0
+        self._crash_pos: tuple[float, float] | None = None
+        # Background zoom (1.0 = no zoom).  Centred on Earth.
+        self._bg_zoom = 1.0
         self._shake = 0.0
         self._flash_alpha = 0.0
         self._fade_alpha = 0.0
@@ -318,19 +335,44 @@ class IntroCutscene:
 
         elif self._phase == _PHASE_CRASHING:
             t = min(1.0, self._phase_t / _CRASH_TIME)
-            # Quadratic ease-in on the fall; gentler leftward drift
-            # so the trajectory feels heavy rather than swinging.
-            self._ship_offset = (
-                -90.0 * t - 15.0 * (t * t),
-                self.h * 0.65 * (t * t),
+            # Trajectory: ease the ship from its current screen
+            # position toward the centre of Earth in the background,
+            # while shrinking it so it appears to fly into the
+            # distance.  We sample the *idle* anchor (centre + offset)
+            # as the start point so the curve always begins where the
+            # ship was last drawn during dialog.
+            start_x = (
+                self.w / 2.0 + self.w * _SHIP_X_OFFSET_FRAC
             )
+            start_y = self.h * 0.42
+            earth_x = self.w * _EARTH_X_FRAC
+            earth_y = self.h * _EARTH_Y_FRAC
+            # Ease-in-out cubic on the path so it accelerates and then
+            # settles into Earth.
+            if t < 0.5:
+                eased = 4 * t * t * t
+            else:
+                eased = 1 - (-2 * t + 2) ** 3 / 2
+            # Slight downward arc using a quadratic offset so the
+            # ship dips before plunging in.
+            arc = math.sin(t * math.pi) * self.h * 0.06
+            self._crash_pos = (
+                start_x + (earth_x - start_x) * eased,
+                start_y + (earth_y - start_y) * eased + arc,
+            )
+            # Shrink to ~12 % of original size as it reaches Earth.
+            self._crash_scale = 1.0 - 0.88 * eased
             # Tumbling: accelerating spin with a subtler wobble.
             self._ship_rot = -55.0 * t * t + math.sin(
                 self._total_t * 9.0,
             ) * 1.5
+            # Background zooms toward Earth simultaneously, telegraphing
+            # where the game is going next.
+            self._bg_zoom = 1.0 + (_BG_ZOOM_END - 1.0) * eased
             # Shake decays gradually instead of cutting off.
             self._shake = 22.0 * (1.0 - t) + 4.0
-            # Spawn debris particles intermittently.
+            # Spawn debris particles intermittently — from the ship's
+            # current world position, not the idle anchor.
             if self._rng.random() < dt * 18.0:
                 self._spawn_debris()
             self._update_debris(dt)
@@ -343,6 +385,10 @@ class IntroCutscene:
             # Smoothstep so the fade starts slow and settles slow.
             eased = t * t * (3 - 2 * t)
             self._fade_alpha = 255 * eased
+            # Continue easing the bg zoom from end-of-crash toward a
+            # final, slightly tighter framing on Earth so the camera
+            # feels like it's still pushing in as we cut to black.
+            self._bg_zoom = _BG_ZOOM_END + 0.6 * eased
             self._update_debris(dt)
             if self._phase_t >= _FADE_TIME:
                 self._fade_alpha = 255
@@ -355,10 +401,31 @@ class IntroCutscene:
         self._shake_smooth += (self._shake - self._shake_smooth) * a
 
     def draw(self, screen: pygame.Surface) -> None:
-        # Background — starfield + Earth.
+        # Background — starfield + Earth.  When ``_bg_zoom`` > 1 we
+        # crop a window around Earth and stretch it to the full screen
+        # so the camera appears to push in toward the planet.
         bg = sprites.get("cutscene/space_bg")
         if bg is not None:
-            screen.blit(bg.get(self.w, self.h), (0, 0))
+            full_bg = bg.get(self.w, self.h)
+            if self._bg_zoom > 1.001:
+                zoom = self._bg_zoom
+                src_w = max(1, int(self.w / zoom))
+                src_h = max(1, int(self.h / zoom))
+                # Centre the crop on Earth in the source image, then
+                # clamp so the window stays inside the bg surface.
+                ex = int(self.w * _EARTH_X_FRAC)
+                ey = int(self.h * _EARTH_Y_FRAC)
+                src_x = max(0, min(self.w - src_w, ex - src_w // 2))
+                src_y = max(0, min(self.h - src_h, ey - src_h // 2))
+                sub = full_bg.subsurface(
+                    pygame.Rect(src_x, src_y, src_w, src_h),
+                )
+                scaled = pygame.transform.smoothscale(
+                    sub, (self.w, self.h),
+                )
+                screen.blit(scaled, (0, 0))
+            else:
+                screen.blit(full_bg, (0, 0))
         else:
             screen.fill((6, 10, 22))
 
@@ -368,19 +435,27 @@ class IntroCutscene:
                     if ship_state == "damaged" else "cutscene/ship")
         ship = sprites.get(ship_key)
         if ship is not None:
-            sw = int(self.w * _SHIP_WIDTH_FRAC * self._ship_extra_scale)
-            sh = int(sw * 0.5)
+            base_sw = int(
+                self.w * _SHIP_WIDTH_FRAC * self._ship_extra_scale
+            )
+            # Apply crash shrink (1.0 outside crash phase).
+            sw = max(8, int(base_sw * self._crash_scale))
+            sh = max(4, int(sw * 0.5))
             ship_surf = ship.get(sw, sh)
             if abs(self._ship_rot) > 0.05:
                 ship_surf = pygame.transform.rotozoom(
                     ship_surf, self._ship_rot, 1.0,
                 )
-            cx = (
-                self.w // 2
-                + int(self.w * _SHIP_X_OFFSET_FRAC)
-                + int(self._ship_offset[0])
-            )
-            cy = int(self.h * 0.42) + int(self._ship_offset[1])
+            if self._crash_pos is not None:
+                cx = int(self._crash_pos[0])
+                cy = int(self._crash_pos[1])
+            else:
+                cx = (
+                    self.w // 2
+                    + int(self.w * _SHIP_X_OFFSET_FRAC)
+                    + int(self._ship_offset[0])
+                )
+                cy = int(self.h * 0.42) + int(self._ship_offset[1])
             if self._shake_smooth > 0.5:
                 amp = int(self._shake_smooth)
                 cx += self._rng.randint(-amp, amp)
@@ -480,12 +555,22 @@ class IntroCutscene:
     # ── Debris particles ─────────────────────────────────────────
 
     def _spawn_debris(self) -> None:
-        cx = self.w // 2 + int(self.w * _SHIP_X_OFFSET_FRAC) + int(
-            self._ship_offset[0],
+        # Use the live crash position when available so debris tracks
+        # the ship as it shrinks toward Earth.
+        if self._crash_pos is not None:
+            cx = int(self._crash_pos[0])
+            cy = int(self._crash_pos[1])
+        else:
+            cx = self.w // 2 + int(self.w * _SHIP_X_OFFSET_FRAC) + int(
+                self._ship_offset[0],
+            )
+            cy = int(self.h * 0.42) + int(self._ship_offset[1])
+        # Spread scales with the ship's current visual size so debris
+        # doesn't appear far away from the (now tiny) ship.
+        spread = max(
+            6,
+            int(self.w * _SHIP_WIDTH_FRAC * 0.35 * self._crash_scale),
         )
-        cy = int(self.h * 0.42) + int(self._ship_offset[1])
-        # Spawn from a small region around the ship centre.
-        spread = int(self.w * _SHIP_WIDTH_FRAC * 0.35)
         x = cx + self._rng.randint(-spread, spread)
         y = cy + self._rng.randint(-int(spread * 0.2), int(spread * 0.2))
         # Velocity: mostly outward & downward, with some upward kick.

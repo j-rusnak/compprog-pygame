@@ -518,6 +518,9 @@ class PriorityOverlayBase(Panel):
             tuple[pygame.Rect, int, int, Building]
         ] = []
         self._row_rects: list[tuple[pygame.Rect, int]] = []
+        # Tier-level drag (label is the handle).
+        self._tier_label_rects: list[tuple[pygame.Rect, int]] = []
+        self._drag_tier: int = -1
         self._empty_row_rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
         self._done_rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
         self._auto_rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
@@ -675,10 +678,13 @@ class PriorityOverlayBase(Panel):
         )
         self._card_rects = []
         self._row_rects = []
+        self._tier_label_rects = []
         y = area.y - self._scroll
 
         max_w = max(0, area.w - _OV_ROW_LABEL_W - _OV_ROW_GAP)
         for ti, tier in enumerate(tiers):
+            if ti == self._drag_tier:
+                continue
             rows: list[list[tuple[Building, int]]] = [[]]
             row_w = 0
             for b in tier:
@@ -715,6 +721,11 @@ class PriorityOverlayBase(Panel):
                 row_rect.x + 8,
                 row_rect.centery - label.get_height() // 2,
             ))
+            label_rect = pygame.Rect(
+                row_rect.x + 4, row_rect.y + 4,
+                _OV_ROW_LABEL_W - 8, row_rect.h - 8,
+            )
+            self._tier_label_rects.append((label_rect, ti))
             self._row_rects.append((row_rect, ti))
 
             ry = y
@@ -753,7 +764,32 @@ class PriorityOverlayBase(Panel):
         surface.set_clip(prev_clip)
 
         # Drag ghost.
-        if self._drag_building is not None and current_net is not None:
+        if self._drag_tier >= 0 and current_net is not None:
+            tiers_now = self.spec.get_tiers(current_net)
+            if 0 <= self._drag_tier < len(tiers_now):
+                _gx, gy = self._mouse_pos
+                _ox, oy = self._drag_offset
+                ghost_h = max(_CARD_H + _OV_ROW_PAD_Y * 2, 48)
+                ghost_rect = pygame.Rect(
+                    area.x, gy - oy, area.w, ghost_h,
+                )
+                gs = pygame.Surface(
+                    (ghost_rect.w, ghost_rect.h), pygame.SRCALPHA,
+                )
+                gs.fill((40, 60, 80, 200))
+                surface.blit(gs, ghost_rect.topleft)
+                pygame.draw.rect(
+                    surface, UI_ACCENT, ghost_rect,
+                    width=2, border_radius=4,
+                )
+                lbl = Fonts.body().render(
+                    f"Tier {self._drag_tier + 1}", True, UI_ACCENT,
+                )
+                surface.blit(lbl, (
+                    ghost_rect.x + 8,
+                    ghost_rect.centery - lbl.get_height() // 2,
+                ))
+        elif self._drag_building is not None and current_net is not None:
             resources = self.spec.get_resources(self._drag_building, world)
             cw = _measure_card_width(self._drag_building, resources)
             gx, gy = self._mouse_pos
@@ -856,6 +892,16 @@ class PriorityOverlayBase(Panel):
             if net is not None and self.spec.get_auto(net):
                 # No drag editing while auto is on.
                 return True
+            # Tier-label drag (whole tier reorder) takes precedence
+            # because labels sit to the left of cards.
+            for label_rect, ti in self._tier_label_rects:
+                if label_rect.collidepoint(event.pos):
+                    self._drag_tier = ti
+                    self._drag_offset = (
+                        event.pos[0] - label_rect.x,
+                        event.pos[1] - label_rect.y,
+                    )
+                    return True
             for rect, ti, ci, b in self._card_rects:
                 if rect.collidepoint(event.pos):
                     self._drag_building = b
@@ -870,7 +916,9 @@ class PriorityOverlayBase(Panel):
 
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
             self._mouse_pos = event.pos
-            if self._drag_building is not None:
+            if self._drag_tier >= 0:
+                self._drop_tier(event.pos)
+            elif self._drag_building is not None:
                 self._drop(event.pos)
             return True
         return False
@@ -879,6 +927,39 @@ class PriorityOverlayBase(Panel):
         self._drag_building = None
         self._drag_origin_tier = -1
         self._drag_origin_index = -1
+        self._drag_tier = -1
+
+    def _drop_tier(self, pos: tuple[int, int]) -> None:
+        """Reorder the dragged tier within the current network's
+        tier list based on the drop position."""
+        if self.world is None or self._drag_tier < 0:
+            return
+        net = self._current_network()
+        if net is None:
+            self._drag_tier = -1
+            return
+        tiers = self.spec.get_tiers(net)
+        src = self._drag_tier
+        if not (0 <= src < len(tiers)):
+            self._drag_tier = -1
+            return
+        target_ti: int | None = None
+        for rect, ti in self._row_rects:
+            if rect.collidepoint(pos):
+                target_ti = ti
+                break
+        if target_ti is None and self._empty_row_rect.collidepoint(pos):
+            target_ti = len(tiers)
+        if target_ti is None:
+            self._drag_tier = -1
+            return
+        moving = tiers.pop(src)
+        if target_ti > src:
+            target_ti -= 1
+        target_ti = max(0, min(len(tiers), target_ti))
+        tiers.insert(target_ti, moving)
+        self.spec.set_tiers(net, [t for t in tiers if t])
+        self._drag_tier = -1
 
     def _drop(self, pos: tuple[int, int]) -> None:
         if self.world is None or self._drag_building is None:

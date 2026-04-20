@@ -46,6 +46,32 @@ FLUID_CAPABLE_BUILDINGS: frozenset[BuildingType] = frozenset({
 })
 
 
+# Per-building map of which fluids each producer NATIVELY OUTPUTS.
+# Drives :func:`_is_fluid_producer` so the fluid balancer can drain
+# producers into sinks first instead of distributing evenly across the
+# whole network (which would silently destroy mass when a producer's
+# slot is smaller than the actual storage it drew from).
+_FLUID_PRODUCER_OUTPUTS: dict[BuildingType, frozenset] = {}
+
+
+def _is_fluid_producer(b: "Building", fluid) -> bool:
+    """Return True if *b* natively produces *fluid* as an output."""
+    # Lazy import-time wiring of the producer map (avoids forward refs).
+    if not _FLUID_PRODUCER_OUTPUTS:
+        from compprog_pygame.games.hex_colony.resources import Resource as _R
+        _FLUID_PRODUCER_OUTPUTS[BuildingType.OIL_DRILL] = frozenset({_R.OIL})
+        _FLUID_PRODUCER_OUTPUTS[BuildingType.OIL_REFINERY] = frozenset({
+            _R.PETROLEUM, _R.LUBRICANT,
+        })
+        _FLUID_PRODUCER_OUTPUTS[BuildingType.CHEMICAL_PLANT] = frozenset({
+            _R.ROCKET_FUEL, _R.LUBRICANT,
+        })
+    outs = _FLUID_PRODUCER_OUTPUTS.get(b.type)
+    if outs is None:
+        return False
+    return fluid in outs
+
+
 @dataclass
 class Network:
     """A path-connected group of buildings with an independent worker
@@ -655,36 +681,45 @@ class World:
         """Recompute :attr:`fluid_networks` from current PIPE tiles
         and adjacent fluid-capable buildings.
 
-        Two PIPE tiles belong to the same fluid network when they're
-        directly adjacent.  A fluid-capable building (drill, refinery,
-        chemical plant, tank, silo, etc.) joins the network of any
-        pipe that touches it.  Pipes are pure connectors and never
-        hold a stored resource.
+        BFS connectors are PIPE tiles AND FLUID_TANK tiles — placing
+        two tanks side-by-side forms an implicit pipe link between
+        them, so players don't need to slot a one-tile pipe to fuse
+        adjacent storage.  Other fluid-capable buildings (drill,
+        refinery, chemical plant, silo, etc.) join the network of any
+        connector that touches them, but do not themselves bridge.
         """
-        # Collect all pipes and a coord→building lookup.
+        # Collect all pipes/tanks and a coord→building lookup.
         all_buildings = self.buildings.buildings
         by_coord: dict[HexCoord, Building] = {b.coord: b for b in all_buildings}
-        pipes = [b for b in all_buildings if b.type == BuildingType.PIPE]
+        connector_types = (BuildingType.PIPE, BuildingType.FLUID_TANK)
+        connectors = [b for b in all_buildings if b.type in connector_types]
 
-        visited_pipes: set[int] = set()
+        visited_conn: set[int] = set()
         new_networks: list[FluidNetwork] = []
-        for seed in pipes:
-            if id(seed) in visited_pipes:
+        for seed in connectors:
+            if id(seed) in visited_conn:
                 continue
             comp_pipes: list[Building] = []
             comp_buildings_set: dict[int, Building] = {}
             queue: deque[Building] = deque([seed])
-            visited_pipes.add(id(seed))
+            visited_conn.add(id(seed))
+            # Tanks are both connectors AND members of the network
+            # (they hold fluid).  Pipes are pure connectors.
+            if seed.type != BuildingType.PIPE:
+                comp_buildings_set.setdefault(id(seed), seed)
             while queue:
-                pipe = queue.popleft()
-                comp_pipes.append(pipe)
-                for nb_coord in pipe.coord.neighbors():
+                node = queue.popleft()
+                if node.type == BuildingType.PIPE:
+                    comp_pipes.append(node)
+                for nb_coord in node.coord.neighbors():
                     nb = by_coord.get(nb_coord)
                     if nb is None:
                         continue
-                    if nb.type == BuildingType.PIPE:
-                        if id(nb) not in visited_pipes:
-                            visited_pipes.add(id(nb))
+                    if nb.type in connector_types:
+                        if id(nb) not in visited_conn:
+                            visited_conn.add(id(nb))
+                            if nb.type != BuildingType.PIPE:
+                                comp_buildings_set.setdefault(id(nb), nb)
                             queue.append(nb)
                     elif nb.type in FLUID_CAPABLE_BUILDINGS:
                         # Join, but do not BFS through buildings.
@@ -700,29 +735,33 @@ class World:
         self.fluid_networks = new_networks
 
     def _update_fluids(self, dt: float) -> None:
-        """Balance every fluid resource within each pipe network.
+        """Push fluid from producers toward sinks (consumers + tanks)
+        within each pipe network.
 
-        For each (network, fluid) pair: gather the total stored amount
-        held by member buildings, then redistribute it so that every
-        building in the network ends up holding the same fraction of
-        its per-fluid capacity (or as close as possible given total
-        supply).  This is conservative — total fluid in the network is
-        preserved, no rate limit is applied (pipes are assumed
-        instantaneous over a tick).
+        For each (network, fluid):
+          1. Identify producers (the building natively *outputs* this
+             fluid) and sinks (consumers and tanks).
+          2. Drain all producer storage into a shared pool, then fill
+             sinks evenly (proportional to their per-fluid capacity).
+          3. Any pool remainder flows back into producers, also
+             proportionally.  Producer per-fluid capacity is the full
+             ``storage_capacity`` so no fluid is destroyed.
 
-        Tanks accept any single fluid (their ``stored_resource``
-        selection); other buildings only participate for the fluids
-        they natively produce or consume.
+        This preserves total mass while giving consumers/tanks
+        priority over the producer's own buffer — a drill piped to a
+        tank empties into the tank rather than oscillating, and
+        oil produced when the tank is full simply backs up in the
+        drill (which then halts production via ``_storage_free``).
         """
         if not self.fluid_networks:
             return
         for net in self.fluid_networks:
             if not net.buildings:
                 continue
-            # For each fluid, collect (building, current, capacity).
             for fluid in FLUID_RESOURCES:
-                participants: list[tuple[Building, float, float]] = []
-                total = 0.0
+                producers: list[tuple[Building, float]] = []
+                sinks: list[tuple[Building, float]] = []
+                pool = 0.0
                 for b in net.buildings:
                     cap = self._fluid_capacity_for(b, fluid)
                     if cap <= 0:
@@ -730,17 +769,36 @@ class World:
                     cur = b.storage.get(fluid, 0.0)
                     if cur > cap:
                         cur = cap  # safety clamp
-                    participants.append((b, cur, cap))
-                    total += cur
-                if not participants:
+                    if _is_fluid_producer(b, fluid):
+                        producers.append((b, cap))
+                        pool += cur
+                    else:
+                        sinks.append((b, cap))
+                        pool += cur
+                if not producers and not sinks:
                     continue
-                total_cap = sum(c for _, _, c in participants)
-                if total_cap <= 0:
-                    continue
-                # Even-fill ratio across all participants.
-                target_ratio = min(1.0, total / total_cap)
-                for b, _cur, cap in participants:
-                    b.storage[fluid] = cap * target_ratio
+                # Fill sinks first (proportional to capacity).
+                sink_cap = sum(c for _, c in sinks)
+                if sinks and sink_cap > 0:
+                    take_for_sinks = min(pool, sink_cap)
+                    ratio = take_for_sinks / sink_cap
+                    for b, cap in sinks:
+                        b.storage[fluid] = cap * ratio
+                    pool -= take_for_sinks
+                else:
+                    # No sinks — clear any stale value just in case.
+                    for b, _ in sinks:
+                        b.storage[fluid] = 0.0
+                # Any leftover stays in producers (proportionally).
+                prod_cap = sum(c for _, c in producers)
+                if producers:
+                    if prod_cap > 0 and pool > 0:
+                        ratio = min(1.0, pool / prod_cap)
+                        for b, cap in producers:
+                            b.storage[fluid] = cap * ratio
+                    else:
+                        for b, _ in producers:
+                            b.storage[fluid] = 0.0
 
     def _fluid_capacity_for(
         self, b: Building, fluid: Resource,
@@ -751,7 +809,10 @@ class World:
         can receive a given fluid.  Capacity is dedicated per-fluid
         within the building's own ``storage_capacity``: a refinery can
         hold up to ~half its capacity in OIL plus half in PETROLEUM,
-        for instance.  Pipes have no capacity.
+        for instance.  Producers get the *full* capacity for their
+        output fluid so that drained-into-network values are never
+        truncated, which would silently destroy fluid mass.  Pipes
+        have no capacity.
         """
         if b.type == BuildingType.PIPE:
             return 0.0
@@ -766,20 +827,18 @@ class World:
             if b.stored_resource == fluid:
                 return float(b.storage_capacity)
             return 0.0
-        # Producers / consumers: each fluid they natively use gets a
-        # half-capacity slot.  Numbers chosen to be generous so a
-        # refinery can buffer some OIL while still holding output.
+        # Producer's own output fluid: full capacity (so the drill
+        # can buffer crude when the network is full instead of having
+        # it silently clipped away).
+        if _is_fluid_producer(b, fluid):
+            return float(b.storage_capacity)
+        # Consumers: each fluid they natively use gets a half-
+        # capacity slot.  Numbers chosen to be generous so a refinery
+        # can buffer some OIL while still holding its solid output.
         slot = b.storage_capacity * 0.5
-        if b.type == BuildingType.OIL_DRILL and fluid == Resource.OIL:
+        if b.type == BuildingType.OIL_REFINERY and fluid == Resource.OIL:
             return slot
-        if b.type == BuildingType.OIL_REFINERY and fluid in (
-            Resource.OIL, Resource.PETROLEUM, Resource.LUBRICANT,
-        ):
-            return slot
-        if b.type == BuildingType.CHEMICAL_PLANT and fluid in (
-            Resource.PETROLEUM, Resource.LUBRICANT,
-            Resource.ROCKET_FUEL,
-        ):
+        if b.type == BuildingType.CHEMICAL_PLANT and fluid == Resource.PETROLEUM:
             return slot
         if b.type == BuildingType.MINING_MACHINE and fluid == Resource.PETROLEUM:
             return slot
@@ -1846,14 +1905,15 @@ class World:
     ) -> list[tuple]:
         """Restrict the demand pool to the highest-priority tier *per
         resource* that has at least one buyer matching an available
-        supplier.
+        supplier — but *fall through* to lower tiers as soon as the
+        top tier's open need has already been claimed by in-flight
+        hauls.  This guarantees every demanding building eventually
+        gets served instead of being permanently shadowed by a higher
+        tier with permanent overdraw.
 
         Each entry in ``demands`` is ``(building, resource, need,
-        empty_frac)``.  Filtering happens per-resource so a high-tier
-        demand for resource X doesn't suppress a viable lower-tier
-        demand for resource Y when only Y is currently in supply.
-        When the network's demand_priority list is empty (e.g. a
-        brand-new colony) we return the input unchanged.
+        empty_frac)``.  When the network's demand_priority list is
+        empty (e.g. a brand-new colony) we return the input unchanged.
         """
         tiers = net.demand_priority
         if not tiers:
@@ -1868,9 +1928,41 @@ class World:
             by_res_tier.setdefault(d[1], {}).setdefault(ti, []).append(d)
         out: list[tuple] = []
         for r, by_tier in by_res_tier.items():
-            best_ti = min(by_tier)
-            out.extend(by_tier[best_ti])
+            sorted_tiers = sorted(by_tier)
+            top_ti = sorted_tiers[0]
+            top_demands = by_tier[top_ti]
+            # Net unmet need in the top tier (after subtracting
+            # already-en-route deliveries).  When the top tier's
+            # remaining need is zero, lower tiers may participate.
+            top_remaining = 0.0
+            for db, _r, dneed, _e in top_demands:
+                claimed = self._claimed_demand_for(db, r)
+                top_remaining += max(0.0, dneed - claimed)
+            out.extend(top_demands)
+            if top_remaining <= 1e-3:
+                # Top tier is fully claimed — let the next tiers join.
+                for ti in sorted_tiers[1:]:
+                    out.extend(by_tier[ti])
         return out if out else demands
+
+    def _claimed_demand_for(self, b: "Building", res) -> float:
+        """Total quantity of *res* already promised to building *b*
+        by in-flight hauls.  Mirrors the per-pickup ``claimed_demand``
+        accounting in :meth:`_logistics_find_job`."""
+        from compprog_pygame.games.hex_colony.people import Task as _T
+        carry_cap = params.LOGISTICS_CARRY_CAPACITY
+        total = 0.0
+        for p in self.population.people:
+            if not getattr(p, "is_logistics", False):
+                continue
+            if p.logistics_dst is not b or p.logistics_res != res:
+                continue
+            if p.task == _T.LOGISTICS_PICKUP:
+                total += carry_cap
+            elif p.task == _T.LOGISTICS_DELIVER:
+                amt = float(getattr(p, "logistics_amount", 0.0) or 0.0)
+                total += amt or carry_cap
+        return total
 
     def _filter_supplies_by_tier(
         self, net: "Network",
@@ -1882,22 +1974,39 @@ class World:
 
         Per-resource filtering avoids the failure mode where the top
         tier holds a useful resource A but suppresses lower-tier
-        suppliers of resource B that consumers also need.
+        suppliers of resource B that consumers also need.  When
+        outstanding demand for a resource exceeds what the top tier
+        alone can fulfil (after accounting for in-flight hauls),
+        lower tiers are folded back in so spare supply is not stranded.
         """
         tiers = net.supply_priority
         if not tiers:
             return supplies
-        demand_res = {d[1] for d in demands}
+        # Aggregate outstanding demand per-resource (after claims).
+        demand_remaining: dict[object, float] = {}
+        for db, dres, dneed, _de in demands:
+            claimed = self._claimed_demand_for(db, dres)
+            demand_remaining[dres] = (
+                demand_remaining.get(dres, 0.0) + max(0.0, dneed - claimed)
+            )
         by_res_tier: dict[object, dict[int, list[tuple]]] = {}
         for s in supplies:
-            if s[1] not in demand_res:
+            if s[1] not in demand_remaining:
                 continue
             ti = self._supply_tier_of(s[0], net)
             by_res_tier.setdefault(s[1], {}).setdefault(ti, []).append(s)
         out: list[tuple] = []
         for r, by_tier in by_res_tier.items():
-            best_ti = min(by_tier)
-            out.extend(by_tier[best_ti])
+            need = demand_remaining.get(r, 0.0)
+            for ti in sorted(by_tier):
+                tier_supply = by_tier[ti]
+                out.extend(tier_supply)
+                # Subtract this tier's offered amount; if demand is
+                # met, lower tiers stay out.
+                offered = sum(s[2] for s in tier_supply)
+                need -= offered
+                if need <= 1e-3:
+                    break
         return out if out else supplies
 
     # ── Population growth ────────────────────────────────────────
@@ -2819,45 +2928,58 @@ class World:
                 mm.active = False
                 continue
 
-            fuel_needed = params.MINING_MACHINE_FUEL_RATE * dt
             fuel_res: Resource | None = None
-            for fuel_name in params.MINING_MACHINE_FUELS:
+            for fuel_name in params.MINING_MACHINE_ORE_PER_FUEL:
                 candidate = Resource[fuel_name]
-                have_here = mm.storage.get(candidate, 0.0)
-                if have_here + self.inventory[candidate] >= fuel_needed:
+                # Strict on-site fuel: at least 1 unit of either fuel
+                # must be present in the machine's own storage before
+                # it begins working.  Logistics is responsible for
+                # delivering it; the global inventory is no longer a
+                # fallback.
+                if mm.storage.get(candidate, 0.0) >= 1.0:
                     fuel_res = candidate
                     break
             if fuel_res is None:
                 mm.active = False
                 continue
-            # Prefer on-site fuel (delivered by logistics).
-            on_site = mm.storage.get(fuel_res, 0.0)
-            from_local = min(on_site, fuel_needed)
-            if from_local > 0:
-                mm.storage[fuel_res] = on_site - from_local
-                if mm.storage[fuel_res] <= 1e-6:
-                    mm.storage.pop(fuel_res, None)
-            rem = fuel_needed - from_local
-            if rem > 0:
-                self.inventory.spend(fuel_res, rem)
             mm.active = True
 
+            # Discrete fuel burn: one unit of fuel produces a fixed
+            # amount of ore.  ``rate`` is the per-tick ore budget; we
+            # mine ore until the budget is exhausted, deducting
+            # fractional fuel from on-site storage as we go.
+            ore_per_unit = params.MINING_MACHINE_ORE_PER_FUEL[fuel_res.name]
             rate = params.MINING_MACHINE_RATE * dt
+            ore_mined_this_tick = 0.0
             for nb, ore in adjacent_ores:
                 if rate <= 0:
                     break
                 if self._storage_free(mm) <= 0:
                     break
+                # Cap by remaining fuel (in ore-equivalent units).
+                fuel_left = mm.storage.get(fuel_res, 0.0)
+                if fuel_left <= 0:
+                    break
+                ore_budget_from_fuel = fuel_left * ore_per_unit
                 tile = self.grid.get(nb)
                 if tile is None:
                     continue
                 take = min(rate, tile.resource_amount,
-                           self._storage_free(mm))
+                           self._storage_free(mm),
+                           ore_budget_from_fuel)
                 if take > 0:
                     tile.resource_amount -= take
                     self._produce(mm, ore, take)
                     rate -= take
+                    ore_mined_this_tick += take
                     self._maybe_deplete_tile(tile)
+            if ore_mined_this_tick > 0:
+                fuel_used = ore_mined_this_tick / ore_per_unit
+                remaining = mm.storage.get(fuel_res, 0.0) - fuel_used
+                if remaining <= 1e-6:
+                    mm.storage.pop(fuel_res, None)
+                else:
+                    mm.storage[fuel_res] = remaining
 
         # Oil drill: placed *on top of* an OIL_DEPOSIT tile.  No fuel
         # required — extracts OIL into its own storage at a fixed rate

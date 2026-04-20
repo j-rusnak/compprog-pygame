@@ -51,6 +51,7 @@ from compprog_pygame.games.hex_colony.ui_tier_popup import TierPopup
 from compprog_pygame.games.hex_colony.ui_info_guide import InfoGuideOverlay
 from compprog_pygame.games.hex_colony.ui_tutorial import TutorialPanel
 from compprog_pygame.games.hex_colony import params
+from compprog_pygame.games.hex_colony.perf_monitor import PerfMonitor
 from compprog_pygame.games.hex_colony.strings import (
     building_label,
     NOTIF_RESEARCH_COMPLETE,
@@ -134,7 +135,7 @@ class Game:
         self._path_preview_cache_key: tuple | None = None
         self._path_preview_cache_route: list = []
         self._hint_font = pygame.font.Font(None, 26)
-        self._sim_speed: float = 3.0  # 1x (=3), 2x (=6), 3x (=9)
+        self._sim_speed: float = 3.0  # 1x (=3), 2x (=6), 3x (=9), 10x (=30)
         self._real_time_elapsed: float = 0.0
         # Real-time seconds since the player most recently advanced a
         # tier. Used by the tutorial system for tier-timed hints.
@@ -187,6 +188,7 @@ class Game:
         self._worker_priority_tab = WorkerPriorityTabContent()
         self._worker_priority_tab.on_open_edit = self._on_open_worker_priority
         self._worker_priority_tab.on_toggle_auto = self._on_toggle_worker_auto
+        self._worker_priority_overlay.on_toggle_auto = self._on_toggle_worker_auto
         self._bottom_bar.add_tab(TAB_WORKERS, self._worker_priority_tab)
 
         # Demand-priority tab (opens its own drag-and-drop overlay).
@@ -257,6 +259,11 @@ class Game:
         self._game_over_overlay.on_return_to_menu = self._on_pause_return_to_menu
         self._game_over_overlay.on_quit = self._on_pause_quit
 
+        # Background performance monitor — instruments _tick phases
+        # and writes attributed spike records to a JSONL log from a
+        # daemon thread.  Disabled by setting HEX_COLONY_PERF=0.
+        self.perf = PerfMonitor(fps_target=self.settings.fps)
+
     # ── Public entry point ───────────────────────────────────────
 
     def run(self, screen: pygame.Surface, clock: pygame.time.Clock) -> None:
@@ -281,18 +288,25 @@ class Game:
         gc.freeze()
         gc.disable()
         gc_accum = 0.0
+        self.perf.start()
         try:
             while self.running:
                 dt = clock.tick(self.settings.fps) / 1000.0
                 dt = min(dt, 0.05)  # clamp large spikes
+                # Begin perf frame *after* clock.tick so the vsync /
+                # frame-cap wait isn't counted as a spike.
+                self.perf.frame_begin()
                 gc_accum += dt
                 if gc_accum >= 1.0:
                     # Cheap young-generation pass; older generations
                     # were frozen above so this stays tiny.
-                    gc.collect(0)
+                    with self.perf.section("gc"):
+                        gc.collect(0)
                     gc_accum = 0.0
                 self._tick(screen, clock, dt)
+                self.perf.frame_end()
         finally:
+            self.perf.stop()
             gc.unfreeze()
             gc.set_threshold(*prev_gc_thresholds)
             if prev_gc_enabled:
@@ -303,69 +317,79 @@ class Game:
     ) -> None:
         assert self.camera is not None
 
-        for event in pygame.event.get():
-            self._handle_event(event)
+        with self.perf.section("events"):
+            for event in pygame.event.get():
+                self._handle_event(event)
 
         if not self._pause_overlay.visible and not self.world.game_over:
-            self._update_keyboard_pan(dt)
-            self._update_alt_overlay()
-            self._update_ghost_building()
-            self.world.update(dt * self._sim_speed)
-            self.world.real_time_elapsed += dt
-            # Sample stats every frame regardless of whether the
-            # Stats tab is currently visible — the user wants
-            # historical data from t=0, not just from when they
-            # first opened the tab.
-            self._stats_tab.history.sample(self.world)
-            # Research progress
-            completed = self.tech_tree.update(dt * self._sim_speed, self.world)
-            if completed:
-                node = TECH_NODES[completed]
-                self.notifications.push(
-                    NOTIF_RESEARCH_COMPLETE.format(name=node.name), (100, 255, 100),
-                )
-            # Expose research count for tier checks
-            self.world._tech_research_count = self.tech_tree.researched_count
-            # Tier advancement
-            if self.tier_tracker.try_advance(self.world):
-                tier = TIERS[self.tier_tracker.current_tier]
-                next_tier = (
-                    TIERS[self.tier_tracker.current_tier + 1]
-                    if self.tier_tracker.current_tier + 1 < len(TIERS)
-                    else None
-                )
-                self._tier_popup.show(tier, next_tier)
-                self._time_in_current_tier = 0.0
-            else:
-                self._time_in_current_tier += dt
+            with self.perf.section("input_camera"):
+                self._update_keyboard_pan(dt)
+                self._update_alt_overlay()
+                self._update_ghost_building()
+            with self.perf.section("world_update"):
+                self.world.update(dt * self._sim_speed)
+                self.world.real_time_elapsed += dt
+            with self.perf.section("stats_sample"):
+                # Sample stats every frame regardless of whether the
+                # Stats tab is currently visible — the user wants
+                # historical data from t=0, not just from when they
+                # first opened the tab.
+                self._stats_tab.history.sample(self.world)
+            with self.perf.section("research_tier"):
+                # Research progress
+                completed = self.tech_tree.update(dt * self._sim_speed, self.world)
+                if completed:
+                    node = TECH_NODES[completed]
+                    self.notifications.push(
+                        NOTIF_RESEARCH_COMPLETE.format(name=node.name), (100, 255, 100),
+                    )
+                # Expose research count for tier checks
+                self.world._tech_research_count = self.tech_tree.researched_count
+                # Tier advancement
+                if self.tier_tracker.try_advance(self.world):
+                    tier = TIERS[self.tier_tracker.current_tier]
+                    next_tier = (
+                        TIERS[self.tier_tracker.current_tier + 1]
+                        if self.tier_tracker.current_tier + 1 < len(TIERS)
+                        else None
+                    )
+                    self._tier_popup.show(tier, next_tier)
+                    self._time_in_current_tier = 0.0
+                else:
+                    self._time_in_current_tier += dt
             self.notifications.update(dt)
             self._real_time_elapsed += dt
-            # Tutorial triggers
-            self._tutorial.check_triggers(self.world, {
-                "time": self.world.time_elapsed,
-                "real_time": self._real_time_elapsed,
-                "dt": dt,
-                "researched_count": self.tech_tree.researched_count,
-                "current_tier_level": self.tier_tracker.current_tier,
-                "time_in_tier": self._time_in_current_tier,
-            })
+            with self.perf.section("tutorial"):
+                # Tutorial triggers
+                self._tutorial.check_triggers(self.world, {
+                    "time": self.world.time_elapsed,
+                    "real_time": self._real_time_elapsed,
+                    "dt": dt,
+                    "researched_count": self.tech_tree.researched_count,
+                    "current_tier_level": self.tier_tracker.current_tier,
+                    "time_in_tier": self._time_in_current_tier,
+                })
         self.camera.update(dt)
         self._resource_bar.delete_mode = self.delete_mode
         self._resource_bar.sim_speed = self._sim_speed
         self._resource_bar.tier_tracker = self.tier_tracker
         self._resource_bar.tech_tree = self.tech_tree
         self._resource_bar.world = self.world
-        self.renderer.draw(screen, self.world, self.camera, dt=dt)
-        # Supply chain lines for selected building
-        draw_supply_lines(
-            screen, self.world, self.camera,
-            self.renderer.selected_hex, self.renderer._water_tick,
-            self.settings.hex_size,
-        )
-        self.ui.draw(screen, self.world)
-        self.notifications.draw(screen)
+        with self.perf.section("render_world"):
+            self.renderer.draw(screen, self.world, self.camera, dt=dt)
+        with self.perf.section("supply_lines"):
+            # Supply chain lines for selected building
+            draw_supply_lines(
+                screen, self.world, self.camera,
+                self.renderer.selected_hex, self.renderer._water_tick,
+                self.settings.hex_size,
+            )
+        with self.perf.section("ui_draw"):
+            self.ui.draw(screen, self.world)
+            self.notifications.draw(screen)
 
-        pygame.display.flip()
+        with self.perf.section("flip"):
+            pygame.display.flip()
 
     # ── Event handling ───────────────────────────────────────────
 
@@ -427,6 +451,8 @@ class Game:
                 self._sim_speed = 6.0
             elif event.key == pygame.K_3:
                 self._sim_speed = 9.0
+            elif event.key == pygame.K_5:
+                self._sim_speed = 30.0
             elif event.key == pygame.K_F1:
                 # Toggle god mode at runtime
                 self.god_mode = not self.god_mode

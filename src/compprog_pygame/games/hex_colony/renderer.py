@@ -106,7 +106,7 @@ from compprog_pygame.games.hex_colony.sprites import sprites
 sprites.load_all()
 
 # Building types that collect resources (show range ring)
-_COLLECTION_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER, BuildingType.REFINERY, BuildingType.MINING_MACHINE, BuildingType.OIL_DRILL}
+_COLLECTION_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER, BuildingType.MINING_MACHINE, BuildingType.OIL_DRILL}
 
 class Renderer:
     """Draws the entire game scene."""
@@ -123,6 +123,11 @@ class Renderer:
         self._overlays: list[OverlayItem] | None = None
         self._mountain_depths: dict[HexCoord, tuple[int, int]] = {}
         self._blended_colors: dict[HexCoord, tuple[int, int, int]] = {}
+        # First-pass blend results, kept so we can incrementally
+        # recompute the second smoothing pass for a small region of
+        # the grid (e.g. when a single tile depletes) without
+        # re-running the full O(N) blend over every tile.
+        self._first_pass_colors: dict[HexCoord, tuple[int, int, int]] = {}
 
         # Tile layer cache (tiles + static overlays, pre-rendered)
         self._tile_layer: pygame.Surface | None = None
@@ -158,6 +163,13 @@ class Renderer:
         # Ghost building surface cache (avoid per-frame allocation)
         self._ghost_cache: pygame.Surface | None = None
         self._ghost_cache_key: tuple | None = None
+
+        # Cached unreachable-marker glyph (font + pre-rendered "!"
+        # surfaces).  Re-rendered only when the zoom-bucket font size
+        # actually changes, instead of every frame.
+        self._unreach_font_size: int = -1
+        self._unreach_glyph: pygame.Surface | None = None
+        self._unreach_shadow: pygame.Surface | None = None
 
     @property
     def graphics_quality(self) -> str:
@@ -245,17 +257,22 @@ class Renderer:
             ]
         # Drain depleted-tile events from the simulation: strip stale
         # overlays (trees / stones / ore crystals) from the now-grass
-        # tile and force a blended-colour rebuild so the tile blends
-        # with surrounding grass / underlying terrain.
+        # tile and incrementally re-blend the affected region.  This
+        # used to nuke the entire blended-colour cache + tile_layer,
+        # which produced multi-second freezes on large worlds whenever
+        # any patch dried up.
         depleted = getattr(world, "pending_depleted_tiles", None)
         if depleted:
-            for coord in list(depleted):
-                self.remove_overlays_at(coord, world.settings.hex_size)
+            depleted_list = list(depleted)
             depleted.clear()
-            self._blended_colors = {}
-            self._edge_colors = {}
-            self._cross_cat = {}
-            self._tile_layer = None  # full rebuild on next frame
+            for coord in depleted_list:
+                self.remove_overlays_at(coord, world.settings.hex_size)
+            # Only valid if the initial full blend has already run.
+            if self._blended_colors:
+                affected = self._recompute_blends_around(depleted_list, world)
+                # Each affected tile needs to be repainted on the
+                # cached tile layer to pick up its new colour.
+                self._dirty_tiles.update(affected)
         self._ensure_blended_colors(world)
 
     def remove_overlays_at(self, coord: HexCoord, hex_size: int) -> None:
@@ -270,22 +287,7 @@ class Renderer:
         from math import isnan, nan
 
         # Build the per-coord index lazily.
-        if self._overlay_index is None:
-            self._overlay_index = {}
-            inv = 1.0 / max(1, hex_size)
-            from compprog_pygame.games.hex_colony.hex_grid import pixel_to_hex
-            for lst in (self._static_overlays, self._ripples):
-                for item in lst:
-                    if isnan(item.wx):
-                        continue
-                    c = pixel_to_hex(item.wx, item.wy, hex_size)
-                    key = (c.q, c.r)
-                    bucket = self._overlay_index.get(key)
-                    if bucket is None:
-                        self._overlay_index[key] = [item]
-                    else:
-                        bucket.append(item)
-            _ = inv  # silence unused
+        self._build_overlay_index_if_needed(hex_size)
 
         key = (coord.q, coord.r)
         bucket = self._overlay_index.pop(key, None)
@@ -310,6 +312,33 @@ class Renderer:
         # next natural cache rebuild.
         self._dirty_tiles.add(coord)
 
+    def _build_overlay_index_if_needed(self, hex_size: int) -> None:
+        """Populate ``_overlay_index`` from the flat overlay lists.
+
+        Keyed by ``(q, r)`` of the hex each overlay falls on.  Built
+        once and then maintained incrementally by ``remove_overlays_at``.
+        Used by both depletion removal and per-tile patching so the
+        renderer never has to iterate the full ~30k-entry flat list
+        per dirty hex.
+        """
+        if self._overlay_index is not None:
+            return
+        from math import isnan
+        from compprog_pygame.games.hex_colony.hex_grid import pixel_to_hex
+        index: dict[tuple[int, int], list] = {}
+        for lst in (self._static_overlays, self._ripples):
+            for item in lst:
+                if isnan(item.wx):
+                    continue
+                c = pixel_to_hex(item.wx, item.wy, hex_size)
+                key = (c.q, c.r)
+                bucket = index.get(key)
+                if bucket is None:
+                    index[key] = [item]
+                else:
+                    bucket.append(item)
+        self._overlay_index = index
+
     def invalidate_tile(self, coord: HexCoord) -> None:
         """Mark a single hex as needing redraw on the tile layer."""
         self._dirty_tiles.add(coord)
@@ -326,150 +355,209 @@ class Renderer:
 
     # ── Blended tile colours (two-pass smoothing) ────────────────
 
+    def _tile_base_color(
+        self, tile, mtn: dict[HexCoord, tuple[int, int]],
+    ) -> tuple[int, int, int]:
+        """Per-tile base colour (mountain shading or terrain palette)
+        with a deterministic per-tile colour jitter."""
+        coord = tile.coord
+        mtn_info = mtn.get(coord)
+        if mtn_info is not None:
+            base = mountain_tile_color(*mtn_info)
+        elif tile.underlying_terrain is not None:
+            base = TERRAIN_BASE_COLOR.get(tile.underlying_terrain, (80, 80, 80))
+        else:
+            base = TERRAIN_BASE_COLOR.get(tile.terrain, (80, 80, 80))
+        th = _tile_hash(coord.q, coord.r)
+        var = ((th & 0xFF) - 128) / 128.0 * 6  # ±6 per channel
+        return (
+            max(0, min(255, int(base[0] + var))),
+            max(0, min(255, int(base[1] + var * 0.8))),
+            max(0, min(255, int(base[2] + var * 0.6))),
+        )
+
+    def _compute_first_pass(self, coord: HexCoord, world: World) -> None:
+        """Recompute the first-pass blend for one tile."""
+        grid = world.grid
+        mtn = self._mountain_depths
+        tile = grid.get(coord)
+        if tile is None:
+            self._first_pass_colors.pop(coord, None)
+            return
+        base = self._tile_base_color(tile, mtn)
+        my_cat = _TERRAIN_CAT.get(
+            tile.underlying_terrain if tile.underlying_terrain is not None else tile.terrain, 0
+        )
+        nb_r = nb_g = nb_b = 0
+        nb_count = 0
+        is_water_adjacent = False
+        for nb_coord in coord.neighbors():
+            nb_tile = grid.get(nb_coord)
+            if nb_tile is None:
+                continue
+            nb_cat = _TERRAIN_CAT.get(
+                nb_tile.underlying_terrain if nb_tile.underlying_terrain is not None else nb_tile.terrain, 0
+            )
+            if my_cat != nb_cat:
+                if nb_cat == 1 and my_cat != 1:
+                    is_water_adjacent = True
+                continue
+            nb_mtn = mtn.get(nb_coord)
+            if nb_mtn is not None:
+                nc = mountain_tile_color(*nb_mtn)
+            elif nb_tile.underlying_terrain is not None:
+                nc = TERRAIN_BASE_COLOR.get(nb_tile.underlying_terrain, (80, 80, 80))
+            else:
+                nc = TERRAIN_BASE_COLOR.get(nb_tile.terrain, (80, 80, 80))
+            nb_r += nc[0]; nb_g += nc[1]; nb_b += nc[2]
+            nb_count += 1
+        if nb_count > 0:
+            avg = (nb_r / nb_count, nb_g / nb_count, nb_b / nb_count)
+            s = _BLEND_STRENGTH
+            blended = (
+                int(base[0] * (1 - s) + avg[0] * s),
+                int(base[1] * (1 - s) + avg[1] * s),
+                int(base[2] * (1 - s) + avg[2] * s),
+            )
+        else:
+            blended = base
+        if is_water_adjacent:
+            th = _tile_hash(coord.q, coord.r)
+            bk = 0.2 + ((th >> 10) & 0xF) / 15.0 * 0.15  # 0.20–0.35
+            blended = (
+                int(blended[0] * (1 - bk) + _BANK_COLOR[0] * bk),
+                int(blended[1] * (1 - bk) + _BANK_COLOR[1] * bk),
+                int(blended[2] * (1 - bk) + _BANK_COLOR[2] * bk),
+            )
+        self._first_pass_colors[coord] = blended
+
+    def _compute_second_pass(self, coord: HexCoord, world: World) -> None:
+        """Recompute the second smoothing pass for one tile."""
+        grid = world.grid
+        first_pass = self._first_pass_colors
+        tile = grid.get(coord)
+        if tile is None or coord not in first_pass:
+            self._blended_colors.pop(coord, None)
+            return
+        base = first_pass[coord]
+        my_cat = _TERRAIN_CAT.get(
+            tile.underlying_terrain if tile.underlying_terrain is not None else tile.terrain, 0
+        )
+        _SMOOTH2 = 0.30
+        nb_r = nb_g = nb_b = 0
+        nb_count = 0
+        for nb_coord in coord.neighbors():
+            nb_c = first_pass.get(nb_coord)
+            if nb_c is None:
+                continue
+            nb_tile = grid.get(nb_coord)
+            if nb_tile is not None and _TERRAIN_CAT.get(
+                nb_tile.underlying_terrain if nb_tile.underlying_terrain is not None else nb_tile.terrain, 0
+            ) != my_cat:
+                continue
+            nb_r += nb_c[0]; nb_g += nb_c[1]; nb_b += nb_c[2]
+            nb_count += 1
+        if nb_count > 0:
+            avg = (nb_r / nb_count, nb_g / nb_count, nb_b / nb_count)
+            self._blended_colors[coord] = (
+                int(base[0] * (1 - _SMOOTH2) + avg[0] * _SMOOTH2),
+                int(base[1] * (1 - _SMOOTH2) + avg[1] * _SMOOTH2),
+                int(base[2] * (1 - _SMOOTH2) + avg[2] * _SMOOTH2),
+            )
+        else:
+            self._blended_colors[coord] = base
+
+    def _compute_edge_colors(self, coord: HexCoord, world: World) -> None:
+        """Recompute the per-edge gradient colours for one tile."""
+        grid = world.grid
+        bc = self._blended_colors
+        tile = grid.get(coord)
+        cc = bc.get(coord)
+        if tile is None or cc is None:
+            self._edge_colors.pop(coord, None)
+            self._cross_cat.pop(coord, None)
+            return
+        my_cat = _TERRAIN_CAT.get(
+            tile.underlying_terrain if tile.underlying_terrain is not None else tile.terrain, 0
+        )
+        eb = _EDGE_BLEND
+        eb1 = 1.0 - eb
+        edge_cols: list[tuple[int, int, int]] = []
+        cross_flags: list[int] = []
+        for nb_coord in coord.neighbors():
+            nc = bc.get(nb_coord)
+            if nc is not None:
+                nb_tile = grid.get(nb_coord)
+                nb_cat = _TERRAIN_CAT.get(
+                    (nb_tile.underlying_terrain if nb_tile.underlying_terrain is not None else nb_tile.terrain) if nb_tile else None, my_cat
+                )
+                if my_cat != nb_cat:
+                    edge_cols.append(cc)
+                    cross_flags.append(2)
+                else:
+                    edge_cols.append((
+                        int(cc[0] * eb1 + nc[0] * eb),
+                        int(cc[1] * eb1 + nc[1] * eb),
+                        int(cc[2] * eb1 + nc[2] * eb),
+                    ))
+                    cross_flags.append(0)
+            else:
+                edge_cols.append(cc)
+                cross_flags.append(0)
+        self._edge_colors[coord] = edge_cols
+        self._cross_cat[coord] = cross_flags
+
+    def _recompute_blends_around(
+        self, coords: set[HexCoord] | list[HexCoord], world: World,
+    ) -> set[HexCoord]:
+        """Incrementally update blended colours around a small region.
+
+        Used when individual tiles deplete (resource patch ran out and
+        the terrain reverted to grass).  Recomputes:
+          * first-pass blends for the changed tiles + ring-1 neighbours
+            (their first-pass averages used the changed tiles)
+          * second-pass blends for the changed tiles + ring-2 neighbours
+            (their second-pass averages used the ring-1 first-pass)
+          * edge colours for the same ring-2 set
+
+        Returns the set of tiles that need a tile-layer redraw.
+        """
+        ring1: set[HexCoord] = set()
+        for c in coords:
+            ring1.add(c)
+            for n in c.neighbors():
+                ring1.add(n)
+        ring2: set[HexCoord] = set()
+        for c in ring1:
+            ring2.add(c)
+            for n in c.neighbors():
+                ring2.add(n)
+        for c in ring1:
+            self._compute_first_pass(c, world)
+        for c in ring2:
+            self._compute_second_pass(c, world)
+            self._compute_edge_colors(c, world)
+        return ring2
+
     def _ensure_blended_colors(self, world: World) -> None:
-        """Pre-compute blended tile colours with two-pass smoothing."""
+        """Pre-compute blended tile colours with two-pass smoothing.
+
+        This is the full O(N) initial build; incremental updates after
+        tile depletion go through :meth:`_recompute_blends_around`.
+        """
         if self._blended_colors:
             return
         grid = world.grid
-        mtn = self._mountain_depths
 
         # ── First pass: base blending with neighbours ────────────
-        first_pass: dict[HexCoord, tuple[int, int, int]] = {}
         for tile in grid.tiles():
-            coord = tile.coord
-            mtn_info = mtn.get(coord)
-            if mtn_info is not None:
-                base = mountain_tile_color(*mtn_info)
-            elif tile.underlying_terrain is not None:
-                # Ore veins: show the underlying terrain colour as the base
-                base = TERRAIN_BASE_COLOR.get(tile.underlying_terrain, (80, 80, 80))
-            else:
-                base = TERRAIN_BASE_COLOR.get(tile.terrain, (80, 80, 80))
-
-            th = _tile_hash(coord.q, coord.r)
-            var = ((th & 0xFF) - 128) / 128.0 * 6  # ±6 per channel
-            base = (
-                max(0, min(255, int(base[0] + var))),
-                max(0, min(255, int(base[1] + var * 0.8))),
-                max(0, min(255, int(base[2] + var * 0.6))),
-            )
-
-            nb_r, nb_g, nb_b = 0, 0, 0
-            nb_count = 0
-            is_water_adjacent = False
-            my_cat = _TERRAIN_CAT.get(
-                tile.underlying_terrain if tile.underlying_terrain is not None else tile.terrain, 0
-            )
-            for nb_coord in coord.neighbors():
-                nb_tile = grid.get(nb_coord)
-                if nb_tile is None:
-                    continue
-                nb_cat = _TERRAIN_CAT.get(
-                    nb_tile.underlying_terrain if nb_tile.underlying_terrain is not None else nb_tile.terrain, 0
-                )
-                # Hard category border: only blend within same category
-                if my_cat != nb_cat:
-                    if nb_cat == 1 and my_cat != 1:
-                        is_water_adjacent = True
-                    continue
-                nb_mtn = mtn.get(nb_coord)
-                if nb_mtn is not None:
-                    nc = mountain_tile_color(*nb_mtn)
-                elif nb_tile.underlying_terrain is not None:
-                    nc = TERRAIN_BASE_COLOR.get(nb_tile.underlying_terrain, (80, 80, 80))
-                else:
-                    nc = TERRAIN_BASE_COLOR.get(nb_tile.terrain, (80, 80, 80))
-                nb_r += nc[0]; nb_g += nc[1]; nb_b += nc[2]
-                nb_count += 1
-
-            if nb_count > 0:
-                avg = (nb_r / nb_count, nb_g / nb_count, nb_b / nb_count)
-                s = _BLEND_STRENGTH
-                blended = (
-                    int(base[0] * (1 - s) + avg[0] * s),
-                    int(base[1] * (1 - s) + avg[1] * s),
-                    int(base[2] * (1 - s) + avg[2] * s),
-                )
-            else:
-                blended = base
-
-            if is_water_adjacent:
-                bk = 0.2 + ((th >> 10) & 0xF) / 15.0 * 0.15  # 0.20–0.35
-                blended = (
-                    int(blended[0] * (1 - bk) + _BANK_COLOR[0] * bk),
-                    int(blended[1] * (1 - bk) + _BANK_COLOR[1] * bk),
-                    int(blended[2] * (1 - bk) + _BANK_COLOR[2] * bk),
-                )
-
-            first_pass[coord] = blended
-
+            self._compute_first_pass(tile.coord, world)
         # ── Second pass: smooth first-pass colours across neighbours
-        _SMOOTH2 = 0.30
         for tile in grid.tiles():
-            coord = tile.coord
-            base = first_pass[coord]
-            my_cat = _TERRAIN_CAT.get(
-                tile.underlying_terrain if tile.underlying_terrain is not None else tile.terrain, 0
-            )
-            nb_r, nb_g, nb_b = 0, 0, 0
-            nb_count = 0
-            for nb_coord in coord.neighbors():
-                nb_c = first_pass.get(nb_coord)
-                if nb_c is None:
-                    continue
-                # Hard category border in second pass too
-                nb_tile = grid.get(nb_coord)
-                if nb_tile is not None and _TERRAIN_CAT.get(
-                    nb_tile.underlying_terrain if nb_tile.underlying_terrain is not None else nb_tile.terrain, 0
-                ) != my_cat:
-                    continue
-                nb_r += nb_c[0]; nb_g += nb_c[1]; nb_b += nb_c[2]
-                nb_count += 1
-            if nb_count > 0:
-                avg = (nb_r / nb_count, nb_g / nb_count, nb_b / nb_count)
-                self._blended_colors[coord] = (
-                    int(base[0] * (1 - _SMOOTH2) + avg[0] * _SMOOTH2),
-                    int(base[1] * (1 - _SMOOTH2) + avg[1] * _SMOOTH2),
-                    int(base[2] * (1 - _SMOOTH2) + avg[2] * _SMOOTH2),
-                )
-            else:
-                self._blended_colors[coord] = base
-
+            self._compute_second_pass(tile.coord, world)
         # ── Precompute per-edge colours for intra-tile gradients ──
-        bc = self._blended_colors
-        eb = _EDGE_BLEND
-        eb1 = 1.0 - eb
         for tile in grid.tiles():
-            coord = tile.coord
-            cc = bc[coord]
-            my_cat = _TERRAIN_CAT.get(
-                tile.underlying_terrain if tile.underlying_terrain is not None else tile.terrain, 0
-            )
-            edge_cols: list[tuple[int, int, int]] = []
-            cross_flags: list[int] = []  # 0=same, 2=cross-cat (own colour)
-            for nb_coord in coord.neighbors():
-                nc = bc.get(nb_coord)
-                if nc is not None:
-                    nb_tile = grid.get(nb_coord)
-                    nb_cat = _TERRAIN_CAT.get(
-                        (nb_tile.underlying_terrain if nb_tile.underlying_terrain is not None else nb_tile.terrain) if nb_tile else None, my_cat
-                    )
-                    if my_cat != nb_cat:
-                        edge_cols.append(cc)
-                        cross_flags.append(2)
-                    else:
-                        edge_cols.append((
-                            int(cc[0] * eb1 + nc[0] * eb),
-                            int(cc[1] * eb1 + nc[1] * eb),
-                            int(cc[2] * eb1 + nc[2] * eb),
-                        ))
-                        cross_flags.append(0)
-                else:
-                    edge_cols.append(cc)
-                    cross_flags.append(0)
-
-            self._edge_colors[coord] = edge_cols
-            self._cross_cat[coord] = cross_flags
+            self._compute_edge_colors(tile.coord, world)
 
     # ── Tile-layer cache ─────────────────────────────────────────
 
@@ -585,84 +673,92 @@ class Renderer:
         lod_mid = not lod_high and zoom >= 0.25 and self._graphics_quality != "low"
         lod_low = self._graphics_quality == "low"
 
-        # Spatial culling: iterate only hex coords within cache bounds
-        half_world_w = half_cw / zoom + size * 2
-        half_world_h = half_ch / zoom + size * 2
+        # Frustum bounds in world coords (cache-sized, with one-tile margin).
+        # Iterate the sparse tile dict directly — for a radius-80 world
+        # this is ~22k tiles vs. the up to 100k+ (q,r) coords the old
+        # bounding-rect double loop walked when zoomed out.  Avoids the
+        # multi-second freezes that triggered the catastrophic
+        # render_world spikes in the perf log.
+        margin_world = size * 2
+        min_wx = cam_x - half_cw / zoom - margin_world
+        max_wx = cam_x + half_cw / zoom + margin_world
+        min_wy = cam_y - half_ch / zoom - margin_world
+        max_wy = cam_y + half_ch / zoom + margin_world
 
-        r_lo = int((cam_y - half_world_h) / (1.5 * size)) - 1
-        r_hi = int((cam_y + half_world_h) / (1.5 * size)) + 1
+        for tile in grid.tiles():
+            coord = tile.coord
+            wx, wy = self._get_pixel(coord, size)
+            if wx < min_wx or wx > max_wx or wy < min_wy or wy > max_wy:
+                continue
 
-        for r in range(r_lo, r_hi + 1):
-            q_lo = int((cam_x - half_world_w) / (size * _SQRT3) - r * 0.5) - 1
-            q_hi = int((cam_x + half_world_w) / (size * _SQRT3) - r * 0.5) + 1
-            for q in range(q_lo, q_hi + 1):
-                coord = HexCoord(q, r)
-                tile = grid.get(coord)
-                if tile is None:
-                    continue
+            corners_world = self._get_corners(coord, wx, wy, size)
+            corners = [
+                ((cx - cam_x) * zoom + half_cw,
+                 (cy - cam_y) * zoom + half_ch)
+                for cx, cy in corners_world
+            ]
 
-                wx, wy = self._get_pixel(coord, size)
-                corners_world = self._get_corners(coord, wx, wy, size)
-                corners = [
-                    ((cx - cam_x) * zoom + half_cw,
-                     (cy - cam_y) * zoom + half_ch)
-                    for cx, cy in corners_world
-                ]
+            corners_world = self._get_corners(coord, wx, wy, size)
+            corners = [
+                ((cx - cam_x) * zoom + half_cw,
+                 (cy - cam_y) * zoom + half_ch)
+                for cx, cy in corners_world
+            ]
 
-                base = blended.get(coord, (80, 80, 80))
+            base = blended.get(coord, (80, 80, 80))
 
-                if lod_low:
-                    # Low quality: flat terrain base colour, no blending
-                    flat = TERRAIN_BASE_COLOR.get(tile.terrain, (80, 80, 80))
-                    draw_poly(cache, flat, corners)
-                elif lod_high:
-                    # Intra-tile rendering: 6 wedges (center→corner→corner).
-                    # Same-category: 4-triangle gradient.
-                    # Cross-category yield: midpoint boundary (smooth line).
-                    # Cross-category dominate/keep: full wedge own colour.
-                    ecols = edge_colors.get(coord)
-                    xcat = cross_cat.get(coord)
-                    if ecols is not None and xcat is not None:
-                        cxs = (corners[0][0] + corners[1][0] + corners[2][0]
-                               + corners[3][0] + corners[4][0] + corners[5][0]) / 6.0
-                        cys = (corners[0][1] + corners[1][1] + corners[2][1]
-                               + corners[3][1] + corners[4][1] + corners[5][1]) / 6.0
-                        for d in range(6):
-                            i1 = DIR_EDGE[d][0]
-                            i2 = DIR_EDGE[d][1]
-                            ax, ay = corners[i1]
-                            bx, by = corners[i2]
-                            xf = xcat[d]
-                            if xf == 2:
-                                # Cross-category: entire wedge in own colour
-                                draw_poly(cache, base,
-                                          [(cxs, cys), (ax, ay), (bx, by)])
-                            else:
-                                # Same category: 4-triangle gradient
-                                ec = ecols[d]
-                                mca = ((cxs + ax) * 0.5, (cys + ay) * 0.5)
-                                mcb = ((cxs + bx) * 0.5, (cys + by) * 0.5)
-                                mab = ((ax + bx) * 0.5, (ay + by) * 0.5)
-                                mc = ((base[0] + ec[0]) >> 1,
-                                      (base[1] + ec[1]) >> 1,
-                                      (base[2] + ec[2]) >> 1)
-                                draw_poly(cache, base, [(cxs, cys), mca, mcb])
-                                draw_poly(cache, ec, [mca, (ax, ay), mab])
-                                draw_poly(cache, ec, [mcb, mab, (bx, by)])
-                                draw_poly(cache, mc, [mca, mab, mcb])
-                    else:
-                        draw_poly(cache, base, corners)
+            if lod_low:
+                # Low quality: flat terrain base colour, no blending
+                flat = TERRAIN_BASE_COLOR.get(tile.terrain, (80, 80, 80))
+                draw_poly(cache, flat, corners)
+            elif lod_high:
+                # Intra-tile rendering: 6 wedges (center→corner→corner).
+                # Same-category: 4-triangle gradient.
+                # Cross-category yield: midpoint boundary (smooth line).
+                # Cross-category dominate/keep: full wedge own colour.
+                ecols = edge_colors.get(coord)
+                xcat = cross_cat.get(coord)
+                if ecols is not None and xcat is not None:
+                    cxs = (corners[0][0] + corners[1][0] + corners[2][0]
+                           + corners[3][0] + corners[4][0] + corners[5][0]) / 6.0
+                    cys = (corners[0][1] + corners[1][1] + corners[2][1]
+                           + corners[3][1] + corners[4][1] + corners[5][1]) / 6.0
+                    for d in range(6):
+                        i1 = DIR_EDGE[d][0]
+                        i2 = DIR_EDGE[d][1]
+                        ax, ay = corners[i1]
+                        bx, by = corners[i2]
+                        xf = xcat[d]
+                        if xf == 2:
+                            # Cross-category: entire wedge in own colour
+                            draw_poly(cache, base,
+                                      [(cxs, cys), (ax, ay), (bx, by)])
+                        else:
+                            # Same category: 4-triangle gradient
+                            ec = ecols[d]
+                            mca = ((cxs + ax) * 0.5, (cys + ay) * 0.5)
+                            mcb = ((cxs + bx) * 0.5, (cys + by) * 0.5)
+                            mab = ((ax + bx) * 0.5, (ay + by) * 0.5)
+                            mc = ((base[0] + ec[0]) >> 1,
+                                  (base[1] + ec[1]) >> 1,
+                                  (base[2] + ec[2]) >> 1)
+                            draw_poly(cache, base, [(cxs, cys), mca, mcb])
+                            draw_poly(cache, ec, [mca, (ax, ay), mab])
+                            draw_poly(cache, ec, [mcb, mab, (bx, by)])
+                            draw_poly(cache, mc, [mca, mab, mcb])
                 else:
                     draw_poly(cache, base, corners)
+            else:
+                draw_poly(cache, base, corners)
 
-                # Mountain ridge spurs (skip at low quality and very low zoom)
-                if (lod_high or lod_mid) and not lod_low:
-                    mtn_info = mtn.get(coord)
-                    if mtn_info is not None and mtn_info[0] > 0:
-                        draw_contours(
-                            cache, coord, mtn_info[0], corners,
-                            base, mtn, zoom,
-                        )
+            # Mountain ridge spurs (skip at low quality and very low zoom)
+            if (lod_high or lod_mid) and not lod_low:
+                mtn_info = mtn.get(coord)
+                if mtn_info is not None and mtn_info[0] > 0:
+                    draw_contours(
+                        cache, coord, mtn_info[0], corners,
+                        base, mtn, zoom,
+                    )
 
         # Static overlays (skip on low quality or when zoom < 0.25)
         if (lod_high or lod_mid) and not lod_low:
@@ -772,11 +868,22 @@ class Renderer:
                         base, mtn, zoom,
                     )
 
-            # Re-draw any remaining overlays that overlap this hex
+            # Re-draw any remaining overlays that overlap this hex.
+            # Uses the per-coord overlay index (own coord + 6
+            # neighbours) so this is O(items in 7 hexes) instead of
+            # O(total overlay count) per dirty tile.  This was the
+            # dominant cost in resource-depletion frame spikes.
             if (lod_high or lod_mid) and not lod_low:
+                self._build_overlay_index_if_needed(hex_size)
                 patch_r2 = (hex_size * 1.5) ** 2
                 iz = max(1, int(zoom))
-                for item in self._static_overlays:
+                index = self._overlay_index
+                # Iterate the central tile then its 6 neighbours.
+                _candidates: list = []
+                _candidates.extend(index.get((coord.q, coord.r), ()))
+                for nb in coord.neighbors():
+                    _candidates.extend(index.get((nb.q, nb.r), ()))
+                for item in _candidates:
                     iwx = item.wx
                     if iwx != iwx:  # NaN — removed
                         continue
@@ -859,9 +966,11 @@ class Renderer:
                         and nb_building.type not in _IMPLICIT_PATH_SKIP):
                     buildings_needing_path.add(building.coord)
                     break
-        for building in world.buildings.buildings:
-            if building.type not in _PATH_TYPES:
-                continue
+        path_buildings = (
+            world.buildings.by_type(BuildingType.PATH)
+            + world.buildings.by_type(BuildingType.BRIDGE)
+        )
+        for building in path_buildings:
             wx, wy = self._get_pixel(building.coord, size)
             sx = (wx - cam_x) * zoom + half_sw
             sy = (wy - cam_y) * zoom + half_sh
@@ -890,9 +999,7 @@ class Renderer:
                           building.coord.q, building.coord.r)
 
         # Walls pass: walls connect only to other walls
-        for building in world.buildings.buildings:
-            if building.type != BuildingType.WALL:
-                continue
+        for building in world.buildings.by_type(BuildingType.WALL):
             wx, wy = self._get_pixel(building.coord, size)
             sx = (wx - cam_x) * zoom + half_sw
             sy = (wy - cam_y) * zoom + half_sh
@@ -918,9 +1025,7 @@ class Renderer:
         from compprog_pygame.games.hex_colony.world import (
             FLUID_CAPABLE_BUILDINGS,
         )
-        for building in world.buildings.buildings:
-            if building.type != BuildingType.PIPE:
-                continue
+        for building in world.buildings.by_type(BuildingType.PIPE):
             wx, wy = self._get_pixel(building.coord, size)
             sx = (wx - cam_x) * zoom + half_sw
             sy = (wy - cam_y) * zoom + half_sh
@@ -1134,9 +1239,16 @@ class Renderer:
         sw, sh = surface.get_size()
         half_sw, half_sh = sw * 0.5, sh * 0.5
         size = world.settings.hex_size
-        glyph_font = pygame.font.Font(None, max(20, int(32 * zoom)))
-        glyph = glyph_font.render("!", True, (255, 80, 80))
-        shadow = glyph_font.render("!", True, (60, 0, 0))
+        font_size = max(20, int(32 * zoom))
+        if font_size != self._unreach_font_size or self._unreach_glyph is None:
+            font = pygame.font.Font(None, font_size)
+            self._unreach_glyph = font.render("!", True, (255, 80, 80))
+            self._unreach_shadow = font.render("!", True, (60, 0, 0))
+            self._unreach_font_size = font_size
+        glyph = self._unreach_glyph
+        shadow = self._unreach_shadow
+        gw, gh = glyph.get_width(), glyph.get_height()
+        sw_g, sh_g = shadow.get_width(), shadow.get_height()
         for b in world.buildings.buildings:
             if id(b) not in ids:
                 continue
@@ -1158,13 +1270,11 @@ class Renderer:
             )
             surface.blit(
                 shadow,
-                (int(sx) - shadow.get_width() // 2 + 1,
-                 int(sy) - shadow.get_height() // 2 + 1),
+                (int(sx) - sw_g // 2 + 1, int(sy) - sh_g // 2 + 1),
             )
             surface.blit(
                 glyph,
-                (int(sx) - glyph.get_width() // 2,
-                 int(sy) - glyph.get_height() // 2),
+                (int(sx) - gw // 2, int(sy) - gh // 2),
             )
 
     def _draw_hex_highlight(
@@ -1259,6 +1369,7 @@ class Renderer:
             Terrain.WATER:         (50, 100, 200, 40),
             Terrain.IRON_VEIN:     (180, 110, 75, 70),
             Terrain.COPPER_VEIN:   (80, 180, 120, 70),
+            Terrain.OIL_DEPOSIT:   (0, 0, 0, 150),
         }
         _BUILDING_OVERLAY: dict[str, tuple[int, int, int, int]] = {
             "resource": (220, 160, 50, 70),

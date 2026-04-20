@@ -315,14 +315,20 @@ class WorkerPriorityTabContent(TabContent):
 
 _OVERLAY_TITLE_H = 44
 _OVERLAY_PAD = 20
-_ROW_H = 64          # one tier row
+_ROW_H = 64          # one tier row (minimum height)
 _ROW_LABEL_W = 70
 _ROW_V_GAP = 8
 _OV_CARD_W = 132
 _OV_CARD_H = 48
 _OV_CARD_GAP = 8
+_OV_CARD_GAP_Y = 6   # vertical gap between wrapped card rows
 _DONE_BTN_W = 110
 _DONE_BTN_H = 32
+_OV_AUTO_W = 110     # worker-overlay Auto button width
+_GREEN: tuple[int, int, int] = (60, 145, 75)
+_GREEN_HI: tuple[int, int, int] = (75, 175, 90)
+_RED: tuple[int, int, int] = (165, 70, 70)
+_RED_HI: tuple[int, int, int] = (200, 90, 90)
 _EMPTY_ROW_HINT = "Drop here to create a new tier"
 
 
@@ -333,19 +339,27 @@ class WorkerPriorityOverlay(Panel):
         super().__init__()
         self.visible: bool = False
         self.world: "World | None" = None
-        # Active drag state.
+        # Active drag state.  Either a card OR a whole tier is being
+        # dragged at any given time.
         self._drag_building: Building | None = None
         self._drag_mouse_offset: tuple[int, int] = (0, 0)
         self._drag_origin_tier: int = -1
         self._drag_origin_index: int = -1
+        # Tier-drag: when set to a tier index, dragging the row label
+        # moves the whole tier (including all its cards) to a new
+        # vertical position in the priority list.
+        self._drag_tier: int = -1
         self._mouse_pos: tuple[int, int] = (0, 0)
         # Hit-test rects (rebuilt every draw).
         self._card_rects: list[
             tuple[pygame.Rect, int, int, Building]
         ] = []  # (rect, tier_idx, card_idx, building)
         self._row_rects: list[tuple[pygame.Rect, int]] = []  # (rect, tier_idx)
+        # Per-tier label rect (drag handle for tier-level reorder).
+        self._tier_label_rects: list[tuple[pygame.Rect, int]] = []
         self._empty_row_rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
         self._done_rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
+        self._auto_rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
         self._scroll: int = 0
         # Per-network tab bar state.
         self._selected_net_id: int | None = None
@@ -353,6 +367,11 @@ class WorkerPriorityOverlay(Panel):
         # Logistics +/- buttons for the currently displayed network.
         self._log_minus_rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
         self._log_plus_rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
+        # Callback for the in-overlay Auto button.  Wired by
+        # ``Game.__init__`` to ``_on_toggle_worker_auto`` so toggling
+        # auto here behaves identically to toggling it from the
+        # bottom-bar tab.
+        self.on_toggle_auto: "callable | None" = None
 
     def _current_network(self) -> "Network | None":
         if self.world is None or not self.world.networks:
@@ -429,6 +448,35 @@ class WorkerPriorityOverlay(Panel):
             self._done_rect.centery - done_label.get_height() // 2,
         ))
 
+        # Auto on/off toggle (mirrors the bottom-bar button so the
+        # user doesn't have to close the overlay to flip auto mode).
+        current_net = self._current_network()
+        self._auto_rect = pygame.Rect(
+            self._done_rect.left - _OV_AUTO_W - 8,
+            title_rect.centery - _DONE_BTN_H // 2,
+            _OV_AUTO_W, _DONE_BTN_H,
+        )
+        if current_net is not None:
+            on = current_net.worker_auto
+            label = "Auto: ON" if on else "Auto: OFF"
+            base = _GREEN if on else _RED
+            hi = _GREEN_HI if on else _RED_HI
+            hov = self._auto_rect.collidepoint(self._mouse_pos)
+            ab = pygame.Surface(
+                (self._auto_rect.w, self._auto_rect.h), pygame.SRCALPHA,
+            )
+            ab.fill((*(hi if hov else base), 235))
+            surface.blit(ab, self._auto_rect.topleft)
+            pygame.draw.rect(
+                surface, UI_BORDER, self._auto_rect,
+                width=2, border_radius=4,
+            )
+            txt = Fonts.body().render(label, True, UI_TEXT)
+            surface.blit(txt, (
+                self._auto_rect.centerx - txt.get_width() // 2,
+                self._auto_rect.centery - txt.get_height() // 2,
+            ))
+
         # Scrollable tier area.
         area = pygame.Rect(
             self.rect.x + _OVERLAY_PAD,
@@ -441,7 +489,6 @@ class WorkerPriorityOverlay(Panel):
         # Network tab strip just inside the area (only shown if more
         # than one network exists).
         self._net_tab_rects = []
-        current_net = self._current_network()
         tabs_h = 0
         if len(world.networks) > 1:
             tabs_rect = pygame.Rect(area.x, area.y, area.w, 28)
@@ -458,6 +505,7 @@ class WorkerPriorityOverlay(Panel):
         tiers = current_net.priority if current_net is not None else []
         self._card_rects = []
         self._row_rects = []
+        self._tier_label_rects = []
 
         y = area.y - self._scroll
 
@@ -471,10 +519,14 @@ class WorkerPriorityOverlay(Panel):
             self._log_plus_rect = pygame.Rect(0, 0, 0, 0)
 
         for ti, tier in enumerate(tiers):
-            row_rect = pygame.Rect(area.x, y, area.w, _ROW_H)
+            # Skip drawing the tier we're dragging in its original slot.
+            if ti == self._drag_tier:
+                continue
+            row_h = self._tier_row_height(tier, area.w)
+            row_rect = pygame.Rect(area.x, y, area.w, row_h)
             self._draw_row(surface, row_rect, tier, ti)
             self._row_rects.append((row_rect, ti))
-            y += _ROW_H + _ROW_V_GAP
+            y += row_h + _ROW_V_GAP
 
         # Always-present empty row at the bottom for "create new tier".
         empty_rect = pygame.Rect(area.x, y, area.w, _ROW_H)
@@ -484,7 +536,33 @@ class WorkerPriorityOverlay(Panel):
         surface.set_clip(prev_clip)
 
         # Drag ghost on top of everything.
-        if self._drag_building is not None:
+        if self._drag_tier >= 0 and current_net is not None:
+            tiers_now = current_net.priority
+            if 0 <= self._drag_tier < len(tiers_now):
+                tier = tiers_now[self._drag_tier]
+                row_h = self._tier_row_height(tier, area.w)
+                gx, gy = self._mouse_pos
+                ox, oy = self._drag_mouse_offset
+                ghost_rect = pygame.Rect(
+                    area.x, gy - oy, area.w, row_h,
+                )
+                ghost_surf = pygame.Surface(
+                    (ghost_rect.w, ghost_rect.h), pygame.SRCALPHA,
+                )
+                ghost_surf.fill((40, 60, 80, 200))
+                surface.blit(ghost_surf, ghost_rect.topleft)
+                pygame.draw.rect(
+                    surface, UI_ACCENT, ghost_rect,
+                    width=2, border_radius=4,
+                )
+                lbl = Fonts.body().render(
+                    f"Tier {self._drag_tier + 1}", True, UI_ACCENT,
+                )
+                surface.blit(lbl, (
+                    ghost_rect.x + 8,
+                    ghost_rect.y + 6,
+                ))
+        elif self._drag_building is not None:
             gx, gy = self._mouse_pos
             ox, oy = self._drag_mouse_offset
             ghost_rect = pygame.Rect(
@@ -523,6 +601,21 @@ class WorkerPriorityOverlay(Panel):
             self._net_tab_rects.append((tab_rect, n.id))
             x += tab_w + 6
 
+    def _tier_row_height(
+        self, tier: list[Building], row_w: int,
+    ) -> int:
+        """Compute the vertical height needed for *tier* given the
+        wrap width.  The row contains an integer number of card rows
+        with vertical gaps between them."""
+        max_cards_w = max(1, row_w - _ROW_LABEL_W - 8)
+        per_card = _OV_CARD_W + _OV_CARD_GAP
+        n = max(1, len(tier))
+        per_row = max(1, (max_cards_w + _OV_CARD_GAP) // per_card)
+        rows = (n + per_row - 1) // per_row
+        rows = max(1, rows)
+        cards_h = rows * _OV_CARD_H + (rows - 1) * _OV_CARD_GAP_Y
+        return max(_ROW_H, cards_h + 16)  # +pad above and below
+
     def _draw_row(
         self, surface: pygame.Surface, rect: pygame.Rect,
         tier: list[Building], tier_idx: int,
@@ -532,26 +625,45 @@ class WorkerPriorityOverlay(Panel):
         surface.blit(bg, rect.topleft)
         pygame.draw.rect(surface, UI_BORDER, rect, width=1, border_radius=4)
 
+        # Tier label is also the drag handle for tier reorder.
         label = Fonts.body().render(
             f"Tier {tier_idx + 1}", True, UI_ACCENT,
         )
+        label_rect = pygame.Rect(
+            rect.x + 4, rect.y + 4, _ROW_LABEL_W - 8, rect.h - 8,
+        )
         surface.blit(label, (
-            rect.x + 8, rect.centery - label.get_height() // 2,
+            label_rect.x + 4,
+            label_rect.y + 4,
         ))
+        # Faint grip dots beneath the label hint that it's draggable.
+        for i in range(3):
+            pygame.draw.circle(
+                surface, UI_MUTED,
+                (label_rect.x + 8 + i * 6, label_rect.y + label.get_height() + 12),
+                2,
+            )
+        self._tier_label_rects.append((label_rect, tier_idx))
 
-        x = rect.x + _ROW_LABEL_W
-        cy = rect.centery - _OV_CARD_H // 2
-        for ci, b in enumerate(tier):
+        # Wrap cards into multiple rows so they don't overflow.
+        max_cards_w = max(1, rect.w - _ROW_LABEL_W - 8)
+        per_card = _OV_CARD_W + _OV_CARD_GAP
+        per_row = max(1, (max_cards_w + _OV_CARD_GAP) // per_card)
+
+        cy = rect.y + 8
+        for i, b in enumerate(tier):
+            col = i % per_row
+            row = i // per_row
+            x = rect.x + _ROW_LABEL_W + col * per_card
+            y = cy + row * (_OV_CARD_H + _OV_CARD_GAP_Y)
             # Skip drawing the card we're dragging in its original slot.
             if (b is self._drag_building
                     and tier_idx == self._drag_origin_tier
-                    and ci == self._drag_origin_index):
-                x += _OV_CARD_W + _OV_CARD_GAP
+                    and i == self._drag_origin_index):
                 continue
-            card_rect = pygame.Rect(x, cy, _OV_CARD_W, _OV_CARD_H)
+            card_rect = pygame.Rect(x, y, _OV_CARD_W, _OV_CARD_H)
             _draw_building_card(surface, card_rect, b)
-            self._card_rects.append((card_rect, tier_idx, ci, b))
-            x += _OV_CARD_W + _OV_CARD_GAP
+            self._card_rects.append((card_rect, tier_idx, i, b))
 
     def _draw_empty_row(
         self, surface: pygame.Surface, rect: pygame.Rect,
@@ -668,6 +780,12 @@ class WorkerPriorityOverlay(Panel):
                 self.visible = False
                 return True
             net = self._current_network()
+            # Auto on/off button — always active so the player can flip
+            # auto without leaving the overlay.
+            if net is not None and self._auto_rect.collidepoint(event.pos):
+                if self.on_toggle_auto is not None:
+                    self.on_toggle_auto(self._selected_net_id)
+                return True
             is_auto = net is not None and net.worker_auto
             # Logistics +/- buttons (disabled in auto mode).
             if net is not None and not is_auto:
@@ -685,6 +803,17 @@ class WorkerPriorityOverlay(Panel):
                     return True
             # Start drag if mouse is over a card (disabled in auto mode).
             if not is_auto:
+                # Tier-label drag (whole tier reorder) takes precedence
+                # over card drag because the label is on the left side
+                # of the row, separate from card hit boxes.
+                for label_rect, ti in self._tier_label_rects:
+                    if label_rect.collidepoint(event.pos):
+                        self._drag_tier = ti
+                        self._drag_mouse_offset = (
+                            event.pos[0] - label_rect.x,
+                            event.pos[1] - label_rect.y,
+                        )
+                        return True
                 for rect, ti, ci, b in self._card_rects:
                     if rect.collidepoint(event.pos):
                         self._drag_building = b
@@ -699,7 +828,9 @@ class WorkerPriorityOverlay(Panel):
 
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
             self._mouse_pos = event.pos
-            if self._drag_building is not None:
+            if self._drag_tier >= 0:
+                self._drop_tier(event.pos)
+            elif self._drag_building is not None:
                 self._drop(event.pos)
             return True
         return False
@@ -710,6 +841,45 @@ class WorkerPriorityOverlay(Panel):
         self._drag_building = None
         self._drag_origin_tier = -1
         self._drag_origin_index = -1
+        self._drag_tier = -1
+
+    def _drop_tier(self, pos: tuple[int, int]) -> None:
+        """Drop the tier currently being dragged at *pos* — reorder
+        the network's priority list so the dragged tier moves before
+        whatever row the cursor is over.  Drop on the empty row to
+        move the tier to the bottom; drop outside any row to cancel."""
+        if self.world is None or self._drag_tier < 0:
+            return
+        net = self._current_network()
+        if net is None:
+            self._drag_tier = -1
+            return
+        tiers = net.priority
+        src = self._drag_tier
+        if not (0 <= src < len(tiers)):
+            self._drag_tier = -1
+            return
+
+        target_ti: int | None = None
+        for rect, ti in self._row_rects:
+            if rect.collidepoint(pos):
+                target_ti = ti
+                break
+        if target_ti is None and self._empty_row_rect.collidepoint(pos):
+            target_ti = len(tiers)  # move to the end
+        if target_ti is None:
+            self._drag_tier = -1
+            return
+
+        moving = tiers.pop(src)
+        # Account for index shift when removing from before target.
+        if target_ti > src:
+            target_ti -= 1
+        target_ti = max(0, min(len(tiers), target_ti))
+        tiers.insert(target_ti, moving)
+        # Drop empties just in case.
+        net.priority = [t for t in tiers if t]
+        self._drag_tier = -1
 
     def _drop(self, pos: tuple[int, int]) -> None:
         if self.world is None or self._drag_building is None:

@@ -58,7 +58,7 @@ PERSON_SPEED: float = 60.0  # pixels per second
 
 BUILDING_COST_CAMP: dict[str, int] = {}
 BUILDING_COST_HOUSE: dict[str, int] = {"WOOD": 12, "FIBER": 4}
-BUILDING_COST_HABITAT: dict[str, int] = {"WOOD": 12, "STONE": 10, "FIBER": 4, "IRON_BAR": 1}
+BUILDING_COST_HABITAT: dict[str, int] = {"WOOD": 12, "STONE": 10, "FIBER": 4, "IRON_BAR": 2}
 BUILDING_COST_PATH: dict[str, int] = {"STONE": 1, "WOOD": 1}
 BUILDING_COST_BRIDGE: dict[str, int] = {"PLANKS": 4}
 BUILDING_COST_WOODCUTTER: dict[str, int] = {"WOOD": 10, "STONE": 5}
@@ -128,7 +128,7 @@ BUILDING_MAX_WORKERS_FLUID_TANK: int = 0
 # Housing capacity (number of people that can live here; 0 = not a dwelling)
 BUILDING_HOUSING_CAMP: int = 10
 BUILDING_HOUSING_HOUSE: int = 5
-BUILDING_HOUSING_HABITAT: int = 6
+BUILDING_HOUSING_HABITAT: int = 8
 BUILDING_HOUSING_PATH: int = 0
 BUILDING_HOUSING_BRIDGE: int = 0
 BUILDING_HOUSING_WOODCUTTER: int = 0
@@ -233,20 +233,29 @@ DELETE_REFUND_FRACTION: float = 0.5
 REFINERY_RATE: float = 0.3  # units per second per worker (faster than raw gathering)
 
 # Mining machine: fuel-powered automated ore miner for iron/copper veins.
-# Consumes a small amount of CHARCOAL per second while active.  Faster
-# than a worker-staffed refinery but stops entirely when out of fuel.
+# Burns one unit of fuel from its on-site storage to mine a fixed amount
+# of ore.  CHARCOAL: 40 ore per unit; PETROLEUM: 100 ore per unit.
+# The machine refuses to start until at least one unit of fuel is on
+# site (logistics must deliver it — the global inventory is no longer a
+# fallback).
 MINING_MACHINE_RATE: float = 1.2  # ore per second (machine, not per worker)
-MINING_MACHINE_FUEL_RATE: float = 0.08  # CHARCOAL per second while active
+# Discrete ore-per-fuel-unit ratios.  Order matters: when both fuels are
+# on site the first listed is preferred (charcoal is the early-game
+# fuel; petroleum is the late-game upgrade).
+MINING_MACHINE_ORE_PER_FUEL: dict[str, float] = {
+    "CHARCOAL": 40.0,
+    "PETROLEUM": 100.0,
+}
+# Kept for backwards-compatibility with older code paths that still ask
+# for the rate-based fuel data (e.g. tooltip generation).
+MINING_MACHINE_FUEL_RATE: float = MINING_MACHINE_RATE / MINING_MACHINE_ORE_PER_FUEL["CHARCOAL"]
+MINING_MACHINE_FUELS: dict[str, float] = {
+    name: MINING_MACHINE_ORE_PER_FUEL[name] / MINING_MACHINE_ORE_PER_FUEL["CHARCOAL"]
+    for name in MINING_MACHINE_ORE_PER_FUEL
+}
 # Oil drill: placed directly on an OIL_DEPOSIT tile.  No fuel needed —
 # extracts crude OIL straight into its own storage at a steady rate.
 OIL_DRILL_RATE: float = 0.6  # crude oil per second
-# Acceptable fuel resources (name -> energy multiplier).  Currently only
-# CHARCOAL is implemented; additional fuels (coal, oil) will be added
-# later and plugged in here.
-MINING_MACHINE_FUELS: dict[str, float] = {
-    "CHARCOAL": 1.0,
-    "PETROLEUM": 2.5,  # cleaner-burning, lasts 2.5x longer per unit
-}
 
 # Farm: produces food per second per worker (no terrain requirement)
 FARM_FOOD_RATE: float = 0.8
