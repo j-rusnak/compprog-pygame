@@ -61,6 +61,10 @@ _BUILD_INTERVAL: float = 4.0
 _RESEARCH_INTERVAL: float = 6.0
 # Sim-seconds between workshop-recipe-pick attempts.
 _RECIPE_INTERVAL: float = 8.0
+# Minimum sim-seconds a recipe must stay set before the AI is allowed
+# to change it again.  Prevents thrashing where a station's recipe
+# flips every 8 s based on shifting demand and never makes progress.
+_RECIPE_STICKY_TIME: float = 60.0
 # Sim-seconds between building audits (demolish misplaced buildings).
 _AUDIT_INTERVAL: float = 15.0
 
@@ -130,6 +134,77 @@ def _rng_for(world_seed: str, faction_id: str) -> random.Random:
     return random.Random(int(h, 16))
 
 
+_TECH_DEPTH_CACHE: dict[str, int] = {}
+
+
+def _tech_depth(key: str) -> int:
+    """Length of the longest prerequisite chain ending at *key*.
+
+    Memoised across calls.  Roots (no prereqs) return 0.  Used by the
+    AI's research scorer to bias toward foundational nodes — players
+    naturally do early-tier research first because the deeper nodes
+    are visually further out, and we want clankers to feel similar.
+    """
+    cached = _TECH_DEPTH_CACHE.get(key)
+    if cached is not None:
+        return cached
+    node = TECH_NODES.get(key)
+    if node is None or not node.prerequisites:
+        _TECH_DEPTH_CACHE[key] = 0
+        return 0
+    depth = 1 + max(_tech_depth(p) for p in node.prerequisites)
+    _TECH_DEPTH_CACHE[key] = depth
+    return depth
+
+
+# ── Goal-chain planner tables ────────────────────────────────────
+#
+# For each raw resource, what placeable building(s) can produce it,
+# and what attribute configuration (if any) must be set on that
+# building?  Used by :meth:`Clanker._goal_chain` to back-chain from
+# a high-level goal (e.g., "build HABITAT") all the way to "need a
+# QUARRY configured for IRON" or "need a MINING_MACHINE near an
+# IRON_VEIN", so the AI can reason about missing infrastructure
+# rather than only missing materials.
+#
+# Each producer is ``(building_type, required_output_resource_or_None)``.
+# ``None`` means the default/auto output (e.g., QUARRY with no
+# ``quarry_output`` mines STONE; GATHERER's default is FOOD when
+# ``gatherer_output`` is unset, but we still mark it explicitly).
+_RAW_PRODUCERS: dict[
+    "Resource",
+    tuple[tuple[BuildingType, "Resource | None"], ...],
+] = {}
+
+
+def _build_raw_producers() -> None:
+    """Lazily populated on first call to ``_goal_chain`` — done this
+    way so the module can stay cheap to import (Resource enum is
+    already imported, but we centralise the table construction).
+    """
+    if _RAW_PRODUCERS:
+        return
+    _RAW_PRODUCERS.update({
+        Resource.WOOD: ((BuildingType.WOODCUTTER, None),),
+        Resource.FIBER: ((BuildingType.GATHERER, Resource.FIBER),),
+        Resource.STONE: ((BuildingType.QUARRY, None),),
+        Resource.FOOD: (
+            (BuildingType.FARM, None),
+            (BuildingType.GATHERER, Resource.FOOD),
+        ),
+        Resource.IRON: (
+            (BuildingType.MINING_MACHINE, None),
+            (BuildingType.QUARRY, Resource.IRON),
+        ),
+        Resource.COPPER: (
+            (BuildingType.MINING_MACHINE, None),
+            (BuildingType.QUARRY, Resource.COPPER),
+        ),
+        Resource.OIL: ((BuildingType.OIL_DRILL, None),),
+    })
+
+
+
 @dataclass
 class Clanker:
     """A single AI rival colony — see module docstring."""
@@ -143,6 +218,17 @@ class Clanker:
     audit_timer: float = 0.0
     _owned_cache: list[HexCoord] = field(default_factory=list)
     _was_staffing_bound: bool = False
+    # Per-station sim-time when its recipe was last set/changed by
+    # this clanker, keyed by ``(q, r)``.  Used to enforce
+    # :data:`_RECIPE_STICKY_TIME` so stations don't oscillate.
+    _recipe_set_at: dict[tuple[int, int], float] = field(
+        default_factory=dict,
+    )
+    # Populated by :meth:`_pick_building_to_place` each build tick
+    # and consumed by :meth:`_set_recipes` so the recipe scheduler
+    # can weight the current goal's dependency chain above ambient
+    # top-up demand.  Resets to empty when no goal is active.
+    _goal_demand: dict[Resource, float] = field(default_factory=dict)
     # Recent decisions, surfaced via the player's "Possess" panel so
     # the player can see *why* the AI is doing what it does.  Stored
     # as ``(sim_time, message)`` tuples, capped to the most recent
@@ -175,6 +261,7 @@ class Clanker:
             self._try_start_research(world)
         if self.recipe_timer >= _RECIPE_INTERVAL:
             self.recipe_timer = 0.0
+            self._reconfigure_producers(world)
             self._set_recipes(world)
 
     # ── Helpers ──────────────────────────────────────────────────
@@ -214,6 +301,92 @@ class Clanker:
             and getattr(b, "faction", "SURVIVOR") == self.faction_id
         )
 
+    def _has_input_supply(
+        self, world: World, btype: BuildingType,
+    ) -> bool:
+        """Does the colony have a realistic source for *btype*'s
+        typical inputs?  Used to gate placement of crafting stations
+        that otherwise end up with no materials to work on \u2014 e.g.
+        FORGEs built before any IRON-mining QUARRY exists just sit
+        idle trying to smelt iron bars with zero iron on hand.
+
+        Conservative: WORKSHOP is never gated (it accepts wood/stone
+        which any colony has).  For stations that consume specific
+        intermediates we require at least one producer of a relevant
+        raw material *or* enough pre-existing stock to bootstrap.
+        """
+        # WORKSHOP / research buildings don't need gating.
+        if btype in (
+            BuildingType.WORKSHOP, BuildingType.RESEARCH_CENTER,
+            BuildingType.STORAGE, BuildingType.HABITAT,
+            BuildingType.WELL, BuildingType.FARM,
+            BuildingType.GATHERER, BuildingType.WOODCUTTER,
+            BuildingType.QUARRY, BuildingType.MINING_MACHINE,
+            BuildingType.OIL_DRILL,
+        ):
+            return True
+
+        def _have_producer(res: Resource) -> bool:
+            return (
+                self._count_producer_matching(world, res) > 0
+                or self._stock(world, res) >= 10.0
+            )
+
+        if btype == BuildingType.FORGE:
+            # Needs some metal ore \u2014 iron or copper \u2014 available.
+            return (
+                _have_producer(Resource.IRON)
+                or _have_producer(Resource.COPPER)
+            )
+        if btype in (
+            BuildingType.REFINERY, BuildingType.ASSEMBLER,
+        ):
+            # Refineries and assemblers need metal bars, which in
+            # turn need a forge plus metal ore.
+            return (
+                self._count_building(world, BuildingType.FORGE) > 0
+                and (
+                    _have_producer(Resource.IRON)
+                    or _have_producer(Resource.COPPER)
+                )
+            )
+        if btype in (
+            BuildingType.CHEMICAL_PLANT, BuildingType.OIL_REFINERY,
+        ):
+            return _have_producer(Resource.OIL)
+        return True
+
+    def _count_producer_matching(
+        self, world: World, res: Resource,
+    ) -> int:
+        """Count buildings belonging to this faction currently set to
+        produce *res* (via quarry_output / gatherer_output / default).
+        Mirrors the closure inside :meth:`_goal_chain` but exposed as
+        a method so :meth:`_has_input_supply` can reuse it.
+        """
+        _build_raw_producers()
+        n = 0
+        for btype, required_output in _RAW_PRODUCERS.get(res, ()):
+            for b in world.buildings.buildings:
+                if b.type != btype:
+                    continue
+                if getattr(b, "faction", "SURVIVOR") != self.faction_id:
+                    continue
+                if btype == BuildingType.QUARRY:
+                    cur = getattr(b, "quarry_output", None)
+                    want = required_output  # may be None (STONE)
+                    if cur == want:
+                        n += 1
+                elif btype == BuildingType.GATHERER:
+                    cur = (getattr(b, "gatherer_output", None)
+                           or Resource.FOOD)
+                    want = required_output or Resource.FOOD
+                    if cur == want:
+                        n += 1
+                else:
+                    n += 1
+        return n
+
     def _staffing_state(
         self, world: World,
     ) -> tuple[int, int, int, int]:
@@ -248,6 +421,339 @@ class Clanker:
             workers_assigned += getattr(b, "workers", 0)
         return my_pop, housing_cap, worker_demand, workers_assigned
 
+    # ── Long-term goal reasoning ─────────────────────────────────
+
+    def _pick_goal_building(
+        self, world: World, my_pop: int, my_cap: int,
+        worker_demand: int,
+    ) -> BuildingType | None:
+        """Pick the single highest-priority building the colony
+        really wants *right now*, independent of whether we have
+        one pre-crafted.
+
+        This is the root of the goal chain.  :meth:`_goal_chain`
+        back-chains from this to figure out which stations, raw
+        producers, and materials need to exist so the colony can
+        actually deliver the goal (rather than giving up the moment
+        ``_can_pay_for`` fails and silently doing nothing).
+        """
+        # Housing pressure mirrors the logic in
+        # :meth:`_pick_building_to_place` so the goal chain and the
+        # immediate placement priority stay aligned.
+        if self._is_unlocked(BuildingType.HABITAT):
+            housing_pressure = (
+                my_pop >= my_cap - 1
+                or (worker_demand > my_pop and my_cap <= my_pop)
+            )
+            if housing_pressure:
+                return BuildingType.HABITAT
+
+        # Need a research centre to make progress through the tree.
+        if (self._is_unlocked(BuildingType.RESEARCH_CENTER)
+                and not self._has_building(
+                    world, BuildingType.RESEARCH_CENTER)):
+            return BuildingType.RESEARCH_CENTER
+
+        # Food security.
+        if (self._stock(world, Resource.FOOD) < 30
+                and self._is_unlocked(BuildingType.FARM)):
+            return BuildingType.FARM
+
+        # Missing any basic crafting station is a goal in itself.
+        for btype in (
+            BuildingType.WORKSHOP, BuildingType.FORGE,
+            BuildingType.REFINERY, BuildingType.ASSEMBLER,
+        ):
+            if (self._is_unlocked(btype)
+                    and not self._has_building(world, btype)):
+                return btype
+
+        # Otherwise, chase tier goals: the tier-up resource shopping
+        # list, expressed as "build whichever producer unlocks the
+        # most-short resource."
+        try:
+            from compprog_pygame.games.hex_colony.tech_tree import (
+                TIERS as _TIERS,
+            )
+        except Exception:
+            return BuildingType.HABITAT
+        cur = self.colony.tier_tracker.current_tier
+        if cur + 1 < len(_TIERS):
+            next_tier = _TIERS[cur + 1]
+            unlocks_next = list(
+                getattr(next_tier, "unlocks_buildings", []) or []
+            )
+            # If the next tier unlocks a new building we haven't
+            # placed yet, and it's already unlocked by tech, aim
+            # for that — getting one placed often satisfies the
+            # tier requirement directly.
+            for btype in unlocks_next:
+                if (self._is_unlocked(btype)
+                        and not self._has_building(world, btype)):
+                    return btype
+        # Fallback: more housing never hurts.
+        return BuildingType.HABITAT
+
+    def _collect_chain_goals(
+        self, world: World, primary: BuildingType | None,
+    ) -> list:
+        """Build the full goal list fed into :meth:`_goal_chain`.
+
+        Starts with the *primary* building pick (if any) and folds
+        in:
+
+        * Any resources the next tier's ``resource_gathered``
+          requirement is short on — so the chain builds out the
+          production infrastructure for that tier's shopping list,
+          not just whatever the AI happens to be placing.
+        * Any resource recently unlocked by a tech the AI has
+          researched but doesn't yet produce — unlocking
+          ``IRON_BAR`` should prompt the chain to stand up a FORGE.
+
+        Deduplicated, order-preserving.
+        """
+        goals: list = []
+        seen: set = set()
+
+        def _add(item) -> None:
+            if item is None or item in seen:
+                return
+            seen.add(item)
+            goals.append(item)
+
+        _add(primary)
+
+        # Tier shopping list.
+        try:
+            from compprog_pygame.games.hex_colony.tech_tree import (
+                TIERS as _TIERS,
+            )
+            cur = self.colony.tier_tracker.current_tier
+            if cur + 1 < len(_TIERS):
+                req = getattr(
+                    _TIERS[cur + 1], "requirements", {}
+                ) or {}
+                for rname, target in (
+                    req.get("resource_gathered", {}) or {}
+                ).items():
+                    try:
+                        res = Resource[rname]
+                    except KeyError:
+                        continue
+                    if self._stock(world, res) < float(target):
+                        _add(res)
+        except Exception:
+            pass
+
+        # Recently-unlocked resources we aren't yet producing.
+        try:
+            from compprog_pygame.games.hex_colony.tech_tree import (
+                RESOURCE_TECH_REQUIREMENTS,
+            )
+            researched = self.colony.tech_tree.researched
+            for res, req_key in RESOURCE_TECH_REQUIREMENTS.items():
+                if req_key not in researched:
+                    continue
+                if self._stock(world, res) >= 10:
+                    continue
+                _add(res)
+        except Exception:
+            pass
+
+        return goals
+
+    def _goal_chain(
+        self,
+        world: World,
+        goal: "BuildingType | Resource | list[BuildingType | Resource]",
+    ) -> tuple[set[BuildingType], set[Resource], dict[Resource, float]]:
+        """Back-chain from one or more *goals* through recipes and raw
+        producers to surface every piece of missing or capacity-short
+        infrastructure.
+
+        Each goal may be either a :class:`BuildingType` (back-chains
+        via ``BUILDING_COSTS``) or a :class:`Resource` (back-chains
+        directly via ``MATERIAL_RECIPES``), so the planner can handle
+        *any* item in the game — building, intermediate material,
+        end-game resource like ``ROCKET_PART`` — uniformly.
+
+        Returns ``(missing_stations, missing_raw, demand_boost)``:
+
+        * ``missing_stations`` — crafting stations (WORKSHOP, FORGE,
+          REFINERY, ASSEMBLER, CHEMICAL_PLANT, OIL_REFINERY, etc.)
+          that the chain requires and of which the colony has either
+          **zero** instances, or too few to run all the distinct
+          recipes the chain calls for in parallel (capacity-short).
+        * ``missing_raw`` — raw resources whose producer is missing
+          **or** too thinly spread relative to the demanded volume.
+        * ``demand_boost`` — extra resource demand (units) for the
+          recipe scheduler's ``needed`` map.
+
+        The walk is depth-limited and cycle-guarded (shared
+        ``visited`` set across multiple goals) so mutually recursive
+        recipes like WORKSHOP → WOOD → WOODCUTTER-cost → STONE →
+        QUARRY-cost → WOOD can't blow up.
+        """
+        _build_raw_producers()
+        from compprog_pygame.games.hex_colony.resources import (
+            MATERIAL_RECIPES, RAW_RESOURCES,
+        )
+        from compprog_pygame.games.hex_colony.params import (
+            BUILDING_RECIPE_STATION,
+        )
+
+        missing_stations: set[BuildingType] = set()
+        missing_raw: set[Resource] = set()
+        demand: dict[Resource, float] = {}
+        visited: set[tuple[str, str]] = set()
+        # Per-station: which distinct recipes does the chain want
+        # this station to run?  A station can only run one recipe at
+        # a time, so if the chain touches N recipes on a station and
+        # we have fewer than N of that station, we're capacity-short.
+        recipe_load: dict[BuildingType, set[str]] = {}
+        # Per raw resource: total units demanded from it across the
+        # whole chain.  Used to decide whether one producer is
+        # enough or we need to scale up.
+        raw_volume: dict[Resource, float] = {}
+
+        def _producer_exists(res: Resource) -> bool:
+            producers = _RAW_PRODUCERS.get(res, ())
+            for btype, required_output in producers:
+                for b in world.buildings.buildings:
+                    if b.type != btype:
+                        continue
+                    if getattr(b, "faction", "SURVIVOR") != self.faction_id:
+                        continue
+                    if required_output is None:
+                        if btype == BuildingType.QUARRY:
+                            if getattr(b, "quarry_output", None) is None:
+                                return True
+                        elif btype == BuildingType.GATHERER:
+                            out = getattr(b, "gatherer_output", None)
+                            if out is None or out == Resource.FOOD:
+                                return True
+                        else:
+                            return True
+                    else:
+                        if btype == BuildingType.QUARRY:
+                            if (getattr(b, "quarry_output", None)
+                                    == required_output):
+                                return True
+                        elif btype == BuildingType.GATHERER:
+                            if (getattr(b, "gatherer_output", None)
+                                    == required_output):
+                                return True
+                        else:
+                            return True
+            return False
+
+        def _count_producer_matching(res: Resource) -> int:
+            """How many of our buildings currently produce *res*?"""
+            n = 0
+            for btype, required_output in _RAW_PRODUCERS.get(res, ()):
+                for b in world.buildings.buildings:
+                    if b.type != btype:
+                        continue
+                    if getattr(b, "faction", "SURVIVOR") != self.faction_id:
+                        continue
+                    if btype == BuildingType.QUARRY:
+                        if (getattr(b, "quarry_output", None)
+                                == required_output):
+                            n += 1
+                    elif btype == BuildingType.GATHERER:
+                        cur = (getattr(b, "gatherer_output", None)
+                               or Resource.FOOD)
+                        want = required_output or Resource.FOOD
+                        if cur == want:
+                            n += 1
+                    else:
+                        n += 1
+            return n
+
+        def _walk_building(btype: BuildingType, depth: int) -> None:
+            if depth > 8:
+                return
+            key = ("b", btype.name)
+            if key in visited:
+                return
+            visited.add(key)
+            # Station needed to *craft* this building.
+            station_name = BUILDING_RECIPE_STATION.get(btype.name)
+            if station_name is not None:
+                try:
+                    station = BuildingType[station_name]
+                    recipe_load.setdefault(station, set()).add(btype.name)
+                except KeyError:
+                    pass
+            cost = BUILDING_COSTS.get(btype)
+            if cost is None:
+                return
+            for res, amt in cost.costs.items():
+                _walk_resource(res, float(amt), depth + 1)
+
+        def _walk_resource(res: Resource, amount: float, depth: int) -> None:
+            if depth > 8 or amount <= 0:
+                return
+            key = ("r", res.name)
+            demand[res] = demand.get(res, 0.0) + amount
+            if key in visited:
+                # Already walked — just accumulate additional volume
+                # so capacity scoring reflects the real total.
+                if res in RAW_RESOURCES:
+                    raw_volume[res] = raw_volume.get(res, 0.0) + amount
+                return
+            visited.add(key)
+            if res in RAW_RESOURCES:
+                raw_volume[res] = raw_volume.get(res, 0.0) + amount
+                return
+            mrec = MATERIAL_RECIPES.get(res)
+            if mrec is None:
+                return
+            try:
+                station = BuildingType[mrec.station]
+                recipe_load.setdefault(station, set()).add(res.name)
+            except KeyError:
+                pass
+            per_unit = amount / max(1, mrec.output_amount)
+            for in_res, in_amt in mrec.inputs.items():
+                _walk_resource(in_res, per_unit * in_amt, depth + 1)
+
+        # Accept single goal or iterable of goals.
+        if isinstance(goal, (BuildingType, Resource)):
+            goals: list = [goal]
+        else:
+            goals = list(goal)
+        for g in goals:
+            if isinstance(g, BuildingType):
+                _walk_building(g, 0)
+            elif isinstance(g, Resource):
+                # Seed demand with a reasonable "try to build up some
+                # of this" amount so the chain pulls through.
+                _walk_resource(g, 30.0, 0)
+
+        # ── Station capacity scoring ─────────────────────────
+        # Need ≥ parallel-recipe-count of each station to actually
+        # run every chain recipe concurrently.  If the colony has
+        # one WORKSHOP but the chain touches five workshop recipes,
+        # flag WORKSHOP as "missing" so the build loop scales up.
+        for station, recipes in recipe_load.items():
+            have = self._count_building(world, station)
+            needed_count = max(1, len(recipes))
+            if have < needed_count:
+                missing_stations.add(station)
+
+        # ── Raw producer capacity scoring ────────────────────
+        # Threshold: one producer comfortably covers ~40 units of
+        # total chain demand (rough — WOODCUTTER trickles ~2/s, but
+        # we want to bias toward redundancy when demand is huge).
+        for res, vol in raw_volume.items():
+            have = _count_producer_matching(res)
+            needed_count = max(1, int(vol // 40) + 1) if vol > 0 else 1
+            if have < needed_count:
+                missing_raw.add(res)
+
+        return missing_stations, missing_raw, demand
+
     # ── Build decision ───────────────────────────────────────────
 
     def _try_build(self, world: World) -> None:
@@ -269,16 +775,32 @@ class Clanker:
         if choice is None:
             return
         btype, target, reason = choice
-        # If the picked target isn't already adjacent to our
-        # territory, lay a path chain to it first \u2014 just like a
-        # player would.  When PATH stock can't cover the run, abort
-        # and let the workshop craft more next tick.
-        if not self._is_adjacent_to_owned(world, target):
+        # Every non-path building must touch our PATH/BRIDGE/CAMP
+        # network so workers and haulers can reach it.  Being
+        # "adjacent to an owned tile" isn't enough — that tile might
+        # itself be a stranded building.  If the target isn't
+        # already on the network, lay a path chain out to it.  When
+        # PATH stock can't cover the run, abort and let the workshop
+        # craft more next tick.
+        needs_connection = btype not in (
+            BuildingType.PATH, BuildingType.BRIDGE,
+        )
+        if needs_connection and not self._is_path_connected(world, target):
             if not self._lay_path_to(world, target):
                 self._log(
                     world,
                     f"Wanted {btype.name} at ({target.q},{target.r}) "
                     f"but couldn't lay paths to reach it.",
+                )
+                return
+            # _lay_path_to may not have ended exactly adjacent to
+            # target; re-verify before placing.
+            if not self._is_path_connected(world, target):
+                self._log(
+                    world,
+                    f"Path run toward {btype.name} at "
+                    f"({target.q},{target.r}) didn't reach the target; "
+                    "will retry next tick.",
                 )
                 return
         if self._place(world, btype, target):
@@ -315,12 +837,40 @@ class Clanker:
             return (bt not in _NON_WORKER_BTYPES
                     and BUILDING_MAX_WORKERS.get(bt, 0) > 0)
 
+        # ── Goal-chain planner ───────────────────────────────────
+        # Back-chain from the top-level goal (usually HABITAT when
+        # population is tight, else a missing crafting station or
+        # next-tier unlock) to figure out which infrastructure is
+        # missing.  This gives the AI "long-term reasoning": when
+        # it wants HABITAT but lacks IRON_BAR, it realises it needs
+        # a FORGE; when it lacks IRON, it realises it needs a
+        # MINING_MACHINE or an IRON-configured QUARRY; and so on.
+        goal_building = self._pick_goal_building(
+            world, my_pop, my_cap, worker_demand,
+        )
+        goal_missing_stations: set[BuildingType] = set()
+        goal_missing_raw: set[Resource] = set()
+        self._goal_demand: dict[Resource, float] = {}
+        goals = self._collect_chain_goals(world, goal_building)
+        if goals:
+            (goal_missing_stations,
+             goal_missing_raw,
+             self._goal_demand) = self._goal_chain(world, goals)
+
         # ── Priority 1: housing ─────────────────────────────────
         # Build housing whenever (a) pop is at/near cap, OR (b) we
-        # already have unfilled jobs and need pop to grow into them.
+        # already have unfilled jobs and need pop to grow into them,
+        # OR (c) we're staffing-bound and housing headroom is thin
+        # (pushes pop growth so the colony can keep expanding), OR
+        # (d) the colony is still small — a starting clanker with
+        # 2 pop needs to build habitats aggressively to bootstrap.
+        pop_small = my_pop < 8
+        low_headroom = (my_cap - my_pop) < 3
         housing_pressure = (
             my_pop >= my_cap - 1
             or (worker_demand > my_pop and my_cap <= my_pop)
+            or (not can_staff_more and low_headroom)
+            or (pop_small and low_headroom)
         )
         if (housing_pressure
                 and self._is_unlocked(BuildingType.HABITAT)
@@ -331,6 +881,16 @@ class Clanker:
                     why = (
                         f"Building HABITAT \u2014 housing {my_pop}/{my_cap} "
                         "is full, need room to grow."
+                    )
+                elif pop_small:
+                    why = (
+                        f"Building HABITAT \u2014 only {my_pop} people so "
+                        f"far; need more habitats to attract population."
+                    )
+                elif not can_staff_more:
+                    why = (
+                        f"Building HABITAT \u2014 all {worker_demand} "
+                        "jobs staffed; growing pop to unblock expansion."
                     )
                 else:
                     why = (
@@ -386,6 +946,63 @@ class Clanker:
                     "researching tech to advance.",
                 )
 
+        # ── Priority 4.5: goal-chain missing infrastructure ─────
+        # If the top-level goal's dependency chain requires a
+        # crafting station (FORGE/REFINERY/ASSEMBLER/…) or a raw
+        # producer (MINING_MACHINE for IRON, IRON-configured
+        # QUARRY, …) that we don't have, place it before generic
+        # capacity scaling.  This is the "long-term reasoning"
+        # payoff — the AI actively builds what it needs to unblock
+        # its chosen goal rather than waiting for defaults to
+        # catch up.
+        if goal_missing_stations or goal_missing_raw:
+            goal_label = (
+                goal_building.name if goal_building is not None
+                else "current goal"
+            )
+            chain_picks: list[tuple[BuildingType, str]] = []
+            for st in goal_missing_stations:
+                have = self._count_building(world, st)
+                if have == 0:
+                    why = f"chain for {goal_label} needs a {st.name}"
+                else:
+                    why = (
+                        f"chain for {goal_label} needs more {st.name} "
+                        f"capacity (have {have})"
+                    )
+                chain_picks.append((st, why))
+            for raw in goal_missing_raw:
+                producers = _RAW_PRODUCERS.get(raw, ())
+                for btype, _required in producers:
+                    chain_picks.append((
+                        btype,
+                        f"chain for {goal_label} needs "
+                        f"{raw.name.lower()} \u2014 placing "
+                        f"{btype.name}",
+                    ))
+            for btype, why in chain_picks:
+                if btype == goal_building:
+                    # The goal itself is handled by the usual
+                    # priorities; don't double up here.
+                    continue
+                if not self._is_unlocked(btype):
+                    continue
+                if needs_workers(btype) and not can_staff_more:
+                    continue
+                if not self._can_pay_for(btype):
+                    # Can't place it directly, but the demand boost
+                    # will steer workshops to craft one next tick.
+                    continue
+                if not self._has_input_supply(world, btype):
+                    # The chain itself will surface the upstream
+                    # producer as "missing_raw"; skip this station
+                    # until we have something to feed it.
+                    continue
+                target = self._find_placement(world, btype)
+                if target is None:
+                    continue
+                return (btype, target, f"Building {btype.name} \u2014 {why}.")
+
         # ── Priority 5: ensure crafting capacity ────────────────
         if (can_staff_more
                 and self._count_building(world, BuildingType.WORKSHOP) < 2
@@ -401,6 +1018,7 @@ class Clanker:
         if (can_staff_more
                 and self._count_building(world, BuildingType.FORGE) < 1
                 and self._is_unlocked(BuildingType.FORGE)
+                and self._has_input_supply(world, BuildingType.FORGE)
                 and self._can_pay_for(BuildingType.FORGE)):
             target = self._find_placement(world, BuildingType.FORGE)
             if target is not None:
@@ -426,6 +1044,8 @@ class Clanker:
                 if not self._is_unlocked(btype):
                     continue
                 if not self._can_pay_for(btype):
+                    continue
+                if not self._has_input_supply(world, btype):
                     continue
                 if self._count_building(world, btype) >= cap:
                     continue
@@ -477,6 +1097,8 @@ class Clanker:
             if not (self._is_unlocked(btype)
                     and self._can_pay_for(btype)):
                 continue
+            if not self._has_input_supply(world, btype):
+                continue
             cap = type_caps.get(btype, 1)
             if self._count_building(world, btype) >= cap:
                 continue
@@ -514,6 +1136,29 @@ class Clanker:
             if (b is not None
                     and getattr(b, "faction", "SURVIVOR")
                     == self.faction_id):
+                return True
+        return False
+
+    def _is_path_connected(
+        self, world: World, coord: HexCoord,
+    ) -> bool:
+        """True iff *coord* is adjacent to a PATH/BRIDGE/TRIBAL_CAMP
+        belonging to this faction.
+
+        Workers and haulers can only reach buildings that touch the
+        path network, so we require this before placing any
+        non-path structure.  Being next to an isolated faction
+        building isn't enough — that building itself might be
+        stranded off the network.
+        """
+        for nb in coord.neighbors():
+            b = world.buildings.at(nb)
+            if b is None:
+                continue
+            if getattr(b, "faction", "SURVIVOR") != self.faction_id:
+                continue
+            if b.type in (BuildingType.PATH, BuildingType.BRIDGE,
+                          BuildingType.TRIBAL_CAMP):
                 return True
         return False
 
@@ -838,6 +1483,108 @@ class Clanker:
                     best_res = r
             b.stored_resource = best_res
 
+    # ── Periodic producer reconfiguration ────────────────────────
+
+    def _reconfigure_producers(self, world: World) -> None:
+        """Re-pick ``quarry_output`` / ``gatherer_output`` on existing
+        producers when the goal chain asks for a resource no current
+        producer is set to.
+
+        Without this, a colony that set all its quarries to STONE
+        early on stays stuck on STONE forever — even after building
+        a FORGE and researching metallurgy the quarries never switch
+        to IRON/COPPER and the forge starves.  Reconfiguring mirrors
+        how a player would click a quarry and change its output.
+        """
+        from compprog_pygame.games.hex_colony.procgen import Terrain
+        # Make sure goal demand is fresh even if ``_try_build``
+        # hasn't fired yet this tick (build and recipe intervals
+        # don't perfectly align).
+        if not self._goal_demand:
+            my_pop, my_cap, worker_demand, _ = self._staffing_state(world)
+            primary = self._pick_goal_building(
+                world, my_pop, my_cap, worker_demand,
+            )
+            goals = self._collect_chain_goals(world, primary)
+            if goals:
+                _, _, self._goal_demand = self._goal_chain(world, goals)
+        if not self._goal_demand:
+            return
+
+        # ── Quarries ─────────────────────────────────────────
+        for want in (Resource.IRON, Resource.COPPER):
+            if self._goal_demand.get(want, 0.0) <= 0.0:
+                continue
+            if self._stock(world, want) >= 20:
+                continue
+            # Already have a quarry set to *want*?
+            already = False
+            candidate = None
+            for b in world.buildings.buildings:
+                if (b.type != BuildingType.QUARRY
+                        or getattr(b, "faction", "SURVIVOR")
+                        != self.faction_id):
+                    continue
+                if getattr(b, "quarry_output", None) == want:
+                    already = True
+                    break
+                # Look for a quarry adjacent to the right vein.
+                vein = (Terrain.IRON_VEIN if want == Resource.IRON
+                        else Terrain.COPPER_VEIN)
+                for nb in b.coord.neighbors():
+                    tile = world.grid.get(nb)
+                    if tile is not None and tile.terrain == vein:
+                        candidate = b
+                        break
+            if already or candidate is None:
+                continue
+            candidate.quarry_output = want
+            self._log(
+                world,
+                f"Reassigned QUARRY at "
+                f"({candidate.coord.q},{candidate.coord.r}) to mine "
+                f"{want.name.lower()} \u2014 chain for current goal "
+                f"needs it.",
+            )
+
+        # ── Gatherers (FOOD ↔ FIBER) ─────────────────────────
+        for want in (Resource.FIBER, Resource.FOOD):
+            if self._goal_demand.get(want, 0.0) <= 0.0:
+                continue
+            if self._stock(world, want) >= 20:
+                continue
+            already = False
+            candidate = None
+            for b in world.buildings.buildings:
+                if (b.type != BuildingType.GATHERER
+                        or getattr(b, "faction", "SURVIVOR")
+                        != self.faction_id):
+                    continue
+                cur = getattr(b, "gatherer_output", None) or Resource.FOOD
+                if cur == want:
+                    already = True
+                    break
+                # FIBER needs an adjacent FIBER_PATCH; FOOD can be
+                # reassigned anywhere (gatherers wander for FOOD).
+                if want == Resource.FIBER:
+                    for nb in b.coord.neighbors():
+                        tile = world.grid.get(nb)
+                        if (tile is not None
+                                and tile.terrain == Terrain.FIBER_PATCH):
+                            candidate = b
+                            break
+                else:
+                    candidate = b
+            if already or candidate is None:
+                continue
+            candidate.gatherer_output = want
+            self._log(
+                world,
+                f"Reassigned GATHERER at "
+                f"({candidate.coord.q},{candidate.coord.r}) to "
+                f"{want.name.lower()} \u2014 chain needs it.",
+            )
+
     def _stock(self, world: World, res: Resource) -> float:
         """Total of *res* across the colony's inventory + camp."""
         camp = world.buildings.at(self.home)
@@ -887,6 +1634,13 @@ class Clanker:
         from compprog_pygame.games.hex_colony.supply_chain import (
             _hex_range,
         )
+        # Buildings that don't consume / deplete the tile resource
+        # they sit next to.  Farms grow food on any GRASS/WATER
+        # adjacency and wells draw from WATER indefinitely, so the
+        # "tile depleted" check below must not apply to them.
+        _NON_DEPLETING: frozenset[BuildingType] = frozenset({
+            BuildingType.FARM, BuildingType.WELL,
+        })
         for b in list(world.buildings.buildings):
             if getattr(b, "faction", "SURVIVOR") != self.faction_id:
                 continue
@@ -897,12 +1651,26 @@ class Clanker:
             on_target = (
                 tile is not None and tile.terrain in target_terrain
             )
+            # Count target-terrain neighbours that are *usable* — i.e.
+            # not covered by another building.  A WOODCUTTER plopped
+            # in the middle of town may have FOREST tiles touching it
+            # on paper, but if every one of them has a house/path on
+            # top it's effectively useless.
             count = 0
             for nb in b.coord.neighbors():
                 nb_tile = world.grid.get(nb)
-                if (nb_tile is not None
-                        and nb_tile.terrain in target_terrain):
-                    count += 1
+                if nb_tile is None:
+                    continue
+                if nb_tile.terrain not in target_terrain:
+                    continue
+                # A foreign building on the target tile blocks it.
+                # Our own extractor already sitting on the tile
+                # doesn't count as blocking here — we handle
+                # "on_target" separately above.
+                if (nb_tile.building is not None
+                        and nb_tile.building is not b):
+                    continue
+                count += 1
             if count == 0 and not on_target:
                 self._log(
                     world,
@@ -915,7 +1683,13 @@ class Clanker:
             # Depletion check — for harvesters whose tiles auto-
             # retarget within COLLECTION_RADIUS.  Demolish only when
             # the building has been fully idle for an audit cycle
-            # AND every reachable tile has 0 resource.
+            # AND every reachable tile has 0 resource.  Skip this
+            # for buildings that don't actually deplete tile
+            # resources (FARM, WELL); they can be "inactive" for
+            # reasons unrelated to the surrounding tiles (no path,
+            # no workers) and we don't want to demolish them.
+            if b.type in _NON_DEPLETING:
+                continue
             if not getattr(b, "active", False) and b.workers > 0:
                 radius = getattr(_p, "COLLECTION_RADIUS", 1)
                 any_left = False
@@ -966,17 +1740,28 @@ class Clanker:
             unlock_resources = list(
                 getattr(node, "unlock_resources", []) or [])
             # Strong bonus for unlocking a building we don't yet own.
+            # ``node.unlocks`` is a list of BuildingType enum members
+            # (resolved by tech_tree._build_tech_nodes), not strings.
             bld_bonus = 0.0
-            for bname in unlocks:
-                try:
-                    bt = BuildingType[bname]
-                except KeyError:
-                    continue
+            for entry in unlocks:
+                if isinstance(entry, BuildingType):
+                    bt = entry
+                else:
+                    try:
+                        bt = BuildingType[entry]
+                    except KeyError:
+                        continue
                 if not self._has_building(world, bt):
                     bld_bonus += 30.0
                 else:
                     bld_bonus += 5.0
             res_bonus = 8.0 * len(unlock_resources)
+            # Prefer foundational nodes: techs with shorter
+            # prerequisite chains are scored higher so the AI
+            # researches early-tier content before chasing deep
+            # branches.  Players generally do the same naturally
+            # because the deeper nodes are visually further out.
+            depth_penalty = 6.0 * _tech_depth(key)
             # Penalise nodes whose cost we can't currently afford.
             cost = getattr(node, "cost", {}) or {}
             shortfall = 0.0
@@ -995,6 +1780,7 @@ class Clanker:
                     shortfall += (amt - have)
             return (
                 bld_bonus + res_bonus
+                - depth_penalty
                 - shortfall * 0.05
                 - sum(cost.values()) / 200.0
                 + self.rng.random() * 0.5
@@ -1002,6 +1788,13 @@ class Clanker:
 
         candidates.sort(key=score, reverse=True)
         choice = candidates[0]
+        # Defensive double-check: players can only research a node
+        # whose prerequisites are all satisfied.  ``available_techs``
+        # already filters for this but re-verify at the start boundary
+        # so the AI can never skip ahead if future refactors change
+        # the filter's behaviour.
+        if not tt.can_research(choice):
+            return
         tt.start_research(choice)
         node = TECH_NODES[choice]
         unlocks = list(getattr(node, "unlocks", []) or [])
@@ -1143,31 +1936,64 @@ class Clanker:
             if have < target:
                 needed[res] = needed.get(res, 0.0) + (target - have)
 
+        # Fold in goal-chain demand (computed by :meth:`_try_build`
+        # via :meth:`_goal_chain`).  Weighted up so a station with
+        # any goal-relevant output is preferred to one just topping
+        # up ambient stockpiles.  This is the recipe side of the
+        # long-term reasoning: if HABITAT is the goal, demand for
+        # IRON_BAR → IRON → PLANKS all surface here even when those
+        # resources weren't previously short.
+        for res, amt in self._goal_demand.items():
+            have = self._stock(world, res)
+            short = max(0.0, amt * 1.5 - have)
+            if short > 0:
+                needed[res] = needed.get(res, 0.0) + short
+
         for b in world.buildings.buildings:
             if getattr(b, "faction", "SURVIVOR") != self.faction_id:
                 continue
-            # Re-evaluate an existing recipe if it's clearly the
-            # wrong choice — output bin is full and no inputs are
-            # waiting, so the station is just sitting idle.
+            coord_key = (b.coord.q, b.coord.r)
+            now = world.time_elapsed
+            # Re-evaluate an existing recipe only if it's clearly the
+            # wrong choice — and only after the recipe has been in
+            # place long enough to actually have a chance of running.
+            # Without the sticky window the AI thrashes: every cycle
+            # the demand resolver computes a slightly different "best"
+            # recipe and the station never produces anything.
             if b.recipe is not None:
+                set_at = self._recipe_set_at.get(coord_key)
+                age = (now - set_at) if set_at is not None else 1e9
+                if age < _RECIPE_STICKY_TIME:
+                    continue
                 if isinstance(b.recipe, Resource):
                     out_held = b.storage.get(b.recipe, 0.0)
-                    if (b.storage_capacity > 0
-                            and out_held >= b.storage_capacity * 0.95):
+                    # Only clear when the output is full, no inputs are
+                    # waiting, AND the colony already has plenty of
+                    # this resource (no current demand).  Otherwise
+                    # leave the recipe alone — workers will eventually
+                    # pull from storage.
+                    out_full = (
+                        b.storage_capacity > 0
+                        and out_held >= b.storage_capacity * 0.95
+                    )
+                    if out_full:
                         mrec = MATERIAL_RECIPES.get(b.recipe)
                         in_held = 0.0
                         if mrec is not None:
                             in_held = sum(
                                 b.storage.get(r, 0.0) for r in mrec.inputs
                             )
-                        if in_held < 0.5:
+                        no_demand = needed.get(b.recipe, 0.0) <= 0.0
+                        if in_held < 0.5 and no_demand:
                             self._log(
                                 world,
                                 f"Clearing {b.type.name} recipe "
                                 f"({b.recipe.name.lower()}) — output "
-                                "is full and no inputs arriving.",
+                                "is full, no inputs arriving, and the "
+                                "colony has plenty stockpiled.",
                             )
                             b.recipe = None
+                            self._recipe_set_at.pop(coord_key, None)
                 if b.recipe is not None:
                     continue
             station_name = b.type.name
@@ -1226,6 +2052,7 @@ class Clanker:
             if chosen is None:
                 continue
             b.recipe = chosen
+            self._recipe_set_at[coord_key] = now
             label = (
                 chosen.name if isinstance(chosen, BuildingType)
                 else f"material {chosen.name.lower()}"
