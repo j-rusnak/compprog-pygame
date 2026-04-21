@@ -692,7 +692,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "time": 45.0,
         "prerequisites": [],
         "unlocks": ["FARM"],
-        "position": (1, 0),
+        "position": (3, 0),
     },
     "metallurgy": {
         "name": "Metallurgy",
@@ -702,7 +702,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": [],
         "unlocks": ["REFINERY"],
         "unlock_resources": ["IRON_BAR", "COPPER_BAR"],
-        "position": (2, 0),
+        "position": (5, 0),
     },
     "irrigation": {
         "name": "Irrigation",
@@ -711,7 +711,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "time": 40.0,
         "prerequisites": ["agriculture"],
         "unlocks": ["WELL"],
-        "position": (1, 1),
+        "position": (3, 1),
     },
     "fortification": {
         "name": "Fortification",
@@ -721,7 +721,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["metallurgy"],
         "unlocks": [],
         "unlock_resources": ["STEEL_PLATE"],
-        "position": (2, 1),
+        "position": (5, 1),
     },
     "advanced_smelting": {
         "name": "Advanced Smelting",
@@ -731,7 +731,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["metallurgy"],
         "unlocks": [],
         "unlock_resources": ["STEEL_BAR", "GLASS"],
-        "position": (3, 1),
+        "position": (6, 1),
     },
     "exploration": {
         "name": "Exploration",
@@ -754,7 +754,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["fortification"],
         "unlocks": [],
         "unlock_resources": ["REINFORCED_CONCRETE"],
-        "position": (2, 2),
+        "position": (5, 2),
     },
     "concrete_works": {
         "name": "Concrete Works",
@@ -764,7 +764,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["masonry", "advanced_smelting"],
         "unlocks": [],
         "unlock_resources": ["CONCRETE"],
-        "position": (3, 2),
+        "position": (5, 3),
     },
     "basic_chemistry": {
         "name": "Basic Chemistry",
@@ -773,7 +773,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "time": 100.0,
         "prerequisites": ["advanced_smelting"],
         "unlocks": ["CHEMICAL_PLANT"],
-        "position": (4, 2),
+        "position": (6, 2),
     },
     "electronics_basics": {
         "name": "Electronics Basics",
@@ -783,7 +783,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["advanced_smelting"],
         "unlocks": [],
         "unlock_resources": ["COPPER_WIRE", "GEARS", "SILICON"],
-        "position": (5, 2),
+        "position": (8, 2),
     },
     "conveyor_belts": {
         "name": "Conveyor Belts",
@@ -792,7 +792,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "time": 80.0,
         "prerequisites": ["advanced_logistics", "metallurgy"],
         "unlocks": ["CONVEYOR"],
-        "position": (0, 2),
+        "position": (1, 1),
     },
     # ═══════════════════════════════════════════════════════════
     #  LATE GAME  (tier 5 — chemistry, electronics, power)
@@ -805,7 +805,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["basic_chemistry"],
         "unlocks": [],
         "unlock_resources": ["PLASTIC"],
-        "position": (4, 3),
+        "position": (7, 3),
     },
     "petroleum_engineering": {
         "name": "Petroleum Engineering",
@@ -815,7 +815,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["basic_chemistry"],
         "unlocks": ["OIL_DRILL", "OIL_REFINERY", "PIPE", "FLUID_TANK"],
         "unlock_resources": ["OIL", "PETROLEUM", "LUBRICANT"],
-        "position": (3, 3),
+        "position": (6, 3),
     },
     "polymers": {
         "name": "Polymers",
@@ -825,7 +825,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["plastics", "petroleum_engineering"],
         "unlocks": [],
         "unlock_resources": ["RUBBER"],
-        "position": (4, 4),
+        "position": (6, 4),
     },
     "microchips": {
         "name": "Microchips",
@@ -835,7 +835,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["electronics_basics", "plastics"],
         "unlocks": [],
         "unlock_resources": ["CIRCUIT", "ELECTRONICS"],
-        "position": (5, 3),
+        "position": (8, 3),
     },
     "energy_storage": {
         "name": "Energy Storage",
@@ -845,7 +845,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["microchips"],
         "unlocks": [],
         "unlock_resources": ["BATTERY"],
-        "position": (5, 4),
+        "position": (8, 4),
     },
     "solar_panels": {
         "name": "Solar Panels",
@@ -854,7 +854,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "time": 150.0,
         "prerequisites": ["energy_storage"],
         "unlocks": ["SOLAR_ARRAY"],
-        "position": (5, 5),
+        "position": (8, 5),
     },
     "advanced_electronics": {
         "name": "Advanced Electronics",
@@ -864,7 +864,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["microchips", "polymers"],
         "unlocks": [],
         "unlock_resources": ["ADVANCED_CIRCUIT"],
-        "position": (6, 3),
+        "position": (7, 4),
     },
     "automation_logistics": {
         "name": "Automation Logistics",
@@ -874,7 +874,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["conveyor_belts", "advanced_electronics"],
         "unlocks": [],
         "unlock_resources": ["ROBOTIC_ARM"],
-        "position": (0, 3),
+        "position": (1, 4),
     },
     # ═══════════════════════════════════════════════════════════
     #  END GAME  (tier 6 — spacefaring)
@@ -887,7 +887,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["polymers", "advanced_electronics"],
         "unlocks": [],
         "unlock_resources": ["ROCKET_FUEL"],
-        "position": (4, 5),
+        "position": (6, 5),
     },
     "orbital_assembly": {
         "name": "Orbital Assembly",
@@ -897,7 +897,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["rocketry", "solar_panels", "concrete_works", "automation_logistics"],
         "unlocks": ["ROCKET_SILO"],
         "unlock_resources": ["ROCKET_PART"],
-        "position": (5, 6),
+        "position": (7, 6),
     },
 }
 

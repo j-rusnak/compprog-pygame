@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 from compprog_pygame.games.hex_colony import params
+
+
+class Difficulty(Enum):
+    """Per-run difficulty selection (chosen on the menu screen)."""
+    EASY = "easy"   # no AI tribal camps spawn — peaceful sandbox
+    HARD = "hard"   # AI tribes ("clankers") spawn and expand
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +31,11 @@ class HexColonySettings:
 
     # World generation
     world_radius: int = params.DEFAULT_WORLD_RADIUS
+
+    # Per-run difficulty.  EASY suppresses AI tribal-camp spawning;
+    # HARD spawns one AI "clanker" colony per tribal camp that
+    # expands autonomously.
+    difficulty: Difficulty = Difficulty.EASY
 
     # People movement
     person_speed: float = params.PERSON_SPEED

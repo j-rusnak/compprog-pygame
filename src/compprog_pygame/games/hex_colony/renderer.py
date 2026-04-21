@@ -343,6 +343,73 @@ class Renderer:
         """Mark a single hex as needing redraw on the tile layer."""
         self._dirty_tiles.add(coord)
 
+    def regenerate_overlays_at(self, coord: HexCoord, world) -> None:
+        """Re-run the per-tile overlay generator for a single hex.
+
+        Used when a building that was sitting on a decorated terrain
+        (ore vein, stone deposit, fiber patch, grass, etc.) is
+        deleted — the original overlay items were NaN-marked when the
+        building was placed, so without this call the pixel art for
+        the underlying resource never reappears.  Forest / mountain /
+        water tiles aren't restored here because their art is
+        cluster-dependent (depth maps / coherent ridges) and buildings
+        can't be placed on them in practice.
+        """
+        from math import isnan
+        import random as _random
+        from compprog_pygame.games.hex_colony.hex_grid import (
+            Terrain, hex_to_pixel,
+        )
+        from compprog_pygame.games.hex_colony import overlay as _overlay
+
+        tile = world.grid.get(coord)
+        if tile is None:
+            return
+        terrain = tile.terrain
+        hex_size = world.settings.hex_size
+        wx, wy = hex_to_pixel(coord, hex_size)
+        rng = _random.Random(_overlay._tile_seed(coord))
+
+        gen_items: list = []
+        if terrain == Terrain.STONE_DEPOSIT:
+            gen_items = _overlay._gen_stone_tile(wx, wy, hex_size, 0, rng)
+        elif terrain == Terrain.FIBER_PATCH:
+            gen_items = _overlay._gen_fiber_tile(wx, wy, hex_size, 0, tile, rng)
+        elif terrain == Terrain.GRASS:
+            gen_items = _overlay._gen_grass_tile(wx, wy, hex_size, rng)
+        elif terrain in (Terrain.IRON_VEIN, Terrain.COPPER_VEIN):
+            gen_items = _overlay._gen_ore_tile(
+                wx, wy, hex_size, terrain, tile, rng,
+            )
+        elif terrain == Terrain.OIL_DEPOSIT:
+            gen_items = _overlay._gen_oil_tile(wx, wy, hex_size, tile, rng)
+        else:
+            self._dirty_tiles.add(coord)
+            return
+
+        # Ensure the overlay index is up to date so new items are
+        # tracked for future removal / compaction.
+        self._build_overlay_index_if_needed(hex_size)
+
+        from compprog_pygame.games.hex_colony.overlay import OverlayRipple
+        key = (coord.q, coord.r)
+        bucket = self._overlay_index.setdefault(key, [])
+        # Drop any stale (NaN-marked) items still lingering in the
+        # bucket from prior removals.
+        bucket[:] = [it for it in bucket if not isnan(it.wx)]
+        for _depth_key, item in gen_items:
+            if isinstance(item, OverlayRipple):
+                self._ripples.append(item)
+            else:
+                self._static_overlays.append(item)
+            bucket.append(item)
+
+        # Re-sort static overlays by wy for correct depth draw order.
+        self._static_overlays.sort(
+            key=lambda it: (float("inf") if isnan(it.wx) else it.wy),
+        )
+        self._dirty_tiles.add(coord)
+
     def has_ruin_at(self, coord: HexCoord) -> bool:
         """True if any OverlayRuin was generated on the given hex."""
         key = (coord.q, coord.r)

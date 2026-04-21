@@ -133,28 +133,30 @@ class WorkerPriorityTabContent(TabContent):
         self._net_tab_rects: list[tuple[pygame.Rect, int]] = []
 
     def _pick_network(self, world: "World") -> "Network | None":
-        if not world.networks:
+        nets = world.player_networks
+        if not nets:
             self._selected_net_id = None
             return None
         # If remembered id still exists, keep it.
-        for n in world.networks:
+        for n in nets:
             if n.id == self._selected_net_id:
                 return n
         # Otherwise pick the first.
-        self._selected_net_id = world.networks[0].id
-        return world.networks[0]
+        self._selected_net_id = nets[0].id
+        return nets[0]
 
     def _draw_network_tabs(
         self, surface: pygame.Surface, rect: pygame.Rect, world: "World",
         selected: "Network | None",
     ) -> None:
         self._net_tab_rects = []
-        if len(world.networks) <= 1:
+        nets = world.player_networks
+        if len(nets) <= 1:
             return
         x = rect.x
         y = rect.y
         pad = 10
-        for n in world.networks:
+        for n in nets:
             label = Fonts.small().render(n.name, True, UI_TEXT)
             tab_w = label.get_width() + pad * 2
             tab_rect = pygame.Rect(x, y, tab_w, rect.h)
@@ -235,7 +237,7 @@ class WorkerPriorityTabContent(TabContent):
             self._auto_btn_rect.left - rect.x - 12, 22,
         )
         tabs_h = 0
-        if len(world.networks) > 1:
+        if len(world.player_networks) > 1:
             self._draw_network_tabs(surface, tabs_rect, world, selected)
             tabs_h = tabs_rect.h + 4
         else:
@@ -374,14 +376,18 @@ class WorkerPriorityOverlay(Panel):
         self.on_toggle_auto: "callable | None" = None
 
     def _current_network(self) -> "Network | None":
-        if self.world is None or not self.world.networks:
+        if self.world is None:
             self._selected_net_id = None
             return None
-        for n in self.world.networks:
+        nets = self.world.player_networks
+        if not nets:
+            self._selected_net_id = None
+            return None
+        for n in nets:
             if n.id == self._selected_net_id:
                 return n
-        self._selected_net_id = self.world.networks[0].id
-        return self.world.networks[0]
+        self._selected_net_id = nets[0].id
+        return nets[0]
 
     def layout(self, screen_w: int, screen_h: int) -> None:
         # Centered panel covering most of the screen.
@@ -490,7 +496,7 @@ class WorkerPriorityOverlay(Panel):
         # than one network exists).
         self._net_tab_rects = []
         tabs_h = 0
-        if len(world.networks) > 1:
+        if len(world.player_networks) > 1:
             tabs_rect = pygame.Rect(area.x, area.y, area.w, 28)
             self._draw_network_tabs(surface, tabs_rect, world, current_net)
             tabs_h = tabs_rect.h + 6
@@ -579,7 +585,7 @@ class WorkerPriorityOverlay(Panel):
     ) -> None:
         self._net_tab_rects = []
         x = rect.x
-        for n in world.networks:
+        for n in world.player_networks:
             label = Fonts.body().render(n.name, True, UI_TEXT)
             pad_x = 14
             tab_w = label.get_width() + pad_x * 2

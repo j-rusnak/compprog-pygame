@@ -156,22 +156,74 @@ class TechTreeOverlay(Panel):
                 origin_y + n.position[1] * (_NODE_H + _NODE_GAP_Y),
             )
 
-        # Connecting lines
+        # Connecting lines.  Use Manhattan routing (3 segments) so
+        # the horizontal portion always lives in the row-gap between
+        # rows and never crosses a node body.  Same-row links are
+        # drawn as a single horizontal segment at row centre.
+        # Multiple prereqs sharing one child get a small vertical
+        # offset on their horizontal segment so they don't overlap.
         for node in nodes:
             nx, ny = node_pos(node)
-            for prereq_key in node.prerequisites:
+            child_cx = nx + _NODE_W // 2
+            n_prereq = len(node.prerequisites)
+            for idx, prereq_key in enumerate(node.prerequisites):
                 prereq = TECH_NODES.get(prereq_key)
                 if prereq is None:
                     continue
                 px, py = node_pos(prereq)
+                parent_cx = px + _NODE_W // 2
                 line_col = (
                     _COL_RESEARCHED
                     if prereq_key in tt.researched else UI_BORDER
                 )
+                # Offset the horizontal trunk for visual separation
+                # when several prereqs feed the same child.
+                if n_prereq > 1:
+                    span = max(8, _NODE_GAP_Y // 3)
+                    off = (idx - (n_prereq - 1) / 2) * (
+                        span / max(1, n_prereq - 1)
+                    )
+                else:
+                    off = 0
+                if prereq.position[1] == node.position[1]:
+                    # Same row: simple side-to-side line.
+                    y_mid = ny + _NODE_H // 2 + int(off)
+                    if parent_cx <= child_cx:
+                        pygame.draw.line(
+                            surface, line_col,
+                            (px + _NODE_W, y_mid),
+                            (nx, y_mid), 2,
+                        )
+                    else:
+                        pygame.draw.line(
+                            surface, line_col,
+                            (px, y_mid),
+                            (nx + _NODE_W, y_mid), 2,
+                        )
+                    continue
+                # Different rows: 3-segment Manhattan path.
+                if prereq.position[1] < node.position[1]:
+                    parent_y = py + _NODE_H
+                    child_y = ny
+                    trunk_y = parent_y + _NODE_GAP_Y // 2 + int(off)
+                else:
+                    parent_y = py
+                    child_y = ny + _NODE_H
+                    trunk_y = parent_y - _NODE_GAP_Y // 2 + int(off)
                 pygame.draw.line(
                     surface, line_col,
-                    (px + _NODE_W // 2, py + _NODE_H),
-                    (nx + _NODE_W // 2, ny), 2,
+                    (parent_cx, parent_y),
+                    (parent_cx, trunk_y), 2,
+                )
+                pygame.draw.line(
+                    surface, line_col,
+                    (parent_cx, trunk_y),
+                    (child_cx, trunk_y), 2,
+                )
+                pygame.draw.line(
+                    surface, line_col,
+                    (child_cx, trunk_y),
+                    (child_cx, child_y), 2,
                 )
 
         self._node_rects = {}
@@ -213,6 +265,14 @@ class TechTreeOverlay(Panel):
             pygame.draw.rect(
                 surface, UI_BORDER, node_rect, width=1, border_radius=6,
             )
+
+            # Whole-node hover tooltip: shows full name, status, the
+            # node's description, what it unlocks, and any unmet
+            # prerequisites.  Set early so the per-icon tooltips below
+            # can override when they detect a more specific hover.
+            if (self._viewport.collidepoint(pygame.mouse.get_pos())
+                    and node_rect.collidepoint(pygame.mouse.get_pos())):
+                _set_node_tooltip(node, status, tt)
 
             inner_w = _NODE_W - 12
             name = render_text_clipped(
@@ -389,3 +449,43 @@ def _unlock_tooltip(btype) -> str:
         for res, amt in cost.costs.items()
     ]
     return f"{name} — " + ", ".join(parts)
+
+
+def _set_node_tooltip(node, status: str, tt) -> None:
+    """Set a multi-line tooltip describing a tech node on hover."""
+    body_parts: list[str] = [status]
+    if node.description:
+        body_parts.append(node.description)
+
+    if node.cost:
+        cost_txt = ", ".join(
+            f"{amt} {res.name.replace('_', ' ').title()}"
+            for res, amt in node.cost.items()
+        )
+        body_parts.append(f"Cost: {cost_txt}  \u2014  {int(node.time)}s")
+    else:
+        body_parts.append(f"Free  \u2014  {int(node.time)}s")
+
+    unlock_bits: list[str] = []
+    unlock_bits.extend(
+        b.name.replace("_", " ").title() for b in node.unlocks
+    )
+    unlock_bits.extend(
+        r.name.replace("_", " ").title() for r in node.unlock_resources
+    )
+    if unlock_bits:
+        body_parts.append("Unlocks: " + ", ".join(unlock_bits))
+
+    missing = [
+        p for p in node.prerequisites if p not in tt.researched
+    ]
+    if missing:
+        miss_names = ", ".join(
+            TECH_NODES[m].name for m in missing if m in TECH_NODES
+        )
+        body_parts.append(f"Needs: {miss_names}")
+
+    if tt.can_research(node.key):
+        body_parts.append("Click the node to start researching.")
+
+    set_tooltip("\n".join(body_parts), title=node.name)

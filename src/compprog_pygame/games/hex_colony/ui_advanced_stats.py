@@ -107,7 +107,7 @@ class StatsHistory:
             self._total_cons[res] += cons * SAMPLE_INTERVAL
             self._total_prod_history[res].append(self._total_prod[res])
             self._total_cons_history[res].append(self._total_cons[res])
-        self._population.append(float(world.population.count))
+        self._population.append(float(world.player_population_count))
         self._last_sample = world.time_elapsed
 
     def resource(self, res: Resource) -> deque[float]:
@@ -716,7 +716,7 @@ class AdvancedStatsOverlay(Panel):
             self.history.production_rate(world, r) for r in self._selected
         )
         stats: list[tuple[str, str, tuple[int, int, int]]] = [
-            ("Population", f"{world.population.count}", UI_ACCENT),
+            ("Population", f"{world.player_population_count}", UI_ACCENT),
             ("Pop/min", f"{pop_rate:+.1f}",
              UI_OK if pop_rate >= 0 else (220, 90, 90)),
             ("Prod/s", f"{live_prod:.2f}",

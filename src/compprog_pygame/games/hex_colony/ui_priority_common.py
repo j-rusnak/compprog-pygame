@@ -236,14 +236,15 @@ class PriorityTabContent(TabContent):
     # ── Network helpers ───────────────────────────────────────
 
     def _pick_network(self, world: "World") -> "Network | None":
-        if not world.networks:
+        nets = world.player_networks
+        if not nets:
             self._selected_net_id = None
             return None
-        for n in world.networks:
+        for n in nets:
             if n.id == self._selected_net_id:
                 return n
-        self._selected_net_id = world.networks[0].id
-        return world.networks[0]
+        self._selected_net_id = nets[0].id
+        return nets[0]
 
     def _filtered_tiers(
         self, world: "World", net: "Network",
@@ -314,9 +315,10 @@ class PriorityTabContent(TabContent):
         )
         tabs_h = 0
         self._net_tab_rects = []
-        if len(world.networks) > 1:
+        nets = world.player_networks
+        if len(nets) > 1:
             x = tabs_rect.x
-            for n in world.networks:
+            for n in nets:
                 lbl = Fonts.small().render(n.name, True, UI_TEXT)
                 tw = lbl.get_width() + 18
                 tr = pygame.Rect(x, tabs_rect.y, tw, tabs_rect.h)
@@ -533,14 +535,18 @@ class PriorityOverlayBase(Panel):
         self._dropdown_rects: list[tuple[pygame.Rect, Resource | None]] = []
 
     def _current_network(self) -> "Network | None":
-        if self.world is None or not self.world.networks:
+        if self.world is None:
             self._selected_net_id = None
             return None
-        for n in self.world.networks:
+        nets = self.world.player_networks
+        if not nets:
+            self._selected_net_id = None
+            return None
+        for n in nets:
             if n.id == self._selected_net_id:
                 return n
-        self._selected_net_id = self.world.networks[0].id
-        return self.world.networks[0]
+        self._selected_net_id = nets[0].id
+        return nets[0]
 
     def layout(self, screen_w: int, screen_h: int) -> None:
         w = min(screen_w - 80, 1200)
@@ -646,10 +652,11 @@ class PriorityOverlayBase(Panel):
         )
         self._net_tab_rects = []
         tabs_h = 0
-        if len(world.networks) > 1:
+        nets = world.player_networks
+        if len(nets) > 1:
             tabs_rect = pygame.Rect(area.x, area.y, area.w, 28)
             x = tabs_rect.x
-            for n in world.networks:
+            for n in nets:
                 lbl = Fonts.body().render(n.name, True, UI_TEXT)
                 tw = lbl.get_width() + 24
                 tr = pygame.Rect(x, tabs_rect.y, tw, tabs_rect.h)

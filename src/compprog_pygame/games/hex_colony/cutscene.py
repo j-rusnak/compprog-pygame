@@ -529,8 +529,15 @@ class IntroCutscene:
     def _draw_portrait(
         self, screen: pygame.Surface, speaker: str, side: str,
     ) -> None:
-        key = "cutscene/captain" if speaker == "Captain" else "cutscene/scientist"
+        # After the ship takes the hit, switch the portrait to the
+        # "_scared" variant so the survivors visibly react.  Fall back
+        # to the calm portrait if the scared sprite isn't shipped.
+        scared = self._current_ship_state() == "damaged"
+        base = "cutscene/captain" if speaker == "Captain" else "cutscene/scientist"
+        key = base + "_scared" if scared else base
         sheet = sprites.get(key)
+        if sheet is None:
+            sheet = sprites.get(base)
         if sheet is None:
             return
         size = 200

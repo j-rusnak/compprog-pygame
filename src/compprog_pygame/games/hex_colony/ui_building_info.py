@@ -127,6 +127,13 @@ class _TechTreeBtn:
 
 
 @dataclass
+class _PossessBtn:
+    """Button shown on rival TRIBAL_CAMP popups so the player can
+    inspect the controlling clanker (read-only)."""
+    height: int = _LINE_H + 10
+
+
+@dataclass
 class _StorageResBtn:
     resource: Resource
     selected: bool
@@ -157,7 +164,7 @@ class _RecipeDropdownHeader:
 
 _Item = (
     _Line | _IconLine | _Spacer | _RecipeBtn | _MaterialRecipeBtn
-    | _TechTreeBtn | _StorageResBtn | _GathererOutputBtn
+    | _TechTreeBtn | _PossessBtn | _StorageResBtn | _GathererOutputBtn
     | _QuarryOutputBtn | _RecipeDropdownHeader
 )
 
@@ -176,6 +183,7 @@ class BuildingInfoPanel(Panel):
         self._gatherer_output_rects: list[tuple[pygame.Rect, Resource | None]] = []
         self._quarry_output_rects: list[tuple[pygame.Rect, Resource | None]] = []
         self._tech_tree_btn: pygame.Rect | None = None
+        self._possess_btn: pygame.Rect | None = None
         self._recipe_dropdown_open: bool = False
         self._recipe_dropdown_btn: pygame.Rect | None = None
         # Floating-overlay rect + internal scroll offset, used so the
@@ -184,6 +192,7 @@ class BuildingInfoPanel(Panel):
         self._recipe_dropdown_rect: pygame.Rect | None = None
         self._dropdown_scroll: int = 0
         self.on_open_tech_tree: typing.Callable[[], None] | None = None
+        self.on_possess: typing.Callable[["Building"], None] | None = None
         self.tier_tracker: typing.Any = None
         self.tech_tree: typing.Any = None
         self.god_mode_getter: typing.Callable[[], bool] | None = None
@@ -207,6 +216,7 @@ class BuildingInfoPanel(Panel):
             self._gatherer_output_rects = []
             self._quarry_output_rects = []
             self._tech_tree_btn = None
+            self._possess_btn = None
             self._recipe_dropdown_open = False
             self._recipe_dropdown_btn = None
             self._recipe_dropdown_rect = None
@@ -248,6 +258,7 @@ class BuildingInfoPanel(Panel):
         self._gatherer_output_rects = []
         self._quarry_output_rects = []
         self._tech_tree_btn = None
+        self._possess_btn = None
 
         for item in items:
             if isinstance(item, _Spacer):
@@ -299,6 +310,8 @@ class BuildingInfoPanel(Panel):
                 self._draw_recipe_dropdown_header(surface, x, cy, item)
             elif isinstance(item, _TechTreeBtn):
                 self._draw_tech_btn(surface, x, cy)
+            elif isinstance(item, _PossessBtn):
+                self._draw_possess_btn(surface, x, cy)
             cy += item.height
 
         surface.set_clip(prev_clip)
@@ -633,6 +646,21 @@ class BuildingInfoPanel(Panel):
         ))
         self._tech_tree_btn = btn_rect
 
+    def _draw_possess_btn(
+        self, surface: pygame.Surface, x: int, cy: int,
+    ) -> None:
+        btn_rect = pygame.Rect(
+            x + _PADDING, cy + 4, _PANEL_W - _PADDING * 2, _LINE_H + 4,
+        )
+        pygame.draw.rect(surface, UI_ACCENT, btn_rect, border_radius=4)
+        pygame.draw.rect(surface, UI_BORDER, btn_rect, width=2, border_radius=4)
+        surf = Fonts.body().render("Possess", True, UI_TEXT)
+        surface.blit(surf, (
+            btn_rect.centerx - surf.get_width() // 2,
+            btn_rect.centery - surf.get_height() // 2,
+        ))
+        self._possess_btn = btn_rect
+
     def _draw_scrollbar(self, surface: pygame.Surface, max_scroll: int) -> None:
         track = pygame.Rect(
             self.rect.right - _SCROLLBAR_W - 2,
@@ -667,6 +695,18 @@ class BuildingInfoPanel(Panel):
         items.append(_Line(label, UI_ACCENT, Fonts.title(), 34))
         items.append(_Spacer(4))
 
+        # Rival faction (TRIBAL_CAMP) \u2014 minimal read-only popup with a
+        # Possess button.  We deliberately skip the rest of the
+        # player-facing controls (recipes, workers, storage) because
+        # those would let the player meddle with AI buildings.
+        if (b.type == BuildingType.TRIBAL_CAMP
+                and getattr(b, "faction", "SURVIVOR") != "SURVIVOR"):
+            line(f"Faction: {b.faction}", UI_MUTED, Fonts.small())
+            line("A rival colony's home base.", UI_MUTED, Fonts.small())
+            items.append(_Spacer())
+            items.append(_PossessBtn())
+            return items
+
         # Housing
         cap = BUILDING_HOUSING.get(b.type, 0)
         if cap > 0:
@@ -679,7 +719,7 @@ class BuildingInfoPanel(Panel):
         # Camp-specific: tier info
         if b.type == BuildingType.CAMP:
             items.append(_Spacer())
-            pop = world.population.count
+            pop = world.player_population_count
             total_housing = world.connected_housing()
             homeless = max(0, pop - total_housing)
             line(f"Population: {pop}/{total_housing}")
@@ -1076,6 +1116,11 @@ class BuildingInfoPanel(Panel):
             if self._tech_tree_btn is not None and self._tech_tree_btn.collidepoint(event.pos):
                 if self.on_open_tech_tree is not None:
                     self.on_open_tech_tree()
+                return True
+            if (self._possess_btn is not None
+                    and self._possess_btn.collidepoint(event.pos)):
+                if self.on_possess is not None and self.building is not None:
+                    self.on_possess(self.building)
                 return True
             if self.building.type in (
                 BuildingType.WORKSHOP,

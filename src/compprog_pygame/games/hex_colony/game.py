@@ -17,13 +17,18 @@ from compprog_pygame.games.hex_colony.settings import HexColonySettings
 from compprog_pygame.games.hex_colony.ui import UIManager
 from compprog_pygame.games.hex_colony.ui_bottom_bar import BottomBar
 from compprog_pygame.games.hex_colony.ui_building_info import BuildingInfoPanel
+from compprog_pygame.games.hex_colony.ui_clanker_possession import (
+    ClankerPossessionPanel,
+)
 from compprog_pygame.games.hex_colony.ui_game_over import GameOverOverlay
-from compprog_pygame.games.hex_colony.ui_help import HelpOverlay
+from compprog_pygame.games.hex_colony.ui_help_overlay import HelpOverlay
 from compprog_pygame.games.hex_colony.ui_pause_menu import PauseOverlay
 from compprog_pygame.games.hex_colony.ui_resource_bar import ResourceBar
 from compprog_pygame.games.hex_colony.ui_tile_info import TileInfoPanel
 from compprog_pygame.games.hex_colony.world import World
+from compprog_pygame.games.hex_colony.clankers import ClankerManager
 from compprog_pygame.games.hex_colony.notifications import NotificationManager
+from compprog_pygame.games.hex_colony.settings import Difficulty
 from compprog_pygame.games.hex_colony.tech_tree import (
     TechTree, TierTracker, TECH_REQUIREMENTS, TECH_NODES,
     TIERS, TIER_BUILDING_REQUIREMENTS,
@@ -48,10 +53,10 @@ from compprog_pygame.games.hex_colony.ui_supply_priority import (
     SupplyPriorityTabContent,
 )
 from compprog_pygame.games.hex_colony.ui_tier_popup import TierPopup
-from compprog_pygame.games.hex_colony.ui_info_guide import InfoGuideOverlay
 from compprog_pygame.games.hex_colony.ui_tutorial import TutorialPanel
 from compprog_pygame.games.hex_colony import params
 from compprog_pygame.games.hex_colony.perf_monitor import PerfMonitor
+from compprog_pygame.games.hex_colony.logistics_monitor import LogisticsMonitor
 from compprog_pygame.games.hex_colony.strings import (
     building_label,
     NOTIF_RESEARCH_COMPLETE,
@@ -65,7 +70,6 @@ from compprog_pygame.games.hex_colony.strings import (
     TAB_DEMAND,
     TAB_SUPPLY,
     TAB_STATS,
-    TAB_INFO,
 )
 
 # Build-mode palette order
@@ -142,12 +146,21 @@ class Game:
         self._time_in_current_tier: float = 0.0
         self._drag_button: int = 0  # which mouse button started camera drag
 
-        # Tech tree, tier tracker & notifications
-        self.tech_tree = TechTree()
-        self.tier_tracker = TierTracker()
+        # Tech tree, tier tracker & notifications.  These are now
+        # owned by the player's :class:`ColonyState` (so clankers can
+        # have their own independent copies); ``Game`` just keeps
+        # references for the UI panels that haven't been refactored
+        # to look them up via the world.
+        self.tech_tree = self.world.player_colony.tech_tree
+        self.tier_tracker = self.world.player_colony.tier_tracker
         self.notifications = NotificationManager()
         self.world.notifications = self.notifications
         self.blueprints = BlueprintManager()
+
+        # Rival AI ("clanker") colonies — only populated on Hard
+        # difficulty.  On Easy this is an empty manager and adds zero
+        # per-frame cost.
+        self.clankers = ClankerManager(self.world)
 
         # UI
         self.ui = UIManager()
@@ -155,6 +168,7 @@ class Game:
         self._bottom_bar = BottomBar()
         self._building_info = BuildingInfoPanel()
         self._tile_info = TileInfoPanel()
+        self._possession_panel = ClankerPossessionPanel()
         self._pause_overlay = PauseOverlay()
         self._game_over_overlay = GameOverOverlay()
         self._help_overlay = HelpOverlay()
@@ -165,12 +179,12 @@ class Game:
         self._demand_priority_overlay = DemandPriorityOverlay()
         self._supply_priority_overlay = SupplyPriorityOverlay()
         self._tier_popup = TierPopup()
-        self._info_guide = InfoGuideOverlay()
         self._tutorial = TutorialPanel()
         self.ui.add_panel(self._resource_bar)
         self.ui.add_panel(self._bottom_bar)
         self.ui.add_panel(self._building_info)
         self.ui.add_panel(self._tile_info)
+        self.ui.add_panel(self._possession_panel)
         self.ui.add_panel(self._minimap)
         self.ui.add_panel(self._help_overlay)
         self.ui.add_panel(self._tech_tree_overlay)
@@ -179,7 +193,6 @@ class Game:
         self.ui.add_panel(self._demand_priority_overlay)
         self.ui.add_panel(self._supply_priority_overlay)
         self.ui.add_panel(self._tier_popup)
-        self.ui.add_panel(self._info_guide)
         self.ui.add_panel(self._tutorial)
         self.ui.add_panel(self._pause_overlay)
         self.ui.add_panel(self._game_over_overlay)
@@ -207,9 +220,8 @@ class Game:
         self._stats_tab = StatsTabContent()
         self._bottom_bar.add_tab(TAB_STATS, self._stats_tab)
 
-        # Info tab goes last.
-        from compprog_pygame.games.hex_colony.ui_bottom_bar import InfoTabContent
-        self._bottom_bar.add_tab(TAB_INFO, InfoTabContent())
+        # Info tab retired; the top-right Help button now exposes a
+        # richer, tier-aware guide via ``HelpOverlay``.
 
         # Wire building tab -> build mode
         buildings_tab = self._bottom_bar.buildings_tab
@@ -236,6 +248,12 @@ class Game:
         self._advanced_stats_overlay.tier_tracker = self.tier_tracker
         self._advanced_stats_overlay.god_mode_getter = lambda: self.god_mode
 
+        # Help overlay: dynamic tier/tech-aware guide reached via the
+        # top-right Help button (or H / I keys).
+        self._help_overlay.set_state(self.tech_tree, self.tier_tracker)
+        self._resource_bar.set_on_help(self._help_overlay.toggle)
+        self._resource_bar.set_on_research(self._on_open_tech_tree)
+
         # Wire pause overlay callbacks
         self._pause_overlay.on_resume = self._on_pause_resume
         self._pause_overlay.on_return_to_menu = self._on_pause_return_to_menu
@@ -247,13 +265,16 @@ class Game:
 
         # Wire building info -> tech tree overlay
         self._building_info.on_open_tech_tree = self._on_open_tech_tree
+        self._building_info.on_possess = self._on_possess_building
         self._building_info.tier_tracker = self.tier_tracker
         self._tech_tree_overlay.on_close = self._on_close_tech_tree
         self._tech_tree_overlay.tech_tree = self.tech_tree
 
-        # Let the world reach the tech tree (used by Research Center
-        # demand / supply logistics).
-        self.world.tech_tree = self.tech_tree
+        # Possession panel \u2014 clicking Unpossess closes it.
+        self._possession_panel.on_unpossess = self._on_unpossess
+
+        # ``world.tech_tree`` is now a property pointing at the
+        # player's colony; no assignment needed.
 
         # Wire game-over overlay callbacks
         self._game_over_overlay.on_return_to_menu = self._on_pause_return_to_menu
@@ -263,6 +284,11 @@ class Game:
         # and writes attributed spike records to a JSONL log from a
         # daemon thread.  Disabled by setting HEX_COLONY_PERF=0.
         self.perf = PerfMonitor(fps_target=self.settings.fps)
+        # Background logistics monitor — periodically snapshots
+        # per-network supply/demand, hauler tasks and starved
+        # buildings to ``hex_colony_logistics.jsonl`` from a daemon
+        # thread.  Disabled by setting HEX_COLONY_LOGISTICS=0.
+        self.logistics_mon = LogisticsMonitor()
 
     # ── Public entry point ───────────────────────────────────────
 
@@ -289,6 +315,7 @@ class Game:
         gc.disable()
         gc_accum = 0.0
         self.perf.start()
+        self.logistics_mon.start()
         try:
             while self.running:
                 dt = clock.tick(self.settings.fps) / 1000.0
@@ -307,6 +334,7 @@ class Game:
                 self.perf.frame_end()
         finally:
             self.perf.stop()
+            self.logistics_mon.stop()
             gc.unfreeze()
             gc.set_threshold(*prev_gc_thresholds)
             if prev_gc_enabled:
@@ -329,6 +357,10 @@ class Game:
             with self.perf.section("world_update"):
                 self.world.update(dt * self._sim_speed)
                 self.world.real_time_elapsed += dt
+            with self.perf.section("logistics_mon"):
+                self.logistics_mon.maybe_sample(self.world)
+            with self.perf.section("clankers_update"):
+                self.clankers.update(dt * self._sim_speed)
             with self.perf.section("stats_sample"):
                 # Sample stats every frame regardless of whether the
                 # Stats tab is currently visible — the user wants
@@ -336,17 +368,19 @@ class Game:
                 # first opened the tab.
                 self._stats_tab.history.sample(self.world)
             with self.perf.section("research_tier"):
-                # Research progress
-                completed = self.tech_tree.update(dt * self._sim_speed, self.world)
+                # Player research progress
+                completed = self.tech_tree.update(
+                    dt * self._sim_speed, self.world, "SURVIVOR",
+                )
                 if completed:
                     node = TECH_NODES[completed]
                     self.notifications.push(
                         NOTIF_RESEARCH_COMPLETE.format(name=node.name), (100, 255, 100),
                     )
-                # Expose research count for tier checks
-                self.world._tech_research_count = self.tech_tree.researched_count
-                # Tier advancement
-                if self.tier_tracker.try_advance(self.world):
+                # Expose research count for tier checks.
+                self.world.player_colony.tech_research_count = self.tech_tree.researched_count
+                # Player tier advancement
+                if self.tier_tracker.try_advance(self.world, "SURVIVOR"):
                     tier = TIERS[self.tier_tracker.current_tier]
                     next_tier = (
                         TIERS[self.tier_tracker.current_tier + 1]
@@ -357,6 +391,16 @@ class Game:
                     self._time_in_current_tier = 0.0
                 else:
                     self._time_in_current_tier += dt
+
+                # Tick each rival faction's research & tier independently.
+                for fid, colony in self.world.colonies.items():
+                    if colony.is_player:
+                        continue
+                    colony.tech_tree.update(
+                        dt * self._sim_speed, self.world, fid,
+                    )
+                    colony.tech_research_count = colony.tech_tree.researched_count
+                    colony.tier_tracker.try_advance(self.world, fid)
             self.notifications.update(dt)
             self._real_time_elapsed += dt
             with self.perf.section("tutorial"):
@@ -441,10 +485,8 @@ class Game:
                     btab = self._bottom_bar.buildings_tab
                     if btab:
                         btab.delete_active = False
-            elif event.key == pygame.K_h:
+            elif event.key in (pygame.K_h, pygame.K_i):
                 self._help_overlay.toggle()
-            elif event.key == pygame.K_i:
-                self._info_guide.toggle()
             elif event.key == pygame.K_1:
                 self._sim_speed = 3.0
             elif event.key == pygame.K_2:
@@ -596,11 +638,21 @@ class Game:
             self.renderer.selected_hex = coord
             # Show building info if there's a building, otherwise show tile info
             building = self.world.buildings.at(coord)
-            if building is not None:
+            if building is not None and building.faction == "SURVIVOR":
+                self._building_info.building = building
+                self._tile_info.tile = None
+                self._tile_info.has_ruin = False
+            elif (building is not None
+                    and building.type == BuildingType.TRIBAL_CAMP):
+                # Rival faction's home base \u2014 open the read-only popup
+                # so the player can hit "Possess" and inspect the AI.
                 self._building_info.building = building
                 self._tile_info.tile = None
                 self._tile_info.has_ruin = False
             else:
+                # Empty tile, or an AI ("clanker") building the player
+                # cannot inspect or control.  Show the tile-info panel
+                # so the player still gets terrain context.
                 self._building_info.building = None
                 tile = self.world.grid.get(coord)
                 self._tile_info.tile = tile
@@ -644,6 +696,9 @@ class Game:
         existing = tile.building
         _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.CONVEYOR}
         if existing is not None:
+            # Cannot build on top of (or replace) an AI building.
+            if existing.faction != "SURVIVOR":
+                return False
             # Can only build on top of a path/bridge (not wall, camp, or other buildings)
             if existing.type not in _PATH_LIKE:
                 return False
@@ -665,6 +720,13 @@ class Game:
         # Place building
         building = self.world.buildings.place(self.build_mode, coord)
         tile.building = building
+        # Quarry QoL: when the only mineable resource in range is a
+        # single ore type (iron OR copper, but not both, and no
+        # stone/mountain), auto-select it so the player doesn't have
+        # to open the building panel and click.  Stone remains the
+        # default (quarry_output=None) whenever stone is available.
+        if self.build_mode == BuildingType.QUARRY:
+            self._auto_select_quarry_output(building)
         # Clear overlays on the tile so building is visible — but keep
         # them under paths/bridges so the player still sees the tree /
         # ore / fiber sprite under the path tile.
@@ -791,6 +853,39 @@ class Game:
         if btab:
             btab.selected_building = None
 
+    def _auto_select_quarry_output(self, building) -> None:
+        """If a freshly-placed quarry has exactly one ore type in range
+        (and no stone source), default its output to that ore so the
+        player doesn't have to open the building panel."""
+        from compprog_pygame.games.hex_colony.supply_chain import _hex_range
+        from compprog_pygame.games.hex_colony.resources import Resource
+        grid = self.world.grid
+        has_stone = False
+        has_iron = False
+        has_copper = False
+        for nb in _hex_range(building.coord, params.COLLECTION_RADIUS):
+            if nb == building.coord:
+                continue
+            tile = grid.get(nb)
+            if tile is None:
+                continue
+            t = tile.terrain
+            if t in (Terrain.STONE_DEPOSIT, Terrain.MOUNTAIN):
+                has_stone = True
+            elif t == Terrain.IRON_VEIN:
+                has_iron = True
+            elif t == Terrain.COPPER_VEIN:
+                has_copper = True
+        # Stone is the default output (quarry_output=None).  Only
+        # auto-switch when stone isn't available AND exactly one ore
+        # type is present.
+        if has_stone:
+            return
+        if has_iron and not has_copper:
+            building.quarry_output = Resource.IRON
+        elif has_copper and not has_iron:
+            building.quarry_output = Resource.COPPER
+
     def _try_delete_building(self, coord) -> None:
         """Delete a building at the given coordinate, refunding half its cost."""
         tile = self.world.grid[coord]
@@ -799,6 +894,9 @@ class Game:
             return
         # Can't delete the camp
         if building.type == BuildingType.CAMP:
+            return
+        # Player cannot demolish AI ("clanker") buildings.
+        if building.faction != "SURVIVOR":
             return
         # Unassign workers and residents referencing this building
         for person in self.world.population.people:
@@ -817,6 +915,12 @@ class Game:
         # Remove building
         self.world.buildings.remove(building)
         tile.building = None
+        # Restore the overlay pixel art (trees, ore crystals, fiber,
+        # etc.) that was NaN-marked when the building was originally
+        # placed on this tile.  Without this call, deleting a quarry
+        # from an iron vein leaves a bare tile even though the ore
+        # is still there.
+        self.renderer.regenerate_overlays_at(coord, self.world)
         # Targeted tile layer redraw so cleared tile shows terrain
         self.renderer.invalidate_tile(coord)
         self._minimap.invalidate(coord)
@@ -858,6 +962,30 @@ class Game:
     def _on_close_tech_tree(self) -> None:
         """Close the tech tree overlay (unpause is automatic — overlay consumes events)."""
         pass
+
+    def _on_possess_building(self, building) -> None:
+        """Open the read-only Possession panel for the rival faction
+        whose TRIBAL_CAMP the player just clicked Possess on.
+        """
+        faction = getattr(building, "faction", "SURVIVOR")
+        if faction == "SURVIVOR":
+            return
+        # Find the matching clanker.
+        target = None
+        for c in self.clankers.clankers:
+            if c.faction_id == faction:
+                target = c
+                break
+        if target is None:
+            return
+        self._possession_panel.set_clanker(target)
+        # Hide the building info popup so the possession panel has the
+        # right side of the screen to itself.
+        self._building_info.building = None
+
+    def _on_unpossess(self) -> None:
+        """Close the Possession panel."""
+        self._possession_panel.set_clanker(None)
 
     def _on_open_advanced_stats(self) -> None:
         """Open the Advanced Statistics popup."""

@@ -57,6 +57,7 @@ from compprog_pygame.games.hex_colony.strings import (
     STATS_POPULATION,
     STATS_BUILDINGS,
     TAB_BUILDINGS,
+    TAB_TOOLTIPS,
 )
 from compprog_pygame.games.hex_colony.ui import (
     Fonts,
@@ -73,6 +74,7 @@ from compprog_pygame.games.hex_colony.ui import (
     UI_TEXT,
     draw_panel_bg,
     render_text_clipped,
+    set_tooltip,
 )
 
 if TYPE_CHECKING:
@@ -474,6 +476,78 @@ class BuildingsTabContent(TabContent):
                 rect.x + 8, rect.bottom - desc_surf.get_height() - 6,
             ))
 
+        # Hover tooltip: full cost, crafting station, and stock hint.
+        if is_hov and rect.collidepoint(pygame.mouse.get_pos()):
+            self._set_card_tooltip(btype, stock)
+
+    def _set_card_tooltip(self, btype: BuildingType, stock: int) -> None:
+        """Compose a verbose tooltip for a building card."""
+        from compprog_pygame.games.hex_colony.buildings import (
+            BUILDING_COSTS, BUILDING_HARVEST_RESOURCES,
+            BUILDING_HOUSING, BUILDING_MAX_WORKERS,
+            BUILDING_STORAGE_CAPACITY,
+        )
+        from compprog_pygame.games.hex_colony import params
+        from compprog_pygame.games.hex_colony.strings import (
+            building_label, resource_name,
+        )
+
+        title = self._LABEL.get(btype, btype.name.title())
+        lines: list[str] = []
+        desc = self._DESC.get(btype)
+        if desc:
+            lines.append(desc)
+
+        cost = BUILDING_COSTS.get(btype)
+        if cost is not None and getattr(cost, "costs", None):
+            cost_txt = ", ".join(
+                f"{amt} {resource_name(r.name)}"
+                for r, amt in cost.costs.items()
+            )
+            lines.append(f"Cost: {cost_txt}")
+        else:
+            lines.append("Cost: free")
+
+        station = params.BUILDING_RECIPE_STATION.get(btype.name)
+        if station:
+            lines.append(f"Crafted at: {building_label(station)}")
+
+        details: list[str] = []
+        mw = BUILDING_MAX_WORKERS.get(btype, 0)
+        if mw:
+            details.append(f"max {mw} worker{'s' if mw != 1 else ''}")
+        h = BUILDING_HOUSING.get(btype, 0)
+        if h:
+            details.append(f"houses {h}")
+        s = BUILDING_STORAGE_CAPACITY.get(btype, 0)
+        if s:
+            details.append(f"storage {s}")
+        if details:
+            lines.append(" \u2022 ".join(details))
+
+        harvests = BUILDING_HARVEST_RESOURCES.get(btype)
+        if harvests:
+            lines.append(
+                "Harvests: " + ", ".join(
+                    resource_name(r.name) for r in harvests
+                )
+            )
+
+        if not self._god():
+            if stock <= 0:
+                lines.append(
+                    "Out of stock \u2014 craft one at the station above."
+                )
+            else:
+                lines.append(
+                    f"Stock: {stock}.  Click to select, then click a "
+                    "tile to place."
+                )
+        else:
+            lines.append("Sandbox: unlimited stock.")
+
+        set_tooltip("\n".join(lines), title=title)
+
     def _draw_delete_card(
         self, surface: pygame.Surface, rect: pygame.Rect,
     ) -> None:
@@ -505,6 +579,14 @@ class BuildingsTabContent(TabContent):
         surface.blit(hint, (
             rect.x + 8, rect.bottom - hint.get_height() - 6,
         ))
+
+        if is_hov and rect.collidepoint(pygame.mouse.get_pos()):
+            set_tooltip(
+                "Toggle Delete mode (X).  Click any of your buildings "
+                "to demolish it; half of the materials are returned to "
+                "your inventory.\nThe Ship Wreckage cannot be deleted.",
+                title="Delete Building",
+            )
 
     # ── Events ───────────────────────────────────────────────────
 
@@ -574,7 +656,7 @@ class InfoTabContent(TabContent):
         )
         items = [
             (STATS_COLONY_AGE, f"{mins}:{secs:02d}"),
-            (STATS_POPULATION, str(world.population.count)),
+            (STATS_POPULATION, str(world.player_population_count)),
             (STATS_BUILDINGS, str(n_buildings)),
         ]
         # Lay out in columns
@@ -684,6 +766,13 @@ class BottomBar(Panel):
                 lx = tr.x + (tr.w - tab.label_surf.get_width()) // 2
                 ly = tr.y + (tr.h - tab.label_surf.get_height()) // 2
                 surface.blit(tab.label_surf, (lx, ly))
+
+            # Tooltip on tab hover — explains what the tab is for so
+            # new players don't have to open every tab to find out.
+            if is_hover and tr.collidepoint(pygame.mouse.get_pos()):
+                tip = TAB_TOOLTIPS.get(tab.label)
+                if tip:
+                    set_tooltip(tip, title=tab.label)
 
         if 0 <= self._active < len(self._tabs):
             self._tabs[self._active].content.draw_content(

@@ -13,6 +13,7 @@ from compprog_pygame.games.hex_colony.buildings import (
     Building, BuildingManager, BuildingType,
     BUILDING_COSTS, BUILDING_HARVEST_RESOURCES, BUILDING_MAX_WORKERS,
 )
+from compprog_pygame.games.hex_colony.colony import ColonyState
 from compprog_pygame.games.hex_colony.hex_grid import HexCoord, HexGrid, Terrain
 from compprog_pygame.games.hex_colony.people import PopulationManager, Task
 from compprog_pygame.games.hex_colony.procgen import generate_terrain, UNBUILDABLE
@@ -21,8 +22,9 @@ from compprog_pygame.games.hex_colony.resources import (
     Resource, TERRAIN_RESOURCE,
 )
 from compprog_pygame.games.hex_colony.settings import HexColonySettings
+from compprog_pygame.games.hex_colony.settings import Difficulty
 from compprog_pygame.games.hex_colony.supply_chain import _hex_range
-from compprog_pygame.games.hex_colony.tech_tree import TECH_NODES
+from compprog_pygame.games.hex_colony.tech_tree import TECH_NODES, TechTree, TierTracker
 from compprog_pygame.games.hex_colony import params
 from compprog_pygame.games.hex_colony.strings import (
     building_label,
@@ -113,6 +115,11 @@ class Network:
     # placed in a single tier and ``logistics_target`` is automatically
     # computed as ``floor(building_count / 3)``.
     worker_auto: bool = True
+    # Faction tag derived from member buildings.  Networks are pure
+    # connected components, so geographically separated colonies
+    # never share a network — every Network has a single faction.
+    # The UI only displays ``"SURVIVOR"`` networks.
+    faction: str = "SURVIVOR"
 
     @property
     def name(self) -> str:
@@ -148,14 +155,25 @@ class World:
         self.grid = HexGrid()
         self.buildings = BuildingManager()
         self.population = PopulationManager()
-        self.inventory = Inventory()
-        self.building_inventory = BuildingInventory()
+        # Per-faction colony state.  The player's "SURVIVOR" colony is
+        # always present; clanker colonies are added by
+        # ``_place_ai_tribal_camps`` on Hard difficulty.  Convenience
+        # properties below alias the player's colony so legacy UI / Game
+        # code can keep using ``world.inventory`` etc. unchanged.
+        self.player_colony: ColonyState = ColonyState(
+            faction_id="SURVIVOR",
+            camp_coord=HexCoord(0, 0),
+            is_player=True,
+        )
+        self.colonies: dict[str, ColonyState] = {
+            self.player_colony.faction_id: self.player_colony,
+        }
+        # Coordinates of AI tribal camps placed at world-gen time.
+        # Empty on Easy difficulty (or any seed without spawn points).
+        # Used by ``Game`` to bootstrap one ``Clanker`` AI per camp.
+        self.ai_camp_coords: list[HexCoord] = []
         self.time_elapsed: float = 0.0
         self.real_time_elapsed: float = 0.0
-        # Cumulative resources produced by buildings (harvested/crafted).
-        # Separate from ``Inventory.total_produced`` which only counts
-        # resources that pass through the global pool.
-        self._total_produced: dict[Resource, float] = {r: 0.0 for r in Resource}
         self._housing_dirty: bool = True  # needs recalc on first frame
         # Networks only need rebuilding when buildings are added,
         # removed, or destroyed — population shifts alone don't change
@@ -214,10 +232,6 @@ class World:
         # Optional NotificationManager plugged in by game.py for
         # one-time toasts like "No workers can reach X".
         self.notifications: object | None = None
-        # Optional TechTree reference plugged in by game.py so the
-        # research center can post per-resource demand for whatever
-        # research is currently active.
-        self.tech_tree: object | None = None
         # Tiles whose terrain just changed because their resource ran
         # out.  The renderer drains this set each frame to clear the
         # static overlay sprites (trees, stones, ore crystals) on top
@@ -239,6 +253,61 @@ class World:
         self._unreachable_cache: set[int] = set()
         self._starved_cache: set[int] = set()
 
+    # ── Player-colony aliases ────────────────────────────────────
+    # These properties exist so the rest of the game (UI panels,
+    # renderer, tutorial, save/load, tests) can keep reading
+    # ``world.inventory`` etc. as if there was a single global pool.
+    # Internally every gameplay system that *writes* to inventory /
+    # building_inventory / total_produced now goes through
+    # :meth:`colony_for` so AI factions get their own isolated state.
+
+    @property
+    def inventory(self) -> Inventory:
+        return self.player_colony.inventory
+
+    @property
+    def building_inventory(self) -> BuildingInventory:
+        return self.player_colony.building_inventory
+
+    @property
+    def tech_tree(self) -> TechTree:
+        return self.player_colony.tech_tree
+
+    @property
+    def tier_tracker(self) -> TierTracker:
+        return self.player_colony.tier_tracker
+
+    @property
+    def _total_produced(self) -> dict[Resource, float]:
+        return self.player_colony.total_produced
+
+    @property
+    def _tech_research_count(self) -> int:
+        return self.player_colony.tech_research_count
+
+    @_tech_research_count.setter
+    def _tech_research_count(self, value: int) -> None:
+        self.player_colony.tech_research_count = value
+
+    def colony_for(self, building_or_faction) -> ColonyState:
+        """Resolve a building (or bare faction-id string) to its
+        :class:`ColonyState`.  Falls back to the player colony for
+        unknown ids — defensive guard for legacy buildings that
+        somehow got placed without a faction tag."""
+        if isinstance(building_or_faction, str):
+            return self.colonies.get(building_or_faction, self.player_colony)
+        faction = getattr(building_or_faction, "faction", "SURVIVOR")
+        return self.colonies.get(faction, self.player_colony)
+
+    def colony_of_person(self, person) -> ColonyState:
+        """Each colonist's faction is determined by where they live.
+        Homeless people default to the player colony so the worker
+        scheduler doesn't drop them on the floor mid-game."""
+        home = getattr(person, "home", None)
+        if home is None:
+            return self.player_colony
+        return self.colony_for(home)
+
     @property
     def worker_priority(self) -> list[list[Building]]:
         """Flat view of every network's tier list — convenience used by
@@ -251,13 +320,55 @@ class World:
         return flat
 
     @property
-    def game_over(self) -> bool:
-        """The mission is lost when all survivors are dead."""
-        return self.population.count == 0 and self.time_elapsed > 0
+    def player_networks(self) -> list["Network"]:
+        """Subset of :attr:`networks` belonging to the player's faction.
 
-    def total_produced(self, res: Resource) -> float:
-        """Cumulative resources produced by all buildings (harvested/crafted)."""
-        return self._total_produced.get(res, 0.0)
+        AI ("clanker") networks are simulated separately and must not
+        appear in the player's worker / demand / supply UI panels.
+        """
+        return [n for n in self.networks if n.faction == "SURVIVOR"]
+
+    @property
+    def game_over(self) -> bool:
+        """The mission is lost when all *player* survivors are dead.
+
+        AI rivals (clankers) live and die in their own colonies — the
+        player's run only ends when their own population reaches zero.
+        """
+        return self.player_population_count == 0 and self.time_elapsed > 0
+
+    def faction_population_count(self, faction: str) -> int:
+        """Number of colonists currently homed to *faction*.
+
+        People with no home default to the player faction so brand-new
+        spawns don't drop off the count between housing reassignments.
+        """
+        n = 0
+        for p in self.population.people:
+            home = getattr(p, "home", None)
+            if home is None:
+                if faction == self.player_colony.faction_id:
+                    n += 1
+                continue
+            if getattr(home, "faction", "SURVIVOR") == faction:
+                n += 1
+        return n
+
+    @property
+    def player_population_count(self) -> int:
+        """Convenience wrapper — count of player-faction colonists only.
+
+        UI panels showing the player's stats should use this instead of
+        ``world.population.count`` so AI rival colonies don't pollute
+        the displayed numbers.
+        """
+        return self.faction_population_count(self.player_colony.faction_id)
+
+    def total_produced(self, res: Resource, faction: str = "SURVIVOR") -> float:
+        """Cumulative resources produced by *faction*'s buildings."""
+        return self.colonies.get(
+            faction, self.player_colony,
+        ).total_produced.get(res, 0.0)
 
     # ── Generation ───────────────────────────────────────────────
 
@@ -279,10 +390,18 @@ class World:
             seed, settings, progress_callback=progress_callback,
         )
         world._place_starting_camp()
-        world._place_ai_tribal_camps(ai_camp_coords)
-        world._init_resources()
-        world._init_building_inventory()
-        world._spawn_people()
+        # Bootstrap the player's colony state with starting buildings,
+        # resources, and people.
+        world._init_colony_resources(world.player_colony)
+        world._init_colony_building_inventory(world.player_colony)
+        world._spawn_colony_people(world.player_colony)
+        # AI tribal camps only spawn on Hard difficulty.  Each one
+        # gets its own ``ColonyState`` so its production / research /
+        # tier progress is fully isolated from the player.  On Easy
+        # the camps list is empty so this is a no-op.
+        if settings.difficulty == Difficulty.HARD:
+            world._place_ai_tribal_camps(ai_camp_coords)
+            world.ai_camp_coords = list(ai_camp_coords)
         return world
 
     def _place_starting_camp(self) -> None:
@@ -311,10 +430,13 @@ class World:
     def _place_ai_tribal_camps(self, coords: list[HexCoord]) -> None:
         """Place a primitive AI tribe camp at each given coordinate.
 
-        Each camp belongs to its own ``"PRIMITIVE_<i>"`` tribe so future
-        AI logic can treat them as independent factions.  If the target
-        tile is unbuildable (water/mountain), the nearest passable hex
-        within a small radius is used as a fallback.
+        Each camp belongs to its own ``"PRIMITIVE_<i>"`` faction and
+        gets its own :class:`ColonyState` (independent inventory,
+        building inventory, tech tree, and tier tracker) so the
+        clanker AI can play the game alongside the player using the
+        same systems.  If the target tile is unbuildable
+        (water/mountain), the nearest passable hex within a small
+        radius is used as a fallback.
         """
         for i, coord in enumerate(coords):
             target = coord
@@ -341,31 +463,64 @@ class World:
                         break
             if tile is None:
                 continue
+            faction_id = f"PRIMITIVE_{i}"
             camp = self.buildings.place(BuildingType.TRIBAL_CAMP, target)
-            camp.faction = f"PRIMITIVE_{i}"
+            camp.faction = faction_id
             tile.building = camp
+            # Stamp the camp with the same starting resources the
+            # player gets — ``_init_colony_resources`` writes into the
+            # colony inventory and the camp's local storage matches the
+            # player CAMP so logistics has something to draw from.
+            s = self.settings
+            m = params.CAMP_STORAGE_MULTIPLIER
+            camp.storage = {
+                Resource.WOOD: float(s.start_wood * m),
+                Resource.FIBER: float(s.start_fiber * m),
+                Resource.STONE: float(s.start_stone * m),
+                Resource.FOOD: float(s.start_food * m),
+                Resource.IRON: float(params.START_IRON),
+                Resource.COPPER: float(params.START_COPPER),
+            }
+            camp.storage_capacity = max(
+                params.BUILDING_STORAGE_CAMP,
+                sum(v * m for v in (s.start_wood, s.start_fiber,
+                                    s.start_stone, s.start_food))
+                + params.START_IRON + params.START_COPPER,
+            )
+            # Clanker colony state.
+            colony = ColonyState(
+                faction_id=faction_id,
+                camp_coord=target,
+                is_player=False,
+            )
+            self.colonies[faction_id] = colony
+            self._init_colony_resources(colony)
+            self._init_colony_building_inventory(colony)
+            self._spawn_colony_people(colony)
 
-    def _init_resources(self) -> None:
+    def _init_colony_resources(self, colony: ColonyState) -> None:
         s = self.settings
-        self.inventory[Resource.WOOD] = s.start_wood
-        self.inventory[Resource.FIBER] = s.start_fiber
-        self.inventory[Resource.STONE] = s.start_stone
-        self.inventory[Resource.FOOD] = s.start_food
-        self.inventory[Resource.IRON] = params.START_IRON
-        self.inventory[Resource.COPPER] = params.START_COPPER
+        inv = colony.inventory
+        inv[Resource.WOOD] = s.start_wood
+        inv[Resource.FIBER] = s.start_fiber
+        inv[Resource.STONE] = s.start_stone
+        inv[Resource.FOOD] = s.start_food
+        inv[Resource.IRON] = params.START_IRON
+        inv[Resource.COPPER] = params.START_COPPER
 
-    def _init_building_inventory(self) -> None:
-        """Give the player their starting buildings."""
+    def _init_colony_building_inventory(self, colony: ColonyState) -> None:
+        """Give *colony* the standard starting kit of placeable buildings."""
         for name, count in params.START_BUILDINGS.items():
             btype = BuildingType[name]
-            self.building_inventory.add(btype, count)
+            colony.building_inventory.add(btype, count)
 
-    def _spawn_people(self) -> None:
-        origin = HexCoord(0, 0)
-        camp = self.buildings.at(origin)
+    def _spawn_colony_people(self, colony: ColonyState) -> None:
+        """Spawn the starting population at *colony*'s camp.  Each
+        person's home is set to that camp so the worker / housing
+        systems associate them with the right faction."""
+        camp = self.buildings.at(colony.camp_coord)
         for _ in range(self.settings.start_population):
-            p = self.population.spawn(origin, self.settings.hex_size)
-            # Initial assignment handled by _update_housing in first update
+            p = self.population.spawn(colony.camp_coord, self.settings.hex_size)
             if camp is not None:
                 p.home = camp
                 camp.residents += 1
@@ -646,6 +801,7 @@ class World:
                     if parent_ids and parent_ids[0] in old_nets
                     else True
                 ),
+                faction=(comp[0].faction if comp else "SURVIVOR"),
             ))
 
         # Stable display order: by id ascending.
@@ -1056,9 +1212,6 @@ class World:
                 continue
             by_network.setdefault(net.id, []).append(p)
 
-        camp_coord = HexCoord(0, 0)
-        camp = self.buildings.at(camp_coord)
-
         # Pre-compute per-network demand caches so the per-building
         # _effective_worker_demand calls are O(1) instead of O(B).
         for net in self.networks:
@@ -1066,9 +1219,13 @@ class World:
 
         for net in self.networks:
             people = by_network.get(net.id, [])
+            # Look up the owning faction's camp so homeless overflow at
+            # *that* camp is excluded from the available worker pool.
+            net_colony = self.colonies.get(net.faction, self.player_colony)
+            camp = self.buildings.at(net_colony.camp_coord)
             # Available = people in this network who aren't "homeless
             # overflow" at the camp.  Homeless people still belong to
-            # network 1 (where the camp is) and can be assigned.
+            # the network containing the camp and can be assigned.
             available = len(people)
             if camp is not None and net.contains(camp):
                 homeless = max(0, camp.residents - camp.housing_capacity)
@@ -1242,7 +1399,10 @@ class World:
                 or (p.path and p.path[-1] != tgt.coord)
             )
             if needs_path:
-                path = self._find_building_path(p.hex_pos, tgt.coord)
+                path = self._find_building_path(
+                    p.hex_pos, tgt.coord,
+                    faction=self.colony_of_person(p).faction_id,
+                )
                 if path:
                     p.path = path
                     p.task = Task.COMMUTE
@@ -1468,7 +1628,7 @@ class World:
         # TechTree.tick() naturally distribute the load across
         # multiple research centers.
         if b.type == BuildingType.RESEARCH_CENTER:
-            tt = self.tech_tree
+            tt = self.colony_for(b).tech_tree
             if tt is not None and getattr(tt, "current_research", None):
                 node = TECH_NODES.get(tt.current_research)
                 if node is not None:
@@ -1512,7 +1672,7 @@ class World:
         ) and isinstance(b.recipe, Resource):
             return True
         if b.type == BuildingType.RESEARCH_CENTER:
-            tt = self.tech_tree
+            tt = self.colony_for(b).tech_tree
             if tt is not None and getattr(tt, "current_research", None):
                 return True
         if b.housing_capacity > 0:
@@ -1554,7 +1714,9 @@ class World:
             entry = cached.get(res)
             if entry is not None:
                 return entry
-        stock = float(self.inventory[res])
+        # Use the inventory of the faction owning this network.
+        inv = self.colonies.get(net.faction, self.player_colony).inventory
+        stock = float(inv[res])
         cap = 0.0
         for b in net.buildings:
             stock += float(b.storage.get(res, 0.0))
@@ -1594,8 +1756,8 @@ class World:
         buffer_cache: dict[Resource, tuple[float, float]] = {}
         # Lazy-fill via _network_resource_buffer fallback for resources
         # not present in storage; pre-seed the common ones from the
-        # accumulated stock map.
-        inv = self.inventory
+        # accumulated stock map.  Uses the owning faction's inventory.
+        inv = self.colonies.get(net.faction, self.player_colony).inventory
         for r in per_res_stock:
             buffer_cache[r] = (per_res_stock[r] + float(inv[r]), total_cap)
         net._buffer_cache = buffer_cache  # type: ignore[attr-defined]
@@ -1737,7 +1899,10 @@ class World:
                 return  # still walking
             if p.hex_pos != src.coord:
                 # Path broke — try to replan once.
-                path = self._find_building_path(p.hex_pos, src.coord)
+                path = self._find_building_path(
+                    p.hex_pos, src.coord,
+                    faction=self.colony_of_person(p).faction_id,
+                )
                 if path:
                     p.path = path
                     return
@@ -1756,7 +1921,10 @@ class World:
                     # Already carrying something — head to destination.
                     dst = p.logistics_dst
                     if dst is not None:
-                        path = self._find_building_path(p.hex_pos, dst.coord)
+                        path = self._find_building_path(
+                            p.hex_pos, dst.coord,
+                            faction=self.colony_of_person(p).faction_id,
+                        )
                         if path:
                             p.path = path
                             p.task = Task.LOGISTICS_DELIVER
@@ -1788,13 +1956,17 @@ class World:
                 if next_src is not None and next_src is not src:
                     detour_path = self._find_building_path(
                         p.hex_pos, next_src.coord,
+                        faction=self.colony_of_person(p).faction_id,
                     )
                     if detour_path:
                         p.logistics_src = next_src
                         p.path = detour_path
                         # Stay in PICKUP state — we'll loop back here.
                         return
-            path = self._find_building_path(p.hex_pos, dst.coord)
+            path = self._find_building_path(
+                p.hex_pos, dst.coord,
+                faction=self.colony_of_person(p).faction_id,
+            )
             if not path:
                 # Lost path — drop cargo back (best effort).
                 self._deposit(src, res, take)
@@ -1810,9 +1982,12 @@ class World:
             dst = p.logistics_dst
             if dst is None or id(dst) not in self._valid_bids:
                 # Destination gone.  Drop cargo at any storage we're
-                # on (best effort) or just discard to global inventory.
+                # on (best effort) or just discard to the carrier's
+                # faction inventory.
                 if p.logistics_res is not None and p.logistics_amount > 0:
-                    self.inventory.add(p.logistics_res, p.logistics_amount)
+                    self.colony_of_person(p).inventory.add(
+                        p.logistics_res, p.logistics_amount,
+                    )
                 p.carry_resource = None
                 p.logistics_amount = 0.0
                 self._logistics_reset(p)
@@ -1820,13 +1995,18 @@ class World:
             if p.path:
                 return
             if p.hex_pos != dst.coord:
-                path = self._find_building_path(p.hex_pos, dst.coord)
+                path = self._find_building_path(
+                    p.hex_pos, dst.coord,
+                    faction=self.colony_of_person(p).faction_id,
+                )
                 if path:
                     p.path = path
                     return
-                # Drop to inventory as fallback.
+                # Drop to the carrier's faction inventory as fallback.
                 if p.logistics_res is not None and p.logistics_amount > 0:
-                    self.inventory.add(p.logistics_res, p.logistics_amount)
+                    self.colony_of_person(p).inventory.add(
+                        p.logistics_res, p.logistics_amount,
+                    )
                 p.carry_resource = None
                 p.logistics_amount = 0.0
                 self._logistics_reset(p)
@@ -1837,8 +2017,9 @@ class World:
                 deposited = self._deposit(dst, res, p.logistics_amount)
                 leftover = p.logistics_amount - deposited
                 if leftover > 0:
-                    # Dest full; push leftover to global inventory.
-                    self.inventory.add(res, leftover)
+                    # Dest full; push leftover into the destination
+                    # building's faction inventory.
+                    self.colony_for(dst).inventory.add(res, leftover)
             p.carry_resource = None
             p.logistics_amount = 0.0
             self._logistics_reset(p)
@@ -2025,9 +2206,12 @@ class World:
         for b in self.buildings.buildings:
             if b.housing_capacity <= 0:
                 continue
-            # Skip non-player (AI tribe) dwellings — they reproduce on
-            # their own AI logic, not the player's population system.
-            if b.faction != "SURVIVOR":
+            # Tribal camps don't reproduce — they're a faction's
+            # founding building, not a true dwelling.  Every other
+            # housing-capable building (HOUSE, HABITAT, the player's
+            # CAMP) reproduces from on-site food, regardless of
+            # faction.
+            if b.type == BuildingType.TRIBAL_CAMP:
                 continue
             # Only tick timer when there's room to grow.
             if b.residents >= b.housing_capacity:
@@ -2053,7 +2237,11 @@ class World:
                 new_person.home = b
                 b.residents += 1
                 spawned_any = True
-                if self.notifications is not None:
+                # Only the player should see "new colonist" toasts —
+                # AI rival colonies grow silently in the background.
+                if (self.notifications is not None
+                        and getattr(b, "faction", "SURVIVOR")
+                        == self.player_colony.faction_id):
                     self.notifications.push(
                         NOTIF_NEW_COLONIST, (180, 255, 180),
                     )
@@ -2163,6 +2351,15 @@ class World:
         # not just settle on the most-empty building.
         FAIR_FULL_BONUS_AFTER = 4.0
         FAIR_BONUS_WEIGHT = 1.5
+        # Long-wait starvation boost: once a consumer has been waiting
+        # significantly longer than the normal fairness window, give
+        # it an escalating positive bonus so distant / neglected
+        # buildings (which competing close-by consumers can shadow on
+        # urgency alone) eventually get a hauler dispatched to them.
+        # Ramps from 0 at FAIR_FULL_BONUS_AFTER up to STARVE_MAX_BONUS
+        # at STARVE_SATURATE_AFTER seconds of neglect.
+        STARVE_SATURATE_AFTER = 30.0
+        STARVE_MAX_BONUS = 3.0
         now = self.time_elapsed
         for sb, sres, samt, sfill in supplies:
             # Effective supply after subtracting claimed reservations.
@@ -2212,7 +2409,14 @@ class World:
                     # Just served — penalise so siblings catch up.
                     fairness = -FAIR_BONUS_WEIGHT
                 elif wait >= FAIR_FULL_BONUS_AFTER:
-                    fairness = 0.0
+                    # Base fairness returns to neutral, then an
+                    # escalating positive bonus kicks in once neglect
+                    # exceeds the normal window so long-ignored
+                    # buildings eventually win a hauler dispatch.
+                    over = wait - FAIR_FULL_BONUS_AFTER
+                    span = max(1.0, STARVE_SATURATE_AFTER - FAIR_FULL_BONUS_AFTER)
+                    frac = min(1.0, over / span)
+                    fairness = STARVE_MAX_BONUS * frac
                 else:
                     # Linear ramp from -W (just served) to 0 (cooled
                     # off).  Buildings that haven't been served at
@@ -2245,7 +2449,10 @@ class World:
                 p.task = Task.LOGISTICS_PICKUP
                 self._demand_last_served[(id(best_dst), best_res)] = now
                 return
-            path = self._find_building_path(p.hex_pos, best_src.coord)
+            path = self._find_building_path(
+                p.hex_pos, best_src.coord,
+                faction=self.colony_of_person(p).faction_id,
+            )
             if not path:
                 continue
             p.logistics_src = best_src
@@ -2296,6 +2503,10 @@ class World:
         result: set[int] = set()
         for net in self.networks:
             if net.id in populated_net_ids:
+                continue
+            # AI (clanker) networks are simulated separately and have
+            # no player workers to be 'unreachable' from.
+            if net.faction != "SURVIVOR":
                 continue
             for b in net.buildings:
                 if BUILDING_MAX_WORKERS.get(b.type, 0) <= 0:
@@ -2361,9 +2572,12 @@ class World:
 
     # ── Housing connectivity ─────────────────────────────────────
 
-    def _connected_houses(self) -> list[Building]:
-        """BFS from camp through all buildings; return non-camp houses."""
-        camp = self.buildings.at(HexCoord(0, 0))
+    _CAMP_TYPES = (BuildingType.CAMP, BuildingType.TRIBAL_CAMP)
+
+    def _connected_houses_for(self, colony: ColonyState) -> list[Building]:
+        """BFS from *colony*'s camp through adjacent buildings; return
+        the dwellings (non-camp, housing_capacity > 0) reachable."""
+        camp = self.buildings.at(colony.camp_coord)
         if camp is None:
             return []
         houses: list[Building] = []
@@ -2378,67 +2592,83 @@ class World:
                 nb_building = self.buildings.at(nb)
                 if nb_building is None:
                     continue
+                if nb_building.faction != colony.faction_id:
+                    # Don't BFS through another faction's territory.
+                    continue
                 if (nb_building.housing_capacity > 0
-                        and nb_building.type != BuildingType.CAMP):
+                        and nb_building.type not in self._CAMP_TYPES):
                     houses.append(nb_building)
                 queue.append(nb)
         return houses
 
+    def _connected_houses(self) -> list[Building]:
+        """Backwards-compatible wrapper — player-only houses."""
+        return self._connected_houses_for(self.player_colony)
+
     def connected_housing(self) -> int:
-        """Total housing = camp capacity + capacity of houses reachable
-        from the camp via adjacent buildings/paths."""
-        camp = self.buildings.at(HexCoord(0, 0))
+        """Total player housing = camp capacity + capacity of houses
+        reachable from the player camp via adjacent buildings/paths."""
+        camp = self.buildings.at(self.player_colony.camp_coord)
         cap = camp.housing_capacity if camp else 0
-        return cap + sum(h.housing_capacity for h in self._connected_houses())
+        return cap + sum(
+            h.housing_capacity for h in self._connected_houses_for(self.player_colony)
+        )
 
     def _update_housing(self) -> None:
-        """Assign every person a home.  Homeless overflow goes to camp.
+        """Assign every person a home within their own faction.
 
-        People whose home changes get a RELOCATE task with a BFS path
-        through connected buildings so they visually walk to their new home.
+        Each colony runs the same BFS-from-camp + balanced-fill
+        algorithm independently.  People without a faction-matching
+        dwelling overflow onto their home faction's camp.
         """
-        camp = self.buildings.at(HexCoord(0, 0))
-        if camp is None:
-            return
+        # Pre-compute per-colony dwelling lists & reset resident counts.
+        per_colony_dwellings: dict[str, list[Building]] = {}
+        for colony in self.colonies.values():
+            camp = self.buildings.at(colony.camp_coord)
+            if camp is None:
+                per_colony_dwellings[colony.faction_id] = []
+                continue
+            camp.residents = 0
+            houses = self._connected_houses_for(colony)
+            for house in houses:
+                house.residents = 0
+            per_colony_dwellings[colony.faction_id] = [camp, *houses]
 
-        # Reset camp residents count; we'll recount below
-        camp.residents = 0
-
-        # Connected houses via shared BFS
-        connected_houses = self._connected_houses()
-
-        # Reset all house resident counts
-        for house in connected_houses:
-            house.residents = 0
-
-        # People currently relocating: keep their assignment if still valid
+        # Snapshot current relocations: keep them if the home is still valid.
         for person in self.population.people:
             if person.task != Task.RELOCATE or not person.path:
                 continue
             home = person.home
             if home is None:
                 continue
-            if home == camp:
-                camp.residents += 1
-            elif home in connected_houses and home.residents < home.housing_capacity:
+            faction = getattr(home, "faction", "SURVIVOR")
+            dwellings = per_colony_dwellings.get(faction, [])
+            camp = dwellings[0] if dwellings else None
+            if home is camp:
+                if camp is not None:
+                    camp.residents += 1
+            elif home in dwellings and home.residents < home.housing_capacity:
                 home.residents += 1
             else:
-                # Home is no longer valid — cancel relocation
+                # Old home no longer a valid dwelling for this faction.
                 person.task = Task.IDLE
                 person.path = []
 
-        # Assign non-relocating people.  Distribute as evenly as
-        # possible across every connected dwelling (camp + houses) by
-        # always picking the dwelling with the fewest current residents
-        # that still has capacity.  Fall back to keeping the person's
-        # existing home only if it's already the most-empty option.
-        dwellings: list[Building] = [camp] + list(connected_houses)
+        # Assign non-relocating people to a dwelling within their own
+        # faction.  Person.faction follows from home; pick the same
+        # faction as their *current* home (or default to SURVIVOR for
+        # any newly-spawned person without a home yet).
         for person in self.population.people:
             if person.task == Task.RELOCATE and person.path:
-                continue  # already counted above
-
+                continue
             old_home = person.home
-            # Pick dwelling with capacity and the fewest residents.
+            faction = (
+                getattr(old_home, "faction", None)
+                if old_home is not None else self.player_colony.faction_id
+            ) or self.player_colony.faction_id
+            dwellings = per_colony_dwellings.get(faction, [])
+            camp = dwellings[0] if dwellings else None
+
             best: Building | None = None
             best_ratio = 2.0
             for d in dwellings:
@@ -2449,14 +2679,13 @@ class World:
                     best_ratio = ratio
                     best = d
             if best is None:
-                # No connected dwelling has space — overflow to camp
-                # (camp is also allowed to be over its cap = homeless).
+                # No dwelling with space \u2014 overflow to the colony's camp.
+                if camp is None:
+                    continue
                 person.home = camp
                 camp.residents += 1
                 placed_home = camp
             else:
-                # If the old home is as empty as the best option, keep
-                # them there to avoid churn.
                 if (old_home is not None and old_home in dwellings
                         and old_home.residents < old_home.housing_capacity
                         and old_home.residents / max(1, old_home.housing_capacity) <= best_ratio):
@@ -2465,21 +2694,21 @@ class World:
                 best.residents += 1
                 placed_home = best
 
-            # Trigger relocation animation if home changed
             if placed_home != old_home and old_home is not None:
                 path = self._find_building_path(
                     person.hex_pos, placed_home.coord,
+                    faction=self.colony_of_person(person).faction_id,
                 )
                 if path:
                     person.task = Task.RELOCATE
                     person.path = path
                 else:
-                    # No building path — snap to new home
                     person.hex_pos = placed_home.coord
                     person.snap_to_hex(self.settings.hex_size)
 
     def _find_building_path(
         self, start: HexCoord, end: HexCoord,
+        *, faction: str | None = None,
     ) -> list[HexCoord]:
         """BFS shortest path from *start* to *end* through building hexes.
 
@@ -2487,13 +2716,19 @@ class World:
         cleared tile).  All intermediate and destination hexes must have
         a building.
 
+        When *faction* is supplied, the search refuses to BFS through
+        any building belonging to a different faction \u2014 player
+        commuters and haulers therefore can't tunnel through a rival
+        colony's settlement (and vice versa).  ``None`` keeps the
+        legacy any-faction behaviour for callers that don't care.
+
         Results are memoised in ``_path_cache`` for the duration of the
         current ``update()`` call so multiple commuters / logistics
         workers requesting the same route only pay one BFS.
         """
         if start == end:
             return []
-        cache_key = (start, end)
+        cache_key = (start, end, faction)
         cached = self._path_cache.get(cache_key)
         if cached is not None:
             # Return a copy so the caller can mutate it freely.
@@ -2514,7 +2749,13 @@ class World:
                 if nb in visited:
                     continue
                 visited.add(nb)
-                if buildings_at(nb) is None:
+                nb_b = buildings_at(nb)
+                if nb_b is None:
+                    continue
+                if (faction is not None
+                        and getattr(nb_b, "faction", "SURVIVOR")
+                        != faction):
+                    # Don't BFS through a rival colony's tiles.
                     continue
                 parent[nb] = current
                 if nb == end:
@@ -2688,7 +2929,7 @@ class World:
             if mrec is not None:
                 return {r: float(amt * 2) for r, amt in mrec.inputs.items()}
         if b.type == BuildingType.RESEARCH_CENTER:
-            tt = self.tech_tree
+            tt = self.colony_for(b).tech_tree
             if tt is not None and getattr(tt, "current_research", None):
                 node = TECH_NODES.get(tt.current_research)
                 if node is not None:
@@ -2728,7 +2969,10 @@ class World:
         """Deposit a newly-produced resource and record cumulative production."""
         dep = self._deposit(b, res, amount)
         if dep > 0:
-            self._total_produced[res] += dep
+            # Credit the building's owning faction for tier-progress
+            # tracking — the player and each clanker each maintain
+            # their own "lifetime gathered" counter.
+            self.colony_for(b).total_produced[res] += dep
         return dep
 
     def _harvest_from_terrain(
@@ -3068,20 +3312,24 @@ class World:
         if station.craft_progress >= params.WORKSHOP_CRAFT_TIME:
             for res, amount in cost.costs.items():
                 self._station_consume(station, res, amount)
-            self.building_inventory.add(station.recipe)
+            # Crafted placeable buildings go into the *owning faction's*
+            # building inventory so each clanker has its own stockpile.
+            self.colony_for(station).building_inventory.add(station.recipe)
             station.craft_progress = 0.0
 
     def _station_available(
         self, station, res: Resource, amount: float,
     ) -> float:
         """How much of *res* the station can draw on, counting its own
-        storage first, the global inventory second."""
-        return station.storage.get(res, 0.0) + self.inventory[res]
+        storage first, then its faction's global inventory."""
+        colony_inv = self.colony_for(station).inventory
+        return station.storage.get(res, 0.0) + colony_inv[res]
 
     def _station_consume(
         self, station, res: Resource, amount: float,
     ) -> None:
-        """Consume *amount* of *res*, preferring the station's storage."""
+        """Consume *amount* of *res*, preferring the station's storage,
+        then drawing from its faction's global inventory."""
         from_local = min(station.storage.get(res, 0.0), amount)
         if from_local > 0:
             station.storage[res] = station.storage.get(res, 0.0) - from_local
@@ -3089,7 +3337,7 @@ class World:
                 station.storage.pop(res, None)
         rem = amount - from_local
         if rem > 0:
-            self.inventory.spend(res, rem)
+            self.colony_for(station).inventory.spend(res, rem)
 
     def _tick_material_recipe(self, station, recipe, dt: float) -> None:
         # Ensure there's room to deposit the next batch of output.

@@ -62,7 +62,7 @@ def _has_workers_at(world: "World", btype: BuildingType) -> bool:
 
 
 def _population(world: "World") -> int:
-    return world.population.count
+    return world.player_population_count
 
 
 def _research_done(world: "World", node_id: str) -> bool:

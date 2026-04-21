@@ -59,30 +59,30 @@ BUILDING_SHORT_LABELS: dict[str, str] = {
 # ═════════════════════════════════════════════════════════════════
 
 BUILDING_DESCRIPTIONS: dict[str, str] = {
-    "HABITAT":          "Houses 6 survivors",
-    "PATH":             "Connects buildings",
-    "BRIDGE":           "Path over water",
-    "WOODCUTTER":       "Harvests wood",
-    "QUARRY":           "Harvests stone and ores",
-    "GATHERER":         "Gathers fiber & food",
-    "STORAGE":          "Stores 100 resources",
-    "REFINERY":         "Processes metals",
-    "MINING_MACHINE":   "Auto-mines ore (uses fuel)",
-    "FARM":             "Grows food",
-    "WELL":             "Boosts nearby farms",
-    "WALL":             "Defensive wall",
-    "WORKSHOP":         "Basic crafting station",
-    "FORGE":            "Smelts metal bars",
-    "ASSEMBLER":        "Builds advanced parts",
-    "RESEARCH_CENTER":  "Researches new technologies",
-    "CHEMICAL_PLANT":   "Synthesises plastic, fuel & batteries",
-    "CONVEYOR":         "Walking on belts is 2x faster",
-    "SOLAR_ARRAY":      "Boosts adjacent crafting (passive)",
-    "ROCKET_SILO":      "Assemble rocket parts to escape this world",
-    "OIL_DRILL":        "Place on an Oil Deposit to extract crude oil (no fuel needed)",
-    "OIL_REFINERY":     "Refines crude Oil into Petroleum and Lubricant",
-    "PIPE":             "Carries fluids (Oil, Petroleum, Lubricant, Rocket Fuel) between buildings; workers cannot carry fluids",
-    "FLUID_TANK":       "Buffers a single fluid resource; must be connected by Pipes to producers and consumers",
+    "HABITAT":          "Houses 6 colonists. Population grows when a Habitat has free space and on-site Food.",
+    "PATH":             "Connects buildings into a network so workers and haulers can reach them. Place anywhere except water.",
+    "BRIDGE":           "Acts as a Path over water tiles. Required to reach islands or cross rivers.",
+    "WOODCUTTER":       "Place adjacent to forest tiles to harvest Wood. Workers walk to nearby trees and bring logs back.",
+    "QUARRY":           "Place adjacent to mountain or stone tiles to harvest Stone. Also harvests Iron & Copper from neighbouring veins.",
+    "GATHERER":         "Place on / next to grass and fiber patches to harvest Fiber and Food.",
+    "STORAGE":          "Buffers up to 100 of one resource type. Click to choose which resource to stockpile.",
+    "REFINERY":         "Crafting station: turns Stone into Bricks and (with research) Stone+Iron into Concrete.",
+    "MINING_MACHINE":   "Deep-mines an adjacent ore vein. Burns Charcoal or Petroleum as fuel \u2014 keep it supplied.",
+    "FARM":             "Grows Food on grass tiles. Output multiplied by adjacent Wells.",
+    "WELL":             "Place adjacent to one or more Farms to boost their Food output. Must be on or next to water.",
+    "WALL":             "Decorative / defensive barrier. Blocks pathfinding but doesn't connect to your network.",
+    "WORKSHOP":         "Crafting station: planks, rope, copper wire, and most placeable buildings. Click and pick a recipe.",
+    "FORGE":            "Crafting station: smelts ore into Iron / Copper Bars and (with research) Steel Bars, Glass and Charcoal.",
+    "ASSEMBLER":        "Crafting station: machines Gears, Silicon, Circuits and assembles late-game items like the Rocket Silo.",
+    "RESEARCH_CENTER":  "Spend resources over time to unlock new buildings and recipes. Open Tech Tree from its info panel or via the Help button.",
+    "CHEMICAL_PLANT":   "Crafting station: synthesises Plastic, Rocket Fuel and Rubber from Charcoal, Glass and Petroleum.",
+    "CONVEYOR":         "Acts as a Path; colonists walking on it move at 2x speed. Great for long supply lines.",
+    "SOLAR_ARRAY":      "Passive: every adjacent crafting station (Workshop / Forge / Assembler / Refinery / Chemical Plant) crafts +25% faster.",
+    "ROCKET_SILO":      "End-game goal. Feed it Rocket Parts assembled at the Assembler to launch off-world and win.",
+    "OIL_DRILL":        "Must be placed directly on an Oil Deposit tile. Pumps Crude Oil automatically with no fuel. Connect to refinery via Pipes.",
+    "OIL_REFINERY":     "Crafting station: turns Crude Oil into Petroleum (a powerful fuel) and Lubricant (used in Robotic Arms).",
+    "PIPE":             "Carries fluids (Oil, Petroleum, Lubricant, Rocket Fuel) between buildings. Workers can't carry fluids \u2014 only pipes can.",
+    "FLUID_TANK":       "Buffers one fluid type. Connect to producers and consumers via Pipes; click to select which fluid.",
 }
 
 
@@ -184,6 +184,11 @@ MENU_SUBTITLE        = "Survive on a re-evolved Earth"
 MENU_SEED_LABEL      = "World Seed"
 MENU_SEED_PLACEHOLDER = "Leave blank for random seed"
 MENU_MAP_SIZE_LABEL  = "Map Size"
+MENU_DIFFICULTY_LABEL = "Difficulty"
+MENU_DIFFICULTY_EASY = "Easy"
+MENU_DIFFICULTY_HARD = "Hard"
+MENU_DIFFICULTY_EASY_DESC = "Peaceful — no rival AI colonies"
+MENU_DIFFICULTY_HARD_DESC = "AI clanker colonies expand alongside you"
 MENU_PLAY_BUTTON     = "Play"
 MENU_HINT            = "Enter seed  \u2022  ENTER or click Play  \u2022  ESC to go back"
 
@@ -437,7 +442,7 @@ TUTORIAL_STEPS: list[dict[str, object]] = [
         "id": "welcome",
         "title": "Welcome to Hex Colony!",
         "lines": [
-            "You've crash-landed on an alien world.",
+            "You've crash-landed on an abandoned Earth.",
             "Your crew needs Food to survive \u2014 without it",
             "your colonists will starve!",
             "",
@@ -449,11 +454,11 @@ TUTORIAL_STEPS: list[dict[str, object]] = [
         "title": "Build a Gatherer",
         "lines": [
             "Open the Buildings tab at the bottom of the",
-            "screen and select \u201cGatherer\u201d.",
-            "",
-            "Place it on a fiber patch tile (light green)",
-            "near your crash zone.",
-            "Gatherers harvest Food from surrounding tiles.",
+            "screen and select \u201cGatherer\u201d from",
+            "the Resource subtab",
+            "Place it on a fiber patch tile (light green",
+            "with spots) near your crash zone.",
+            "Gatherers harvest Food and Fiber.",
         ],
     },
     {
@@ -776,6 +781,95 @@ TAB_DEMAND    = "Demand"
 TAB_SUPPLY    = "Supply"
 TAB_STATS     = "Stats"
 TAB_INFO      = "Info"
+
+# Hover tooltips for the bottom-bar tabs.  Aimed at first-time players
+# — explain *why* each tab exists, not just what it shows.
+TAB_TOOLTIPS: dict[str, str] = {
+    TAB_BUILDINGS: (
+        "Pick a building to place on the map.\n"
+        "Cards show stock — empty cards mean you must craft more at "
+        "a Workshop or Assembler first."
+    ),
+    TAB_WORKERS: (
+        "Set how aggressively each building competes for workers.\n"
+        "Higher priority buildings fill their job slots first when "
+        "people are scarce."
+    ),
+    TAB_DEMAND: (
+        "Order which consumers logistics workers serve first.\n"
+        "Use this when something keeps running out of inputs even "
+        "though you produce it."
+    ),
+    TAB_SUPPLY: (
+        "Order which suppliers logistics workers pull from first.\n"
+        "Useful for keeping a key Workshop fed before sending overflow "
+        "to Storage."
+    ),
+    TAB_STATS: (
+        "Live colony stats: production, consumption, idle workers, "
+        "and storage levels."
+    ),
+    TAB_INFO: (
+        "Colony at a glance: age, population, building count."
+    ),
+}
+
+# Tooltips for the top resource-bar elements.  Each value is a (title,
+# body) pair so the renderer can show an emphasised title above an
+# explanation.
+RESOURCE_BAR_TOOLTIPS: dict[str, tuple[str, str]] = {
+    "tier": (
+        "Current Tier",
+        "Your colony's tech tier.  Each new tier unlocks new buildings "
+        "and recipes.  Click the Ship Wreckage to advance once the "
+        "requirements shown here are met.",
+    ),
+    "population": (
+        "Population / Housing",
+        "Number of colonists living in your buildings versus total "
+        "housing capacity.  When pop > housing, growth slows and "
+        "colonists become unhappy.",
+    ),
+    "research": (
+        "Active Research",
+        "Click to open the Tech Tree.  A Research Center with at "
+        "least one assigned worker is required for any progress.",
+    ),
+    "research_idle": (
+        "Tech Tree",
+        "Click to choose a research project.  Build a Research "
+        "Center, assign a worker, and feed it the required resources.",
+    ),
+    "help": (
+        "Help & Guide",
+        "Open the in-game guide: getting started, current tier "
+        "goals, every unlocked building, all recipes, the research "
+        "list, and key bindings.  (Shortcut: H or I)",
+    ),
+    "delete": (
+        "Delete Mode (X)",
+        "Press X or click the red Delete card in the Buildings tab "
+        "to toggle.  Click any of your buildings to demolish it; "
+        "half of the materials are returned to your inventory.",
+    ),
+    "sandbox": (
+        "Sandbox Mode",
+        "Free building, instant research, no resource costs.  Use "
+        "this for testing layouts or learning the game.",
+    ),
+    "speed": (
+        "Simulation Speed",
+        "Press +/− to step the speed up or down.  Useful for "
+        "watching long crafting chains or skipping idle time.",
+    ),
+}
+
+# Tooltip shown when hovering the Help button on the help overlay
+# itself (and used as the description of the Help tab).
+HELP_BUTTON_TOOLTIP = (
+    "Open the comprehensive guide.  Includes building recipes, "
+    "current-tier goals, unlocked research, and key bindings."
+)
 
 
 # ═════════════════════════════════════════════════════════════════

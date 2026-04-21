@@ -79,7 +79,7 @@ class StatsTabContent(TabContent):
         from compprog_pygame.games.hex_colony.tech_tree import TIERS
         tier = self.tier_tracker.current_tier if self.tier_tracker else 0
         tier_name = TIERS[tier].name if self.tier_tracker else ""
-        pop = world.population.count
+        pop = world.player_population_count
         housing = world.connected_housing()
         homeless = max(0, pop - housing)
         n_buildings = sum(
