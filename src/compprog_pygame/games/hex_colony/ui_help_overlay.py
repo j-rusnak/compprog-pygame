@@ -378,7 +378,7 @@ class HelpOverlay(Panel):
     def _page_getting_started(self) -> list[_Line]:
         lvl = self._current_tier_level()
         lines: list[_Line] = []
-        lines.append(_Line("Welcome to Hex Colony", _HEADER_COLOR, "label"))
+        lines.append(_Line("Welcome to RePioneer", _HEADER_COLOR, "label"))
         lines.append(_Line(
             "You crash-landed on an alien world. Build food production,",
         ))

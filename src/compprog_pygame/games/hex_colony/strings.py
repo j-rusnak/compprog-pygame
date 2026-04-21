@@ -179,16 +179,16 @@ NOTIF_UNREACHABLE        = "No workers can reach {name}"
 #  MENU SCREEN  (hex colony title / seed / play)
 # ═════════════════════════════════════════════════════════════════
 
-MENU_TITLE           = "Hex Colony"
-MENU_SUBTITLE        = "Survive on a re-evolved Earth"
+MENU_TITLE           = "RePioneer"
+MENU_SUBTITLE        = "Survive  •  Reclaim  •  Rebuild"
 MENU_SEED_LABEL      = "World Seed"
 MENU_SEED_PLACEHOLDER = "Leave blank for random seed"
 MENU_MAP_SIZE_LABEL  = "Map Size"
 MENU_DIFFICULTY_LABEL = "Difficulty"
-MENU_DIFFICULTY_EASY = "Easy"
-MENU_DIFFICULTY_HARD = "Hard"
-MENU_DIFFICULTY_EASY_DESC = "Peaceful — no rival AI colonies"
-MENU_DIFFICULTY_HARD_DESC = "AI clanker colonies expand alongside you"
+MENU_DIFFICULTY_EASY = "Isolation"
+MENU_DIFFICULTY_HARD = "Evolution"
+MENU_DIFFICULTY_EASY_DESC = "Rebuild humanity's old home"
+MENU_DIFFICULTY_HARD_DESC = "There's something out there..."
 MENU_PLAY_BUTTON     = "Play"
 MENU_HINT            = "Enter seed  \u2022  ENTER or click Play  \u2022  ESC to go back"
 
@@ -298,7 +298,7 @@ GUIDE_DISMISS      = "Press I or Escape to close"
 # Lines starting with "#" render as section headers.
 GUIDE_PAGES: list[tuple[str, list[str]]] = [
     ("Getting Started", [
-        "# Welcome to Hex Colony!",
+        "# Welcome to RePioneer!",
         "You've crash-landed on an alien world.  Build a thriving",
         "colony by harvesting resources, constructing buildings,",
         "and managing your growing population.",
@@ -440,7 +440,7 @@ TUTORIAL_DISMISS_BUTTON = "Got it!"
 TUTORIAL_STEPS: list[dict[str, object]] = [
     {
         "id": "welcome",
-        "title": "Welcome to Hex Colony!",
+        "title": "Welcome to RePioneer!",
         "lines": [
             "You've crash-landed on an abandoned Earth.",
             "Your crew needs Food to survive \u2014 without it",
@@ -876,6 +876,6 @@ HELP_BUTTON_TOOLTIP = (
 #  HOME SCREEN  (game-select screen)
 # ═════════════════════════════════════════════════════════════════
 
-HOME_TITLE           = "Select a Game"
-HOME_HINT            = "Click a game to play  \u2022  ESC to quit"
+HOME_TITLE           = "RePioneer"
+HOME_HINT            = "Press Play to begin  \u2022  ESC to quit"
 HOME_NO_GAMES        = "No games registered yet!"

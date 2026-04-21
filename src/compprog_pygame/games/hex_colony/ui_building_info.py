@@ -193,6 +193,9 @@ class BuildingInfoPanel(Panel):
         self._dropdown_scroll: int = 0
         self.on_open_tech_tree: typing.Callable[[], None] | None = None
         self.on_possess: typing.Callable[["Building"], None] | None = None
+        # When set, buildings owned by this faction are shown in the
+        # full inspector view (read-only) just like the player's own.
+        self.possessed_faction_id: str | None = None
         self.tier_tracker: typing.Any = None
         self.tech_tree: typing.Any = None
         self.god_mode_getter: typing.Callable[[], bool] | None = None
@@ -695,12 +698,21 @@ class BuildingInfoPanel(Panel):
         items.append(_Line(label, UI_ACCENT, Fonts.title(), 34))
         items.append(_Spacer(4))
 
-        # Rival faction (TRIBAL_CAMP) \u2014 minimal read-only popup with a
-        # Possess button.  We deliberately skip the rest of the
+        # Rival faction (TRIBAL_CAMP) — minimal read-only popup with
+        # a Possess button.  We deliberately skip the rest of the
         # player-facing controls (recipes, workers, storage) because
-        # those would let the player meddle with AI buildings.
+        # those would let the player meddle with AI buildings.  When
+        # the player is *currently possessing* this faction, fall
+        # through to the full info view so they can read the same
+        # stats as their own buildings.
+        b_faction = getattr(b, "faction", "SURVIVOR")
+        is_possessed_view = (
+            b_faction != "SURVIVOR"
+            and self.possessed_faction_id == b_faction
+        )
         if (b.type == BuildingType.TRIBAL_CAMP
-                and getattr(b, "faction", "SURVIVOR") != "SURVIVOR"):
+                and b_faction != "SURVIVOR"
+                and not is_possessed_view):
             line(f"Faction: {b.faction}", UI_MUTED, Fonts.small())
             line("A rival colony's home base.", UI_MUTED, Fonts.small())
             items.append(_Spacer())
@@ -1069,6 +1081,39 @@ class BuildingInfoPanel(Panel):
             return False
         if not hasattr(event, "pos"):
             return False
+        # Read-only mode for AI buildings — even when the player is
+        # possessing the faction.  Allow scroll wheel for browsing
+        # but swallow any clicks so the player can't change recipes
+        # or assign workers on the AI's behalf.
+        b_faction = getattr(self.building, "faction", "SURVIVOR")
+        if b_faction != "SURVIVOR":
+            in_panel = self.rect.collidepoint(event.pos)
+            if not in_panel:
+                return False
+            if event.type == pygame.MOUSEWHEEL:
+                self._scroll = max(
+                    0, self._scroll - event.y * 30,
+                )
+                return True
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if event.button == 4:
+                    self._scroll = max(0, self._scroll - 30)
+                    return True
+                if event.button == 5:
+                    self._scroll += 30
+                    return True
+                # The Possess button lives inside the read-only AI
+                # popup — let it fire before swallowing the click.
+                if (event.button == 1
+                        and self._possess_btn is not None
+                        and self._possess_btn.collidepoint(event.pos)):
+                    if (self.on_possess is not None
+                            and self.building is not None):
+                        self.on_possess(self.building)
+                    return True
+                # Swallow other clicks to prevent recipe/worker mods.
+                return True
+            return True
         # When the recipe dropdown is open, allow clicks on the
         # floating option rects even if they fall outside the panel.
         in_panel = self.rect.collidepoint(event.pos)

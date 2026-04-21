@@ -41,6 +41,7 @@ from compprog_pygame.games.hex_colony.ui import (
     draw_panel_bg,
     render_text_clipped,
 )
+from compprog_pygame.games.hex_colony.ui_theme import wrap_text
 
 if TYPE_CHECKING:
     from compprog_pygame.games.hex_colony.clankers import Clanker
@@ -65,7 +66,9 @@ class ClankerPossessionPanel(Panel):
         super().__init__()
         self.clanker: "Clanker | None" = None
         self.on_unpossess: Callable[[], None] | None = None
+        self.on_view_all_logs: Callable[[], None] | None = None
         self._unpossess_btn: pygame.Rect | None = None
+        self._view_all_btn: pygame.Rect | None = None
         self._screen_w = 0
         self._screen_h = 0
         self.visible = False
@@ -272,6 +275,24 @@ class ClankerPossessionPanel(Panel):
 
         title = Fonts.body().render("AI decisions", True, UI_ACCENT)
         surface.blit(title, (x + _PADDING, cy))
+
+        # "View all" button on the right of the feed header — opens
+        # a modal so the player can read every log entry, including
+        # ones that don't fit in the side panel.
+        view_all_label = Fonts.small().render("View all", True, UI_TEXT)
+        btn_w = view_all_label.get_width() + 16
+        btn_h = view_all_label.get_height() + 6
+        view_btn = pygame.Rect(
+            x + w - _PADDING - btn_w, cy - 1, btn_w, btn_h,
+        )
+        pygame.draw.rect(surface, UI_BG, view_btn, border_radius=4)
+        pygame.draw.rect(surface, UI_BORDER, view_btn, width=1, border_radius=4)
+        surface.blit(view_all_label, (
+            view_btn.centerx - view_all_label.get_width() // 2,
+            view_btn.centery - view_all_label.get_height() // 2,
+        ))
+        self._view_all_btn = view_btn
+
         cy += 24
 
         log = list(self.clanker.log)
@@ -308,10 +329,192 @@ class ClankerPossessionPanel(Panel):
                 if self.on_unpossess is not None:
                     self.on_unpossess()
                 return True
+            if (self._view_all_btn is not None
+                    and self._view_all_btn.collidepoint(event.pos)):
+                if self.on_view_all_logs is not None:
+                    self.on_view_all_logs()
+                return True
             # Swallow clicks inside the panel so the world doesn't
             # also react.
             if self.rect.collidepoint(event.pos):
                 return True
         elif hasattr(event, "pos") and self.rect.collidepoint(event.pos):
+            return True
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Full log overlay (modal popup)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class ClankerLogOverlay(Panel):
+    """Modal popup that shows the *entire* possessed clanker log.
+
+    Word-wraps each entry, supports mouse-wheel scroll, and dims the
+    rest of the screen.  Read-only — closes via the X button or by
+    pressing Escape.
+    """
+
+    _MARGIN = 80
+    _ENTRY_PAD = 6
+    _SCROLL_STEP = 40
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.clanker: "Clanker | None" = None
+        self.on_close: Callable[[], None] | None = None
+        self.visible = False
+        self._screen_w = 0
+        self._screen_h = 0
+        self._scroll = 0
+        self._content_h = 0
+        self._close_btn: pygame.Rect | None = None
+
+    def open_for(self, clanker: "Clanker | None") -> None:
+        self.clanker = clanker
+        self.visible = clanker is not None
+        self._scroll = 0
+
+    def layout(self, screen_w: int, screen_h: int) -> None:
+        self._screen_w = screen_w
+        self._screen_h = screen_h
+        self.rect = pygame.Rect(
+            self._MARGIN, self._MARGIN,
+            screen_w - self._MARGIN * 2,
+            screen_h - self._MARGIN * 2,
+        )
+
+    def draw(self, surface: pygame.Surface, world: "World") -> None:
+        if not self.visible or self.clanker is None:
+            return
+        self.layout(surface.get_width(), surface.get_height())
+
+        # Dim the rest of the screen.
+        dim = pygame.Surface(
+            (surface.get_width(), surface.get_height()), pygame.SRCALPHA,
+        )
+        dim.fill((0, 0, 0, 160))
+        surface.blit(dim, (0, 0))
+
+        # Modal background.
+        draw_panel_bg(surface, self.rect, accent_edge="top")
+
+        x = self.rect.x
+        y = self.rect.y
+        w = self.rect.w
+        h = self.rect.h
+
+        # Title.
+        title = Fonts.title().render(
+            f"AI decision log — {self.clanker.faction_id}",
+            True, UI_ACCENT,
+        )
+        surface.blit(title, (x + _PADDING, y + _PADDING))
+
+        # Close button (top-right).
+        close_label = Fonts.body().render("Close", True, UI_TEXT)
+        btn_w = close_label.get_width() + 24
+        btn_h = close_label.get_height() + 8
+        btn = pygame.Rect(
+            x + w - _PADDING - btn_w, y + _PADDING, btn_w, btn_h,
+        )
+        pygame.draw.rect(surface, UI_BG, btn, border_radius=4)
+        pygame.draw.rect(surface, UI_BORDER, btn, width=1, border_radius=4)
+        surface.blit(close_label, (
+            btn.centerx - close_label.get_width() // 2,
+            btn.centery - close_label.get_height() // 2,
+        ))
+        self._close_btn = btn
+
+        # Help line.
+        help_surf = Fonts.small().render(
+            "Scroll with mouse wheel · Esc to close",
+            True, UI_MUTED,
+        )
+        surface.blit(help_surf, (x + _PADDING, y + _PADDING + 36))
+
+        # Body region — clipped scrollable text.
+        body_top = y + _PADDING + 64
+        body = pygame.Rect(
+            x + _PADDING, body_top,
+            w - _PADDING * 2, h - (body_top - y) - _PADDING,
+        )
+        prev_clip = surface.get_clip()
+        surface.set_clip(body)
+
+        font = Fonts.small()
+        line_h = font.get_height() + 2
+        cy = body.y - self._scroll
+        text_w = body.w
+
+        log = list(self.clanker.log)
+        if not log:
+            empty = font.render("(no decisions yet)", True, UI_MUTED)
+            surface.blit(empty, (body.x, body.y))
+            self._content_h = line_h
+        else:
+            total = 0
+            for sim_t, msg in log:
+                ts = f"[{int(sim_t):5d}s] "
+                ts_surf = font.render(ts, True, UI_MUTED)
+                ts_w = ts_surf.get_width()
+                wrapped = wrap_text(font, msg, max(40, text_w - ts_w))
+                if not wrapped:
+                    wrapped = [""]
+                # Only blit the timestamp on the first wrapped line.
+                surface.blit(ts_surf, (body.x, cy))
+                first = True
+                for ln in wrapped:
+                    line_surf = font.render(ln, True, UI_TEXT)
+                    surface.blit(
+                        line_surf,
+                        (body.x + (ts_w if first else ts_w), cy),
+                    )
+                    if not first:
+                        # Subsequent lines get indented under the
+                        # timestamp; nothing else to do.
+                        pass
+                    cy += line_h
+                    first = False
+                cy += self._ENTRY_PAD
+                total += line_h * len(wrapped) + self._ENTRY_PAD
+            self._content_h = total
+
+        surface.set_clip(prev_clip)
+
+        # Clamp scroll.
+        max_scroll = max(0, self._content_h - body.h)
+        if self._scroll > max_scroll:
+            self._scroll = max_scroll
+
+    def handle_event(self, event: pygame.event.Event) -> bool:
+        if not self.visible:
+            return False
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+            if self.on_close is not None:
+                self.on_close()
+            return True
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 1:
+                if (self._close_btn is not None
+                        and self._close_btn.collidepoint(event.pos)):
+                    if self.on_close is not None:
+                        self.on_close()
+                    return True
+                # Modal — swallow clicks elsewhere.
+                return True
+            if event.button == 4:
+                self._scroll = max(0, self._scroll - self._SCROLL_STEP)
+                return True
+            if event.button == 5:
+                self._scroll += self._SCROLL_STEP
+                return True
+        if event.type == pygame.MOUSEWHEEL:
+            self._scroll = max(0, self._scroll - event.y * self._SCROLL_STEP)
+            return True
+        # Modal overlay — eat any other events too so they don't
+        # leak through to the world.
+        if hasattr(event, "pos"):
             return True
         return False

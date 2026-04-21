@@ -113,9 +113,9 @@ def _launch(screen: pygame.Surface, clock: pygame.time.Clock) -> None:
 
 register(
     GameInfo(
-        name="Hex Colony",
-        description="Survive on a re-evolved Earth after your spaceship crash-lands",
-        color=(120, 140, 170),
+        name="RePioneer",
+        description="Survive, reclaim, and rebuild on a re-evolved Earth",
+        color=(220, 176, 70),
         launch=_launch,
     )
 )

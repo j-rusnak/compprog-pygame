@@ -5,7 +5,8 @@ import pygame
 from compprog_pygame.settings import DEFAULT_SETTINGS
 
 # Import every game sub-package so they register with the game registry.
-import compprog_pygame.games.physics_tetris  # noqa: F401
+# physics_tetris is intentionally not imported — RePioneer is the only
+# accessible game right now.
 import compprog_pygame.games.hex_colony  # noqa: F401
 
 from compprog_pygame.home_screen import HomeScreen

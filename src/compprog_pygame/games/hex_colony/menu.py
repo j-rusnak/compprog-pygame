@@ -175,7 +175,10 @@ class HexColonyMenu:
         w = min(560, self.width - 80)
         h = 460
         x = (self.width - w) // 2
-        y = max(180, (self.height - h) // 2 + 30)
+        # No logo above the card any more — center vertically with a
+        # small upward bias so the Play button below isn't crammed
+        # against the bottom edge.
+        y = max(40, (self.height - h) // 2 - 30)
         return pygame.Rect(x, y, w, h)
 
     def _input_rect(self) -> pygame.Rect:
@@ -544,9 +547,6 @@ class HexColonyMenu:
 
         # Vignette (radial-ish via four-edge gradient)
         self._draw_vignette(surface)
-
-        # Title
-        self._draw_title(surface, t_ms)
 
         # Card
         card = self._card_rect()

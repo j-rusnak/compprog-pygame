@@ -29,8 +29,23 @@ from dataclasses import dataclass, field
 from compprog_pygame.games.hex_colony.buildings import (
     BUILDING_COSTS,
     BUILDING_HOUSING,
+    BUILDING_MAX_WORKERS,
     BuildingType,
 )
+
+# Buildings that don't draw from the workforce pool — placing them
+# never makes the staffing situation worse.
+_NON_WORKER_BTYPES: frozenset[BuildingType] = frozenset({
+    BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL,
+    BuildingType.PIPE, BuildingType.CONVEYOR,
+    BuildingType.HABITAT, BuildingType.HOUSE, BuildingType.STORAGE,
+})
+
+# We only allow placing a new worker-requiring building if the
+# colony has at least this many idle workers to spare beyond its
+# current job slots.  Keeps the AI from front-loading every
+# workshop in the world before anyone moves in.
+_STAFFING_HEADROOM: int = 1
 from compprog_pygame.games.hex_colony.colony import ColonyState
 from compprog_pygame.games.hex_colony.hex_grid import HexCoord
 from compprog_pygame.games.hex_colony.procgen import UNBUILDABLE
@@ -52,13 +67,16 @@ _AUDIT_INTERVAL: float = 15.0
 # Soft cap on how many non-path buildings a clanker may own.
 _MAX_BUILDINGS_PER_CLANKER: int = 80
 # Maximum hex distance a clanker will expand from its tribal camp.
-_MAX_EXPANSION_RADIUS: int = 12
+# We deliberately keep this very large — the AI can see the whole
+# map, just like a player who pans the camera around.  Placement
+# scoring still prefers nearby sites so colonies stay coherent.
+_MAX_EXPANSION_RADIUS: int = 64
 # Maximum entries kept in a clanker's decision log.
 _LOG_MAXLEN: int = 60
 # Maximum length of a path chain the AI will lay to reach a remote
-# resource hex.  Longer than this and we look for a closer site
-# instead of spending a huge amount of PATH stockpile in one shot.
-_MAX_PATH_RUN: int = 8
+# resource hex.  Generous so the AI can run out to a distant ore
+# vein or fiber patch when the easy spots are already used up.
+_MAX_PATH_RUN: int = 24
 
 # Buildings the AI can directly place from its inventory.
 _PLACEABLE: tuple[BuildingType, ...] = (
@@ -85,12 +103,18 @@ def _terrain_for(btype: BuildingType) -> set | None:
     if not _TERRAIN_FOR:
         from compprog_pygame.games.hex_colony.procgen import Terrain
         _TERRAIN_FOR = {
-            BuildingType.WOODCUTTER: {Terrain.FOREST},
-            BuildingType.QUARRY: {Terrain.STONE_DEPOSIT, Terrain.MOUNTAIN},
-            BuildingType.GATHERER: {Terrain.FIBER_PATCH, Terrain.FOREST},
+            BuildingType.WOODCUTTER: {
+                Terrain.FOREST, Terrain.DENSE_FOREST,
+            },
+            BuildingType.QUARRY: {
+                Terrain.STONE_DEPOSIT, Terrain.MOUNTAIN,
+                Terrain.IRON_VEIN, Terrain.COPPER_VEIN,
+            },
+            BuildingType.GATHERER: {Terrain.FIBER_PATCH},
             BuildingType.FARM: {Terrain.WATER, Terrain.GRASS},
             BuildingType.WELL: {Terrain.WATER},
             BuildingType.MINING_MACHINE: {
+                Terrain.IRON_VEIN, Terrain.COPPER_VEIN,
                 Terrain.STONE_DEPOSIT, Terrain.MOUNTAIN,
             },
             BuildingType.OIL_DRILL: {Terrain.OIL_DEPOSIT},
@@ -118,6 +142,7 @@ class Clanker:
     recipe_timer: float = 0.0
     audit_timer: float = 0.0
     _owned_cache: list[HexCoord] = field(default_factory=list)
+    _was_staffing_bound: bool = False
     # Recent decisions, surfaced via the player's "Possess" panel so
     # the player can see *why* the AI is doing what it does.  Stored
     # as ``(sim_time, message)`` tuples, capped to the most recent
@@ -189,6 +214,40 @@ class Clanker:
             and getattr(b, "faction", "SURVIVOR") == self.faction_id
         )
 
+    def _staffing_state(
+        self, world: World,
+    ) -> tuple[int, int, int, int]:
+        """Return ``(my_pop, housing_cap, worker_demand, workers_assigned)``
+        for this faction.
+
+        * ``my_pop`` — people belonging to this colony (have a faction
+          home building).
+        * ``housing_cap`` — total housing capacity of our buildings.
+        * ``worker_demand`` — sum of ``BUILDING_MAX_WORKERS`` for every
+          worker-requiring building we own (excluding pure infra and
+          housing).
+        * ``workers_assigned`` — sum of ``b.workers`` for those same
+          buildings, i.e. how many job slots are actually filled.
+        """
+        my_pop = 0
+        for p in world.population.people:
+            if (p.home is not None
+                    and getattr(p.home, "faction", "SURVIVOR")
+                    == self.faction_id):
+                my_pop += 1
+        housing_cap = 0
+        worker_demand = 0
+        workers_assigned = 0
+        for b in world.buildings.buildings:
+            if getattr(b, "faction", "SURVIVOR") != self.faction_id:
+                continue
+            housing_cap += BUILDING_HOUSING.get(b.type, 0)
+            if b.type in _NON_WORKER_BTYPES:
+                continue
+            worker_demand += BUILDING_MAX_WORKERS.get(b.type, 0)
+            workers_assigned += getattr(b, "workers", 0)
+        return my_pop, housing_cap, worker_demand, workers_assigned
+
     # ── Build decision ───────────────────────────────────────────
 
     def _try_build(self, world: World) -> None:
@@ -238,31 +297,50 @@ class Clanker:
                 base += camp.storage.get(res, 0.0)
             return base
 
-        # ── Population ──────────────────────────────────────────
-        my_pop = sum(
-            1 for p in world.population.people
-            if p.home is not None
-            and getattr(p.home, "faction", "SURVIVOR") == self.faction_id
+        # ── Workforce snapshot ──────────────────────────────────
+        my_pop, my_cap, worker_demand, _workers_assigned = (
+            self._staffing_state(world)
         )
-        my_cap = sum(
-            BUILDING_HOUSING.get(b.type, 0)
-            for b in world.buildings.buildings
-            if getattr(b, "faction", "SURVIVOR") == self.faction_id
-        )
+        # Workers free to staff *new* job slots.  Negative means we
+        # already have more job slots than people — adding more would
+        # just leave them idle.
+        free_workers = my_pop - worker_demand
+        # When we're staffing-bound, the only worker-requiring
+        # building worth placing is housing (which doesn't need
+        # workers itself but lets pop grow to fill the existing
+        # jobs).  Pure infra (paths, storage) is always fine.
+        can_staff_more = free_workers >= _STAFFING_HEADROOM
 
-        # Priority 1: housing if pop is at/near cap.
-        if my_pop >= my_cap - 1 and self._is_unlocked(BuildingType.HABITAT):
-            if self._can_pay_for(BuildingType.HABITAT):
-                target = self._find_placement(world, BuildingType.HABITAT)
-                if target is not None:
-                    return (
-                        BuildingType.HABITAT, target,
+        def needs_workers(bt: BuildingType) -> bool:
+            return (bt not in _NON_WORKER_BTYPES
+                    and BUILDING_MAX_WORKERS.get(bt, 0) > 0)
+
+        # ── Priority 1: housing ─────────────────────────────────
+        # Build housing whenever (a) pop is at/near cap, OR (b) we
+        # already have unfilled jobs and need pop to grow into them.
+        housing_pressure = (
+            my_pop >= my_cap - 1
+            or (worker_demand > my_pop and my_cap <= my_pop)
+        )
+        if (housing_pressure
+                and self._is_unlocked(BuildingType.HABITAT)
+                and self._can_pay_for(BuildingType.HABITAT)):
+            target = self._find_placement(world, BuildingType.HABITAT)
+            if target is not None:
+                if my_pop >= my_cap - 1:
+                    why = (
                         f"Building HABITAT \u2014 housing {my_pop}/{my_cap} "
-                        "is full, need room to grow.",
+                        "is full, need room to grow."
                     )
+                else:
+                    why = (
+                        f"Building HABITAT \u2014 {worker_demand} job slots "
+                        f"but only {my_pop} workers; need pop to grow."
+                    )
+                return (BuildingType.HABITAT, target, why)
 
-        # Priority 2: food security.
-        if stock(Resource.FOOD) < 30 and my_pop > 3:
+        # ── Priority 2: food security ───────────────────────────
+        if stock(Resource.FOOD) < 30 and my_pop > 3 and can_staff_more:
             for btype in (BuildingType.FARM, BuildingType.GATHERER):
                 if (self._is_unlocked(btype)
                         and self._can_pay_for(btype)):
@@ -274,26 +352,30 @@ class Clanker:
                             f"low ({int(stock(Resource.FOOD))}).",
                         )
 
-        # Priority 3: basic raw production.
-        for res, btype in (
-            (Resource.WOOD, BuildingType.WOODCUTTER),
-            (Resource.STONE, BuildingType.QUARRY),
-            (Resource.FIBER, BuildingType.GATHERER),
-        ):
-            if (stock(res) < 25
-                    and self._is_unlocked(btype)
-                    and self._can_pay_for(btype)):
-                target = self._find_placement(world, btype)
-                if target is not None:
-                    return (
-                        btype, target,
-                        f"Building {btype.name} on a "
-                        f"{self._terrain_label(btype)} \u2014 "
-                        f"{res.name.lower()} stock low ({int(stock(res))}).",
-                    )
+        # ── Priority 3: basic raw production ────────────────────
+        if can_staff_more:
+            for res, btype in (
+                (Resource.WOOD, BuildingType.WOODCUTTER),
+                (Resource.STONE, BuildingType.QUARRY),
+                (Resource.FIBER, BuildingType.GATHERER),
+            ):
+                if (stock(res) < 25
+                        and self._is_unlocked(btype)
+                        and self._can_pay_for(btype)):
+                    target = self._find_placement(world, btype)
+                    if target is not None:
+                        return (
+                            btype, target,
+                            f"Building {btype.name} on a "
+                            f"{self._terrain_label(btype)} \u2014 "
+                            f"{res.name.lower()} stock low "
+                            f"({int(stock(res))}).",
+                        )
 
-        # Priority 4: bring research online.
-        if (not self._has_building(world, BuildingType.RESEARCH_CENTER)
+        # ── Priority 4: bring research online ───────────────────
+        if (can_staff_more
+                and not self._has_building(
+                    world, BuildingType.RESEARCH_CENTER)
                 and self._is_unlocked(BuildingType.RESEARCH_CENTER)
                 and self._can_pay_for(BuildingType.RESEARCH_CENTER)):
             target = self._find_placement(world, BuildingType.RESEARCH_CENTER)
@@ -304,8 +386,9 @@ class Clanker:
                     "researching tech to advance.",
                 )
 
-        # Priority 5: ensure crafting capacity.
-        if (self._count_building(world, BuildingType.WORKSHOP) < 2
+        # ── Priority 5: ensure crafting capacity ────────────────
+        if (can_staff_more
+                and self._count_building(world, BuildingType.WORKSHOP) < 2
                 and self._is_unlocked(BuildingType.WORKSHOP)
                 and self._can_pay_for(BuildingType.WORKSHOP)):
             target = self._find_placement(world, BuildingType.WORKSHOP)
@@ -315,7 +398,8 @@ class Clanker:
                     "Building WORKSHOP \u2014 need crafting capacity "
                     "for planks and building stockpile.",
                 )
-        if (not self._has_building(world, BuildingType.FORGE)
+        if (can_staff_more
+                and self._count_building(world, BuildingType.FORGE) < 1
                 and self._is_unlocked(BuildingType.FORGE)
                 and self._can_pay_for(BuildingType.FORGE)):
             target = self._find_placement(world, BuildingType.FORGE)
@@ -324,8 +408,35 @@ class Clanker:
                     BuildingType.FORGE, target,
                     "Building FORGE \u2014 need metal-tier crafting.",
                 )
+        # Scale up extra workshops/forges/assemblers once the colony
+        # has bandwidth, so late-game material throughput keeps up
+        # with downstream demand.
+        scale_caps: tuple[tuple[BuildingType, int, str], ...] = (
+            (BuildingType.WORKSHOP, max(2, my_pop // 8),
+             "more crafting throughput for the growing colony"),
+            (BuildingType.FORGE, max(1, my_pop // 12),
+             "more metal-bar throughput"),
+            (BuildingType.ASSEMBLER, max(1, my_pop // 14),
+             "more advanced-recipe throughput"),
+            (BuildingType.RESEARCH_CENTER, max(1, my_pop // 18),
+             "more research throughput"),
+        )
+        if can_staff_more:
+            for btype, cap, why in scale_caps:
+                if not self._is_unlocked(btype):
+                    continue
+                if not self._can_pay_for(btype):
+                    continue
+                if self._count_building(world, btype) >= cap:
+                    continue
+                target = self._find_placement(world, btype)
+                if target is not None:
+                    return (
+                        btype, target,
+                        f"Building {btype.name} \u2014 {why}.",
+                    )
 
-        # Priority 6: storage for surplus.
+        # ── Priority 6: storage for surplus (no workers needed) ─
         if (any(stock(r) > 80
                 for r in (Resource.WOOD, Resource.STONE, Resource.FOOD))
                 and self._is_unlocked(BuildingType.STORAGE)
@@ -337,25 +448,59 @@ class Clanker:
                     "Building STORAGE \u2014 stockpiles overflowing.",
                 )
 
-        # Priority 7: tier-driven expansion \u2014 if we just unlocked
-        # something new, plant one to start producing it.  Skip the
-        # placeholder land-only types (PATH/BRIDGE/WALL) and the
-        # rocket silo (one-shot win condition).
+        # ── Priority 7: tier-driven expansion ───────────────────
+        # When a tech / tier just opened up a new building, plant one
+        # (or scale by colony size for resource extractors and
+        # high-throughput industrial chains).  Skip the placeholder
+        # land-only types (PATH/BRIDGE/WALL).  Worker-requiring
+        # buildings are gated on having spare staff.
+        type_caps: dict[BuildingType, int] = {
+            BuildingType.WOODCUTTER: max(2, my_pop // 6),
+            BuildingType.QUARRY: max(2, my_pop // 6),
+            BuildingType.GATHERER: max(2, my_pop // 8),
+            BuildingType.FARM: max(2, my_pop // 6),
+            BuildingType.WELL: 2,
+            BuildingType.REFINERY: max(1, my_pop // 12),
+            BuildingType.MINING_MACHINE: max(1, my_pop // 10),
+            BuildingType.OIL_DRILL: max(1, my_pop // 12),
+            BuildingType.OIL_REFINERY: max(1, my_pop // 14),
+            BuildingType.CHEMICAL_PLANT: max(1, my_pop // 14),
+            BuildingType.SOLAR_ARRAY: max(1, my_pop // 10),
+            BuildingType.ROCKET_SILO: 1,
+        }
         for btype in _PLACEABLE:
             if btype in (BuildingType.PATH, BuildingType.BRIDGE,
-                         BuildingType.WALL, BuildingType.ROCKET_SILO):
+                         BuildingType.WALL):
                 continue
-            if (self._is_unlocked(btype)
-                    and self._can_pay_for(btype)
-                    and not self._has_building(world, btype)):
-                target = self._find_placement(world, btype)
-                if target is not None:
-                    return (
-                        btype, target,
-                        f"Building {btype.name} \u2014 newly unlocked, "
-                        "trying it out.",
-                    )
+            if needs_workers(btype) and not can_staff_more:
+                continue
+            if not (self._is_unlocked(btype)
+                    and self._can_pay_for(btype)):
+                continue
+            cap = type_caps.get(btype, 1)
+            if self._count_building(world, btype) >= cap:
+                continue
+            target = self._find_placement(world, btype)
+            if target is None:
+                continue
+            return (
+                btype, target,
+                f"Building {btype.name} \u2014 expanding "
+                f"({self._count_building(world, btype) + 1}/{cap}).",
+            )
 
+        # Nothing to do this tick.  If we just became staffing-bound,
+        # log it once so the player can see why the AI is idle.
+        if not can_staff_more and worker_demand > 0:
+            if not self._was_staffing_bound:
+                self._log(
+                    world,
+                    f"Holding off on new buildings \u2014 "
+                    f"{worker_demand} job slots, only {my_pop} workers.",
+                )
+            self._was_staffing_bound = True
+        else:
+            self._was_staffing_bound = False
         return None
 
     # ── Placement ────────────────────────────────────────────────
@@ -525,39 +670,41 @@ class Clanker:
         #   * close to the camp (keeps the colony compact)
         candidates: list[tuple[float, HexCoord]] = []
         center = self.home
-        for dq in range(-_MAX_EXPANSION_RADIUS, _MAX_EXPANSION_RADIUS + 1):
-            for dr in range(-_MAX_EXPANSION_RADIUS, _MAX_EXPANSION_RADIUS + 1):
-                coord = HexCoord(center.q + dq, center.r + dr)
-                if coord.distance(center) > _MAX_EXPANSION_RADIUS:
+        for tile in world.grid.tiles():
+            coord = tile.coord
+            if coord.distance(center) > _MAX_EXPANSION_RADIUS:
+                continue
+            if tile.building is not None:
+                continue
+            if tile.terrain in UNBUILDABLE:
+                if not (btype == BuildingType.OIL_DRILL
+                        and tile.terrain.name == "OIL_DEPOSIT"):
                     continue
-                tile = world.grid.get(coord)
-                if tile is None or tile.building is not None:
-                    continue
-                if tile.terrain in UNBUILDABLE:
-                    if not (btype == BuildingType.OIL_DRILL
-                            and tile.terrain.name == "OIL_DEPOSIT"):
-                        continue
-                # Count target-terrain hexes touching this tile.
-                terrain_count = 0
-                for nb in coord.neighbors():
-                    nb_tile = world.grid.get(nb)
-                    if (nb_tile is not None
-                            and nb_tile.terrain in target_terrain):
-                        terrain_count += 1
-                if terrain_count == 0:
-                    continue
-                # Distance to nearest owned tile (controls path cost).
-                nearest_owned = min(coord.distance(o) for o in owned)
-                if nearest_owned > _MAX_PATH_RUN + 1:
-                    continue
-                score = (
-                    100.0
-                    + 25.0 * terrain_count       # richer site = better
-                    - 5.0 * nearest_owned        # cheap to reach is good
-                    - 1.0 * coord.distance(center)
-                    + self.rng.random() * 0.5    # tie-break jitter
-                )
-                candidates.append((score, coord))
+            # Count target-terrain hexes touching this tile.  The
+            # tile itself counts double — standing right on a fiber
+            # patch / forest / ore vein is the best possible spot.
+            terrain_count = 0
+            if tile.terrain in target_terrain:
+                terrain_count += 2
+            for nb in coord.neighbors():
+                nb_tile = world.grid.get(nb)
+                if (nb_tile is not None
+                        and nb_tile.terrain in target_terrain):
+                    terrain_count += 1
+            if terrain_count == 0:
+                continue
+            # Distance to nearest owned tile (controls path cost).
+            nearest_owned = min(coord.distance(o) for o in owned)
+            if nearest_owned > _MAX_PATH_RUN + 1:
+                continue
+            score = (
+                100.0
+                + 25.0 * terrain_count       # richer site = better
+                - 5.0 * nearest_owned        # cheap to reach is good
+                - 1.0 * coord.distance(center)
+                + self.rng.random() * 0.5    # tie-break jitter
+            )
+            candidates.append((score, coord))
 
         if not candidates:
             # No on-terrain spot reachable — give up rather than
@@ -631,9 +778,73 @@ class Clanker:
         b = world.buildings.place(btype, coord)
         b.faction = self.faction_id
         tile.building = b
+        # Configure freshly-placed building so it actually does
+        # something (player UI normally does this; AI must do it
+        # manually).
+        self._configure_new_building(world, b)
         world.mark_networks_dirty()
         world.mark_housing_dirty()
         return True
+
+    # ── Per-building configuration on placement ──────────────────
+
+    def _configure_new_building(self, world: World, b) -> None:
+        """Pick a sensible default output / stored-resource for a
+        building the AI just placed so it doesn't sit idle.
+
+        * QUARRY — picks IRON / COPPER if those veins are nearby and
+          the colony is short on the corresponding ore; defaults to
+          STONE otherwise.
+        * GATHERER — picks FOOD if food is low, FIBER otherwise.
+        * STORAGE — dedicates to whichever resource the colony is
+          most flooded with.
+        """
+        from compprog_pygame.games.hex_colony.procgen import Terrain
+        if b.type == BuildingType.QUARRY:
+            has_iron, has_copper, has_stone = False, False, False
+            for nb in b.coord.neighbors():
+                tile = world.grid.get(nb)
+                if tile is None:
+                    continue
+                if tile.terrain == Terrain.IRON_VEIN:
+                    has_iron = True
+                elif tile.terrain == Terrain.COPPER_VEIN:
+                    has_copper = True
+                elif tile.terrain in (Terrain.STONE_DEPOSIT,
+                                      Terrain.MOUNTAIN):
+                    has_stone = True
+            need_iron = self._stock(world, Resource.IRON) < 25
+            need_copper = self._stock(world, Resource.COPPER) < 25
+            if has_iron and (need_iron or not has_stone):
+                b.quarry_output = Resource.IRON
+            elif has_copper and (need_copper or not has_stone):
+                b.quarry_output = Resource.COPPER
+            # else leave as None (mines stone)
+        elif b.type == BuildingType.GATHERER:
+            food = self._stock(world, Resource.FOOD)
+            fiber = self._stock(world, Resource.FIBER)
+            b.gatherer_output = (
+                Resource.FOOD if food < fiber + 20 else Resource.FIBER
+            )
+        elif b.type == BuildingType.STORAGE:
+            # Pick the resource we're closest to overflowing on;
+            # falls back to WOOD if everything's empty.
+            best_res = Resource.WOOD
+            best_amt = -1.0
+            for r in Resource:
+                amt = self.colony.inventory[r]
+                if amt > best_amt:
+                    best_amt = amt
+                    best_res = r
+            b.stored_resource = best_res
+
+    def _stock(self, world: World, res: Resource) -> float:
+        """Total of *res* across the colony's inventory + camp."""
+        camp = world.buildings.at(self.home)
+        base = self.colony.inventory[res]
+        if camp is not None:
+            base += camp.storage.get(res, 0.0)
+        return base
 
     # ── Demolition / audit ───────────────────────────────────────
 
@@ -667,24 +878,32 @@ class Clanker:
         world.mark_housing_dirty()
 
     def _audit_buildings(self, world: World) -> None:
-        """Look at our resource buildings and demolish ones placed
-        on bad spots (no adjacent target terrain).  Snapshot the list
-        first so removal during iteration is safe.
+        """Look at our resource buildings and demolish ones that are
+        stuck — bad placement (no adjacent target terrain) or
+        depleted (every nearby resource tile is exhausted).  Snapshot
+        the list first so removal during iteration is safe.
         """
+        from compprog_pygame.games.hex_colony import params as _p
+        from compprog_pygame.games.hex_colony.supply_chain import (
+            _hex_range,
+        )
         for b in list(world.buildings.buildings):
             if getattr(b, "faction", "SURVIVOR") != self.faction_id:
                 continue
             target_terrain = _terrain_for(b.type)
             if target_terrain is None:
                 continue
-            # Count adjacent target-terrain hexes.
+            tile = world.grid.get(b.coord)
+            on_target = (
+                tile is not None and tile.terrain in target_terrain
+            )
             count = 0
             for nb in b.coord.neighbors():
                 nb_tile = world.grid.get(nb)
                 if (nb_tile is not None
                         and nb_tile.terrain in target_terrain):
                     count += 1
-            if count == 0:
+            if count == 0 and not on_target:
                 self._log(
                     world,
                     f"Demolishing {b.type.name} at "
@@ -692,11 +911,48 @@ class Clanker:
                     f"{self._terrain_label(b.type)} nearby.",
                 )
                 self._demolish(world, b)
+                continue
+            # Depletion check — for harvesters whose tiles auto-
+            # retarget within COLLECTION_RADIUS.  Demolish only when
+            # the building has been fully idle for an audit cycle
+            # AND every reachable tile has 0 resource.
+            if not getattr(b, "active", False) and b.workers > 0:
+                radius = getattr(_p, "COLLECTION_RADIUS", 1)
+                any_left = False
+                for nb in _hex_range(b.coord, radius):
+                    if nb == b.coord:
+                        continue
+                    nb_tile = world.grid.get(nb)
+                    if nb_tile is None:
+                        continue
+                    if nb_tile.building is not None:
+                        continue
+                    if nb_tile.terrain not in target_terrain:
+                        continue
+                    if (nb_tile.resource_amount > 0
+                            or nb_tile.food_amount > 0):
+                        any_left = True
+                        break
+                if not any_left:
+                    self._log(
+                        world,
+                        f"Demolishing {b.type.name} at "
+                        f"({b.coord.q},{b.coord.r}) — local "
+                        f"{self._terrain_label(b.type)} depleted.",
+                    )
+                    self._demolish(world, b)
 
     # ── Research ─────────────────────────────────────────────────
 
     def _try_start_research(self, world: World) -> None:
-        """If the colony's tech tree is idle, pick a node to research."""
+        """If the colony's tech tree is idle, pick a node to research.
+
+        Scoring favours nodes that:
+        * Unlock buildings or resources (vs. pure passives).
+        * Unlock something we don't already have access to.
+        * Are cheap relative to our stockpile (won't stall).
+        * Lead toward higher tiers (closer to root → more downstream).
+        """
         tt = self.colony.tech_tree
         if tt.current_research is not None:
             return
@@ -706,18 +962,63 @@ class Clanker:
 
         def score(key: str) -> float:
             node = TECH_NODES[key]
-            unlock_bonus = 10.0 if (
-                getattr(node, "unlocks", None)
-                or getattr(node, "unlock_resources", None)
-            ) else 0.0
-            cost_total = sum(node.cost.values()) if node.cost else 0.0
-            return unlock_bonus - cost_total / 100.0
+            unlocks = list(getattr(node, "unlocks", []) or [])
+            unlock_resources = list(
+                getattr(node, "unlock_resources", []) or [])
+            # Strong bonus for unlocking a building we don't yet own.
+            bld_bonus = 0.0
+            for bname in unlocks:
+                try:
+                    bt = BuildingType[bname]
+                except KeyError:
+                    continue
+                if not self._has_building(world, bt):
+                    bld_bonus += 30.0
+                else:
+                    bld_bonus += 5.0
+            res_bonus = 8.0 * len(unlock_resources)
+            # Penalise nodes whose cost we can't currently afford.
+            cost = getattr(node, "cost", {}) or {}
+            shortfall = 0.0
+            for res_key, amt in cost.items():
+                # cost keys may be Resource enums already.
+                try:
+                    rname = (
+                        res_key.name if hasattr(res_key, "name")
+                        else str(res_key)
+                    )
+                    res = Resource[rname]
+                except KeyError:
+                    continue
+                have = self._stock(world, res)
+                if have < amt:
+                    shortfall += (amt - have)
+            return (
+                bld_bonus + res_bonus
+                - shortfall * 0.05
+                - sum(cost.values()) / 200.0
+                + self.rng.random() * 0.5
+            )
 
         candidates.sort(key=score, reverse=True)
         choice = candidates[0]
         tt.start_research(choice)
         node = TECH_NODES[choice]
-        self._log(world, f"Researching {node.name} \u2014 picks up new content.")
+        unlocks = list(getattr(node, "unlocks", []) or [])
+        unlock_resources = list(getattr(node, "unlock_resources", []) or [])
+        what = []
+        if unlocks:
+            unlock_names = [
+                getattr(b, "name", str(b)).replace("_", " ").title() for b in unlocks
+            ]
+            what.append(f"buildings: {', '.join(unlock_names)}")
+        if unlock_resources:
+            res_names = [
+                getattr(r, "name", str(r)).replace("_", " ").title() for r in unlock_resources
+            ]
+            what.append(f"materials: {', '.join(res_names)}")
+        suffix = f" ({'; '.join(what)})" if what else ""
+        self._log(world, f"Researching {node.name}{suffix}.")
 
     # ── Workshop / Forge recipes ─────────────────────────────────
 
@@ -731,12 +1032,12 @@ class Clanker:
           * a :class:`Resource` material recipe whose ``station``
             field matches.
 
-        Setting a recipe a station can't actually run is a no-op
-        (``_tick_building_recipe`` clears it next frame), so we filter
-        candidates by station type up-front.  When the colony's
-        building stockpile is healthy we keep the workshops crafting
-        intermediate materials so feedstock for *future* building
-        recipes accumulates \u2014 just like a player would.
+        Picker is *demand-aware*: it computes the set of resources
+        that are bottlenecks for the buildings the colony wants to
+        craft (e.g. when HABITAT stockpile is low and we have no
+        IRON_BAR, FORGE will be steered toward IRON_BAR).  This lets
+        the AI bootstrap its own production chains instead of randomly
+        cranking out PLANK and stalling on missing intermediates.
         """
         from compprog_pygame.games.hex_colony.params import (
             BUILDING_RECIPE_STATION,
@@ -745,9 +1046,8 @@ class Clanker:
             MATERIAL_RECIPES, recipes_for_station,
         )
 
-        # Buildings whose stockpile we'd like to top up.  Keep the list
-        # ordered by importance so the rng.choice below biases toward
-        # things the AI is genuinely short on.
+        # Buildings whose stockpile we'd like to top up.  Ordered so
+        # earlier entries are higher priority.
         wanted_buildings: list[BuildingType] = []
         for btype in (
             BuildingType.PATH, BuildingType.HABITAT,
@@ -765,9 +1065,6 @@ class Clanker:
                     and self.colony.building_inventory[btype] < 3):
                 wanted_buildings.append(btype)
 
-        # Material recipes the AI might want for crafting feedstock.
-        # We always consider them so workshops keep busy even when the
-        # building stockpile is full.
         def _material_unlocked(res: Resource) -> bool:
             tt = self.colony.tech_tree
             tier = self.colony.tier_tracker
@@ -779,15 +1076,79 @@ class Clanker:
             except Exception:
                 return True
 
+        # ── Demand resolver ─────────────────────────────────────
+        # Walk wanted_buildings → their recipe inputs → recursively
+        # to material recipes, accumulating a "needed" count per
+        # resource.  A resource is only "needed" if we don't already
+        # have plenty of it stockpiled.
+        STOCK_TARGET: dict[Resource, float] = {}
+        # Tier-up target resources also feed into demand so the AI
+        # actually progresses through tiers.
+        try:
+            from compprog_pygame.games.hex_colony.tech_tree import (
+                TIERS as _TIERS,
+            )
+            cur_tier = self.colony.tier_tracker.current_tier
+            if cur_tier + 1 < len(_TIERS):
+                next_tier = _TIERS[cur_tier + 1]
+                req = getattr(next_tier, "requirements", {}) or {}
+                gathered = req.get("resource_gathered", {}) or {}
+                for rname, amt in gathered.items():
+                    try:
+                        STOCK_TARGET[Resource[rname]] = max(
+                            STOCK_TARGET.get(Resource[rname], 0.0),
+                            float(amt) * 1.5,
+                        )
+                    except KeyError:
+                        pass
+        except Exception:
+            pass
+
+        # Per-resource minimum we want on hand.
+        DEFAULT_TARGET = 30.0
+        needed: dict[Resource, float] = {}
+
+        def _add_demand(res: Resource, amount: float, depth: int = 0):
+            if depth > 4 or amount <= 0:
+                return
+            target = max(STOCK_TARGET.get(res, DEFAULT_TARGET), amount)
+            have = self._stock(world, res)
+            short = max(0.0, target - have)
+            if short <= 0:
+                return
+            needed[res] = needed.get(res, 0.0) + short
+            # Recurse into a material recipe if this resource is
+            # itself crafted (so the AI also lines up the inputs).
+            mrec = MATERIAL_RECIPES.get(res)
+            if mrec is None:
+                return
+            if not _material_unlocked(res):
+                return
+            for in_res, in_amt in mrec.inputs.items():
+                _add_demand(
+                    in_res, in_amt * short / max(1, mrec.output_amount),
+                    depth + 1,
+                )
+
+        for bt in wanted_buildings:
+            cost = BUILDING_COSTS.get(bt)
+            if cost is None:
+                continue
+            for res, amt in cost.costs.items():
+                _add_demand(res, float(amt))
+        # Bake in tier-up demand directly even when no building uses
+        # those materials yet (e.g. tier requires GATHERER FOOD count).
+        for res, target in STOCK_TARGET.items():
+            have = self._stock(world, res)
+            if have < target:
+                needed[res] = needed.get(res, 0.0) + (target - have)
+
         for b in world.buildings.buildings:
             if getattr(b, "faction", "SURVIVOR") != self.faction_id:
                 continue
             # Re-evaluate an existing recipe if it's clearly the
             # wrong choice — output bin is full and no inputs are
-            # waiting, so the station is just sitting idle.  Clearing
-            # the recipe here lets the picker below try something
-            # different (e.g. swap a flooded "PLANK" recipe for a
-            # building recipe the colony actually needs).
+            # waiting, so the station is just sitting idle.
             if b.recipe is not None:
                 if isinstance(b.recipe, Resource):
                     out_held = b.storage.get(b.recipe, 0.0)
@@ -810,15 +1171,11 @@ class Clanker:
                 if b.recipe is not None:
                     continue
             station_name = b.type.name
-            # Building recipes this station can craft.
             valid_buildings: list[BuildingType] = [
                 bt for bt in wanted_buildings
                 if BUILDING_RECIPE_STATION.get(bt.name) == station_name
                 and bt in BUILDING_COSTS
             ]
-            # Material recipes this station can run.  Skip materials
-            # we already have a heavy stockpile of — no point
-            # cranking out yet more planks if we're drowning in them.
             valid_materials: list[Resource] = []
             for mr in recipes_for_station(station_name):
                 if not _material_unlocked(mr.output):
@@ -829,25 +1186,59 @@ class Clanker:
                 valid_materials.append(mr.output)
             if not valid_buildings and not valid_materials:
                 continue
-            # 60% chance to top up a low building stockpile when one
-            # is available; otherwise (or when no building qualifies)
-            # craft a material so feedstock keeps flowing.
-            choices: list[BuildingType | Resource] = []
-            if valid_buildings and (
-                not valid_materials or self.rng.random() < 0.6
-            ):
-                choices = list(valid_buildings)
-            else:
-                choices = list(valid_materials)
-            self.rng.shuffle(choices)
-            b.recipe = choices[0]
+
+            # ── Demand-driven choice ─────────────────────────────
+            # 1. If any material recipe outputs a "needed" resource,
+            #    prefer the one with highest demand.
+            best_mat: Resource | None = None
+            best_demand = 0.0
+            for r in valid_materials:
+                d = needed.get(r, 0.0)
+                if d > best_demand:
+                    best_demand = d
+                    best_mat = r
+            # 2. Otherwise, top up a low building stockpile.
+            chosen: BuildingType | Resource | None = None
+            if best_mat is not None and best_demand > 0:
+                chosen = best_mat
+            elif valid_buildings:
+                # Bias toward buildings whose ALL inputs are now
+                # available so the recipe actually completes.
+                def _can_build(bt: BuildingType) -> bool:
+                    cost = BUILDING_COSTS.get(bt)
+                    if cost is None:
+                        return False
+                    for res, amt in cost.costs.items():
+                        if self._stock(world, res) < amt:
+                            return False
+                    return True
+                buildable = [bt for bt in valid_buildings if _can_build(bt)]
+                pool = buildable or valid_buildings
+                self.rng.shuffle(pool)
+                chosen = pool[0]
+            elif valid_materials:
+                # Falls back to keeping the station busy with
+                # *something* unlocked (helps research-tier deliveries).
+                pool_m = list(valid_materials)
+                self.rng.shuffle(pool_m)
+                chosen = pool_m[0]
+
+            if chosen is None:
+                continue
+            b.recipe = chosen
             label = (
-                choices[0].name if isinstance(choices[0], BuildingType)
-                else f"material {choices[0].name.lower()}"
+                chosen.name if isinstance(chosen, BuildingType)
+                else f"material {chosen.name.lower()}"
             )
+            why = ""
+            if isinstance(chosen, Resource) and needed.get(chosen, 0) > 0:
+                why = (
+                    f" (needed {int(needed[chosen])} units for "
+                    "downstream recipes)"
+                )
             self._log(
                 world,
-                f"Set {station_name} recipe to {label}.",
+                f"Set {station_name} recipe to {label}{why}.",
             )
 
 

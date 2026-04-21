@@ -18,6 +18,7 @@ from compprog_pygame.games.hex_colony.ui import UIManager
 from compprog_pygame.games.hex_colony.ui_bottom_bar import BottomBar
 from compprog_pygame.games.hex_colony.ui_building_info import BuildingInfoPanel
 from compprog_pygame.games.hex_colony.ui_clanker_possession import (
+    ClankerLogOverlay,
     ClankerPossessionPanel,
 )
 from compprog_pygame.games.hex_colony.ui_game_over import GameOverOverlay
@@ -169,6 +170,7 @@ class Game:
         self._building_info = BuildingInfoPanel()
         self._tile_info = TileInfoPanel()
         self._possession_panel = ClankerPossessionPanel()
+        self._possession_log_overlay = ClankerLogOverlay()
         self._pause_overlay = PauseOverlay()
         self._game_over_overlay = GameOverOverlay()
         self._help_overlay = HelpOverlay()
@@ -185,6 +187,7 @@ class Game:
         self.ui.add_panel(self._building_info)
         self.ui.add_panel(self._tile_info)
         self.ui.add_panel(self._possession_panel)
+        self.ui.add_panel(self._possession_log_overlay)
         self.ui.add_panel(self._minimap)
         self.ui.add_panel(self._help_overlay)
         self.ui.add_panel(self._tech_tree_overlay)
@@ -270,8 +273,10 @@ class Game:
         self._tech_tree_overlay.on_close = self._on_close_tech_tree
         self._tech_tree_overlay.tech_tree = self.tech_tree
 
-        # Possession panel \u2014 clicking Unpossess closes it.
+        # Possession panel — clicking Unpossess closes it.
         self._possession_panel.on_unpossess = self._on_unpossess
+        self._possession_panel.on_view_all_logs = self._on_view_all_logs
+        self._possession_log_overlay.on_close = self._on_close_log_overlay
 
         # ``world.tech_tree`` is now a property pointing at the
         # player's colony; no assignment needed.
@@ -638,13 +643,27 @@ class Game:
             self.renderer.selected_hex = coord
             # Show building info if there's a building, otherwise show tile info
             building = self.world.buildings.at(coord)
+            possessed_fid = (
+                self._possession_panel.clanker.faction_id
+                if self._possession_panel.clanker is not None
+                else None
+            )
             if building is not None and building.faction == "SURVIVOR":
                 self._building_info.building = building
                 self._tile_info.tile = None
                 self._tile_info.has_ruin = False
             elif (building is not None
+                    and possessed_fid is not None
+                    and getattr(building, "faction", "SURVIVOR")
+                    == possessed_fid):
+                # While possessing this faction, the player can
+                # inspect any of its buildings just like their own.
+                self._building_info.building = building
+                self._tile_info.tile = None
+                self._tile_info.has_ruin = False
+            elif (building is not None
                     and building.type == BuildingType.TRIBAL_CAMP):
-                # Rival faction's home base \u2014 open the read-only popup
+                # Rival faction's home base — open the read-only popup
                 # so the player can hit "Possess" and inspect the AI.
                 self._building_info.building = building
                 self._tile_info.tile = None
@@ -979,6 +998,7 @@ class Game:
         if target is None:
             return
         self._possession_panel.set_clanker(target)
+        self._building_info.possessed_faction_id = faction
         # Hide the building info popup so the possession panel has the
         # right side of the screen to itself.
         self._building_info.building = None
@@ -986,6 +1006,24 @@ class Game:
     def _on_unpossess(self) -> None:
         """Close the Possession panel."""
         self._possession_panel.set_clanker(None)
+        self._possession_log_overlay.open_for(None)
+        self._building_info.possessed_faction_id = None
+        # Drop any open AI-building inspector so the player isn't
+        # left looking at a now-foreign building's stats.
+        if (self._building_info.building is not None
+                and getattr(self._building_info.building, "faction",
+                            "SURVIVOR") != "SURVIVOR"):
+            self._building_info.building = None
+
+    def _on_view_all_logs(self) -> None:
+        """Open the modal log overlay for the currently possessed clanker."""
+        c = self._possession_panel.clanker
+        if c is not None:
+            self._possession_log_overlay.open_for(c)
+
+    def _on_close_log_overlay(self) -> None:
+        """Close the modal log overlay (possession panel stays open)."""
+        self._possession_log_overlay.open_for(None)
 
     def _on_open_advanced_stats(self) -> None:
         """Open the Advanced Statistics popup."""
