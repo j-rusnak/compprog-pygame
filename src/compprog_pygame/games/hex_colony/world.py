@@ -494,7 +494,14 @@ class World:
                 is_player=False,
             )
             self.colonies[faction_id] = colony
-            self._init_colony_resources(colony)
+            # NOTE: Unlike the player, clankers deliberately do NOT
+            # seed raw resources into their flat ``colony.inventory``.
+            # Their starting wood/stone/iron/etc. live in
+            # ``camp.storage`` and must move through the logistics
+            # network like any other resource.  This keeps the
+            # AI's "what do I have on hand?" picture honest: it
+            # only counts material that's actually in storage
+            # buildings or being hauled, not phantom inventory.
             self._init_colony_building_inventory(colony)
             self._spawn_colony_people(colony)
 
@@ -1981,11 +1988,13 @@ class World:
         if p.task == Task.LOGISTICS_DELIVER:
             dst = p.logistics_dst
             if dst is None or id(dst) not in self._valid_bids:
-                # Destination gone.  Drop cargo at any storage we're
-                # on (best effort) or just discard to the carrier's
-                # faction inventory.
+                # Destination gone.  Try to dump cargo back into the
+                # carrier's faction storage network rather than the
+                # flat inventory pool, so it stays where the AI/player
+                # can actually see and reuse it.
                 if p.logistics_res is not None and p.logistics_amount > 0:
-                    self.colony_of_person(p).inventory.add(
+                    self._stash_orphan_cargo(
+                        self.colony_of_person(p),
                         p.logistics_res, p.logistics_amount,
                     )
                 p.carry_resource = None
@@ -2002,9 +2011,10 @@ class World:
                 if path:
                     p.path = path
                     return
-                # Drop to the carrier's faction inventory as fallback.
+                # Drop into faction storage as fallback.
                 if p.logistics_res is not None and p.logistics_amount > 0:
-                    self.colony_of_person(p).inventory.add(
+                    self._stash_orphan_cargo(
+                        self.colony_of_person(p),
                         p.logistics_res, p.logistics_amount,
                     )
                 p.carry_resource = None
@@ -2017,9 +2027,11 @@ class World:
                 deposited = self._deposit(dst, res, p.logistics_amount)
                 leftover = p.logistics_amount - deposited
                 if leftover > 0:
-                    # Dest full; push leftover into the destination
-                    # building's faction inventory.
-                    self.colony_for(dst).inventory.add(res, leftover)
+                    # Dest full; spill leftover into another faction
+                    # storage building rather than the flat inventory.
+                    self._stash_orphan_cargo(
+                        self.colony_for(dst), res, leftover,
+                    )
             p.carry_resource = None
             p.logistics_amount = 0.0
             self._logistics_reset(p)
@@ -2943,6 +2955,54 @@ class World:
                         for r, amt in node.cost.items()
                     }
         return {}
+
+    def _stash_orphan_cargo(
+        self, colony: "ColonyState", res: Resource, amount: float,
+    ) -> None:
+        """Best-effort dump of orphaned logistics cargo back into the
+        colony's network rather than the flat inventory pool.
+
+        When a hauler can't deposit (destination demolished, path
+        broken, destination full), prefer dumping into a faction-
+        owned STORAGE / CAMP / TRIBAL_CAMP building with free space,
+        so the resource stays where the AI (and the player) can
+        actually see and re-use it.
+
+        For the **player** colony, falls back to the flat inventory
+        when no building has room — matches the legacy behaviour
+        the UI / tier tracker depends on.
+
+        For **clanker** colonies the flat inventory must stay empty
+        of raw resources (otherwise the AI thinks it has phantom
+        stockpiles and makes bad decisions).  If no storage has
+        room, the cargo is discarded — equivalent to the player's
+        situation when every container is full.
+        """
+        if amount <= 0:
+            return
+        storage_types = (
+            BuildingType.STORAGE,
+            BuildingType.CAMP,
+            BuildingType.TRIBAL_CAMP,
+        )
+        remaining = float(amount)
+        for stype in storage_types:
+            if remaining <= 1e-6:
+                break
+            for b in self.buildings.by_type(stype):
+                if remaining <= 1e-6:
+                    break
+                if getattr(b, "faction", "SURVIVOR") != colony.faction_id:
+                    continue
+                dep = self._deposit(b, res, remaining)
+                if dep > 0:
+                    remaining -= dep
+        if remaining > 1e-6 and colony.is_player:
+            # Player-only legacy fallback.  Clanker cargo is simply
+            # lost when the logistics network has no room — this
+            # matches what happens to a player whose storage is
+            # equally full.
+            colony.inventory.add(res, remaining)
 
     def _deposit(self, b: "Building", res: Resource, amount: float) -> float:
         """Add *amount* of *res* to ``b.storage``, capped to capacity.

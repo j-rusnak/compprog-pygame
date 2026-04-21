@@ -58,6 +58,7 @@ from compprog_pygame.games.hex_colony.ui_tutorial import TutorialPanel
 from compprog_pygame.games.hex_colony import params
 from compprog_pygame.games.hex_colony.perf_monitor import PerfMonitor
 from compprog_pygame.games.hex_colony.logistics_monitor import LogisticsMonitor
+from compprog_pygame.games.hex_colony.clanker_monitor import ClankerMonitor
 from compprog_pygame.games.hex_colony.strings import (
     building_label,
     NOTIF_RESEARCH_COMPLETE,
@@ -294,6 +295,10 @@ class Game:
         # buildings to ``hex_colony_logistics.jsonl`` from a daemon
         # thread.  Disabled by setting HEX_COLONY_LOGISTICS=0.
         self.logistics_mon = LogisticsMonitor()
+        # Background clanker-AI diagnostics — snapshots every
+        # clanker's decision state to ``hex_colony_clankers.jsonl``
+        # from a daemon thread.  Disabled by HEX_COLONY_CLANKERS=0.
+        self.clanker_mon = ClankerMonitor()
 
     # ── Public entry point ───────────────────────────────────────
 
@@ -321,6 +326,7 @@ class Game:
         gc_accum = 0.0
         self.perf.start()
         self.logistics_mon.start()
+        self.clanker_mon.start()
         try:
             while self.running:
                 dt = clock.tick(self.settings.fps) / 1000.0
@@ -340,6 +346,7 @@ class Game:
         finally:
             self.perf.stop()
             self.logistics_mon.stop()
+            self.clanker_mon.stop()
             gc.unfreeze()
             gc.set_threshold(*prev_gc_thresholds)
             if prev_gc_enabled:
@@ -366,6 +373,8 @@ class Game:
                 self.logistics_mon.maybe_sample(self.world)
             with self.perf.section("clankers_update"):
                 self.clankers.update(dt * self._sim_speed)
+            with self.perf.section("clanker_mon"):
+                self.clanker_mon.maybe_sample(self.world, self.clankers)
             with self.perf.section("stats_sample"):
                 # Sample stats every frame regardless of whether the
                 # Stats tab is currently visible — the user wants
