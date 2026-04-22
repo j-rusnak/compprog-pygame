@@ -168,19 +168,6 @@ class World:
         self.colonies: dict[str, ColonyState] = {
             self.player_colony.faction_id: self.player_colony,
         }
-        # AI rival colonies ("The Other Colony" enemy faction).
-        # Populated by :meth:`_spawn_rival_colony` during generation.
-        # Forward-typed as ``list`` to avoid a circular import; the
-        # actual element type is
-        # :class:`compprog_pygame.games.hex_colony.rival_colony.RivalColony`.
-        self.rivals: list = []
-        # Becomes True the moment any rival's rocket bar fills,
-        # ending the run with a rival-victory game-over screen.
-        self.rival_launched: bool = False
-        # Name of the rival that launched first — used by the
-        # game-over overlay to show the right "X reached space first"
-        # message.
-        self.rival_winner_name: str = ""
         self.time_elapsed: float = 0.0
         self.real_time_elapsed: float = 0.0
         self._housing_dirty: bool = True  # needs recalc on first frame
@@ -339,16 +326,7 @@ class World:
 
     @property
     def game_over(self) -> bool:
-        """The mission is lost when all *player* survivors are dead
-        OR when an AI rival has launched their rocket first.
-
-        AI rivals live and die in their own colonies — the player's
-        survival check only counts player-faction colonists.  The
-        rival-launch check is set by :class:`RivalColony` when its
-        ``rocket_progress`` fills.
-        """
-        if self.rival_launched:
-            return True
+        """The mission is lost when all *player* survivors are dead."""
         return self.player_population_count == 0 and self.time_elapsed > 0
 
     def faction_population_count(self, faction: str) -> int:
@@ -400,7 +378,7 @@ class World:
         """
         world = cls(settings)
         world.seed = seed
-        world.grid, ai_camp_coords = generate_terrain(
+        world.grid, _ai_camp_coords = generate_terrain(
             seed, settings, progress_callback=progress_callback,
         )
         world._place_starting_camp()
@@ -409,50 +387,7 @@ class World:
         world._init_colony_resources(world.player_colony)
         world._init_colony_building_inventory(world.player_colony)
         world._spawn_colony_people(world.player_colony)
-        # Spawn the AI rival colony — "The Other Colony" enemy.
-        # Always present so the game has a built-in race and the
-        # diplomacy panel always has someone to interact with.  HARD
-        # difficulty enables faster + more aggressive defaults; EASY
-        # uses the relaxed parameters in params.py.
-        if ai_camp_coords:
-            world._spawn_rival_colony(ai_camp_coords[0], seed)
         return world
-
-    # ── Rival colony bootstrap ───────────────────────────────────
-
-    def _spawn_rival_colony(self, camp_coord: HexCoord, seed: str) -> None:
-        """Place a TRIBAL_CAMP for the rival faction at *camp_coord*
-        and register the corresponding :class:`RivalColony` so the
-        per-frame tick can advance it.
-
-        Imported here (not at module top) to avoid a circular import
-        between :mod:`world` and :mod:`rival_colony`.
-        """
-        from compprog_pygame.games.hex_colony.rival_colony import (
-            RivalColony, name_for_seed,
-        )
-        if camp_coord not in self.grid:
-            return
-        tile = self.grid[camp_coord]
-        # If procgen guaranteed this tile was buildable but somehow
-        # a player CAMP coordinate landed here (impossible in normal
-        # generation), bail out cleanly rather than overwrite.
-        if tile.building is not None:
-            return
-        camp = self.buildings.place(BuildingType.TRIBAL_CAMP, camp_coord)
-        faction_id = "RIVAL_0"
-        camp.faction = faction_id
-        tile.building = camp
-        rival = RivalColony.create(
-            faction_id=faction_id,
-            name=name_for_seed(seed),
-            camp_coord=camp_coord,
-            seed=seed,
-        )
-        self.colonies[faction_id] = rival.colony
-        self.rivals.append(rival)
-        # Networks must be rebuilt so the new building joins one.
-        self.mark_housing_dirty()
 
     def _place_starting_camp(self) -> None:
         origin = HexCoord(0, 0)
@@ -573,16 +508,6 @@ class World:
         if self._unreachable_accum >= 0.5:
             self._unreachable_accum = 0.0
             self._refresh_unreachable_caches()
-
-        # Rival AI tick.  Runs after the player simulation so any
-        # building placements / removals this frame are visible to the
-        # rival's raid targeting and house-placement BFS.
-        if self.rivals:
-            for rival in self.rivals:
-                rival.tick(self, dt, self.notifications)
-                if rival.launched and not self.rival_launched:
-                    self.rival_launched = True
-                    self.rival_winner_name = rival.name
 
     def mark_housing_dirty(self) -> None:
         """Flag that housing assignments need recalculation.

@@ -88,7 +88,6 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_assembler,
     draw_research_center,
     draw_tribal_camp,
-    draw_rival_camp,
     draw_chemical_plant,
     draw_conveyor,
     draw_solar_array,
@@ -1199,27 +1198,7 @@ class Renderer:
             elif building.type == BuildingType.RESEARCH_CENTER:
                 draw_research_center(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.TRIBAL_CAMP:
-                # Rival faction camps render as a single hex sprite
-                # whose radius grows by one hex per tier.  The
-                # per-tier draw functions (rival_tier_0..7) check for
-                # PNG overrides at ``buildings/rival_tier_<N>.png``
-                # before falling back to procedural art.
-                faction = getattr(building, "faction", "SURVIVOR")
-                if faction != "SURVIVOR" and getattr(world, "rivals", None):
-                    rival = next(
-                        (rv for rv in world.rivals
-                         if rv.faction_id == faction),
-                        None,
-                    )
-                    if rival is not None:
-                        scale = max(1, rival.tier + 1)
-                        draw_rival_camp(
-                            surface, sx, sy, r * scale, zoom, rival.tier,
-                        )
-                    else:
-                        draw_tribal_camp(surface, sx, sy, r, zoom)
-                else:
-                    draw_tribal_camp(surface, sx, sy, r, zoom)
+                draw_tribal_camp(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.CHEMICAL_PLANT:
                 draw_chemical_plant(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.CONVEYOR:

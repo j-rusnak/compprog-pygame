@@ -23,7 +23,6 @@ from compprog_pygame.games.hex_colony.ui import (
 )
 from compprog_pygame.games.hex_colony.strings import (
     GAME_OVER_TITLE,
-    GAME_OVER_RIVAL_TITLE,
     GAME_OVER_BUTTONS,
     GAME_OVER_STATS,
 )
@@ -71,12 +70,7 @@ class GameOverOverlay(Panel):
         px = (sw - pw) // 2
         py = (sh - ph) // 2
         panel = pygame.Rect(px, py, pw, ph)
-        if world.rival_launched:
-            title = GAME_OVER_RIVAL_TITLE.format(
-                name=world.rival_winner_name or "The Other Colony",
-            )
-        else:
-            title = GAME_OVER_TITLE
+        title = GAME_OVER_TITLE
         content_y = draw_titled_panel(
             surface, panel, title,
             title_color=UI_BAD, title_font=Fonts.hero(),

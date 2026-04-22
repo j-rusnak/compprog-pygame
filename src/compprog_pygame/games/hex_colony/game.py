@@ -19,7 +19,6 @@ from compprog_pygame.games.hex_colony.ui_bottom_bar import BottomBar
 from compprog_pygame.games.hex_colony.ui_building_info import BuildingInfoPanel
 from compprog_pygame.games.hex_colony.ui_game_over import GameOverOverlay
 from compprog_pygame.games.hex_colony.ui_help_overlay import HelpOverlay
-from compprog_pygame.games.hex_colony.ui_rival_colony import RivalColonyOverlay
 from compprog_pygame.games.hex_colony.ui_pause_menu import PauseOverlay
 from compprog_pygame.games.hex_colony.ui_resource_bar import ResourceBar
 from compprog_pygame.games.hex_colony.ui_tile_info import TileInfoPanel
@@ -163,7 +162,6 @@ class Game:
         self._pause_overlay = PauseOverlay()
         self._game_over_overlay = GameOverOverlay()
         self._help_overlay = HelpOverlay()
-        self._rival_overlay = RivalColonyOverlay()
         self._minimap = MinimapPanel()
         self._tech_tree_overlay = TechTreeOverlay()
         self._advanced_stats_overlay = AdvancedStatsOverlay()
@@ -178,7 +176,6 @@ class Game:
         self.ui.add_panel(self._tile_info)
         self.ui.add_panel(self._minimap)
         self.ui.add_panel(self._help_overlay)
-        self.ui.add_panel(self._rival_overlay)
         self.ui.add_panel(self._tech_tree_overlay)
         self.ui.add_panel(self._advanced_stats_overlay)
         self.ui.add_panel(self._worker_priority_overlay)
@@ -377,16 +374,6 @@ class Game:
                     self._time_in_current_tier = 0.0
                 else:
                     self._time_in_current_tier += dt
-
-                # Tick each rival faction's research & tier independently.
-                for fid, colony in self.world.colonies.items():
-                    if colony.is_player:
-                        continue
-                    colony.tech_tree.update(
-                        dt * self._sim_speed, self.world, fid,
-                    )
-                    colony.tech_research_count = colony.tech_tree.researched_count
-                    colony.tier_tracker.try_advance(self.world, fid)
             self.notifications.update(dt)
             self._real_time_elapsed += dt
             with self.perf.section("tutorial"):
@@ -473,8 +460,6 @@ class Game:
                         btab.delete_active = False
             elif event.key in (pygame.K_h, pygame.K_i):
                 self._help_overlay.toggle()
-            elif event.key == pygame.K_r:
-                self._rival_overlay.toggle()
             elif event.key == pygame.K_1:
                 self._sim_speed = 3.0
             elif event.key == pygame.K_2:
