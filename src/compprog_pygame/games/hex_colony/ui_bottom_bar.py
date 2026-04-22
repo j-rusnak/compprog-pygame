@@ -47,6 +47,8 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_wall,
     draw_well,
     draw_workshop,
+    draw_turret,
+    draw_trap,
 )
 from compprog_pygame.games.hex_colony.tech_tree import is_building_available
 from compprog_pygame.games.hex_colony.strings import (
@@ -167,8 +169,9 @@ class BuildingsTabContent(TabContent):
                         BuildingType.CHEMICAL_PLANT, BuildingType.OIL_REFINERY,
                         BuildingType.STORAGE, BuildingType.FLUID_TANK]),
         (BUILDING_CATEGORY_NAMES[4], [BuildingType.PATH, BuildingType.BRIDGE,
-                        BuildingType.CONVEYOR, BuildingType.PIPE,
-                        BuildingType.WALL]),
+                        BuildingType.CONVEYOR, BuildingType.PIPE]),
+        (BUILDING_CATEGORY_NAMES[5], [BuildingType.WALL, BuildingType.TURRET,
+                        BuildingType.TRAP]),
     ]
 
     BUILDABLE: list[BuildingType] = []
@@ -200,6 +203,8 @@ class BuildingsTabContent(TabContent):
         BuildingType.OIL_REFINERY: "\u2697",
         BuildingType.PIPE: "\u2550",
         BuildingType.FLUID_TANK: "\u25d2",
+        BuildingType.TURRET: "\u2620",
+        BuildingType.TRAP: "\u2737",
     }
 
     _COLOR: dict[BuildingType, tuple[int, int, int]] = {
@@ -227,6 +232,8 @@ class BuildingsTabContent(TabContent):
         BuildingType.OIL_REFINERY: (90, 85, 105),
         BuildingType.PIPE: (155, 150, 145),
         BuildingType.FLUID_TANK: (110, 130, 150),
+        BuildingType.TURRET: (180, 80, 60),
+        BuildingType.TRAP: (140, 100, 50),
     }
 
     _DESC: dict[BuildingType, str] = {
@@ -271,6 +278,8 @@ class BuildingsTabContent(TabContent):
         BuildingType.CONVEYOR: draw_conveyor,
         BuildingType.SOLAR_ARRAY: draw_solar_array,
         BuildingType.ROCKET_SILO: draw_rocket_silo,
+        BuildingType.TURRET: draw_turret,
+        BuildingType.TRAP: draw_trap,
     }
 
     # Cache of building-sprite preview surfaces, keyed by (btype, size).

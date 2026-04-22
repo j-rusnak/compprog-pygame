@@ -723,6 +723,15 @@ TECH_TREE_DATA: dict[str, dict] = {
         "unlock_resources": ["STEEL_PLATE"],
         "position": (5, 1),
     },
+    "defense_basics": {
+        "name": "Defense Basics",
+        "description": "Build Turrets and Spike Traps to repel ancient invaders",
+        "cost": {"WOOD": 15, "STONE": 15, "IRON_BAR": 4},
+        "time": 50.0,
+        "prerequisites": ["metallurgy"],
+        "unlocks": ["TURRET", "TRAP"],
+        "position": (4, 2),
+    },
     "advanced_smelting": {
         "name": "Advanced Smelting",
         "description": "Forge Steel Bars and melt Glass",
@@ -1068,3 +1077,222 @@ AWAKENING_LETTERBOX_FRAC: float = 0.10
 AWAKENING_TITLE_TEXT: str = "AWAKENING"
 AWAKENING_SUBTITLE_TEXT: str = "Ancient machines stir beneath the soil..."
 AWAKENING_SKIP_HINT: str = "Space / click to skip"
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  COMBAT — DEFENSE BUILDINGS
+#  Costs / capacity / health for the new defense subtab.  All numbers
+#  are tuned for early-mid game (a single Turret should comfortably
+#  kill a SCOUT, struggle vs a BRUTE, and stand no chance vs a
+#  COLOSSUS without support).
+# ═══════════════════════════════════════════════════════════════════
+
+BUILDING_COST_TURRET: dict[str, int] = {"STONE": 12, "IRON_BAR": 4, "PLANKS": 4}
+BUILDING_COST_TRAP: dict[str, int] = {"WOOD": 4, "IRON_BAR": 1}
+
+BUILDING_MAX_WORKERS_TURRET: int = 0
+BUILDING_MAX_WORKERS_TRAP: int = 0
+
+BUILDING_HOUSING_TURRET: int = 0
+BUILDING_HOUSING_TRAP: int = 0
+
+BUILDING_STORAGE_TURRET: int = 0
+BUILDING_STORAGE_TRAP: int = 0
+
+# Turret combat behaviour.
+TURRET_RANGE_HEXES: int = 4
+TURRET_DAMAGE: float = 12.0
+TURRET_RELOAD_SECONDS: float = 0.9
+TURRET_PROJECTILE_SPEED: float = 320.0  # px/sec
+
+# One-shot trap that arms when placed and detonates the first time
+# an enemy steps on it.  Heavy damage but consumed on use.
+TRAP_DAMAGE: float = 60.0
+
+# Crashed spaceship (CAMP) auto-defence.  Free, always-on laser:
+# the wreckage doubles as a short-range turret so the player has at
+# least one defender before they unlock the proper Turret tech.
+CAMP_LASER_RANGE_HEXES: int = 3
+CAMP_LASER_DAMAGE: float = 20.0
+CAMP_LASER_RELOAD_SECONDS: float = 0.6
+
+# ═══════════════════════════════════════════════════════════════════
+#  COMBAT — HEALTH
+#  Per-building HP.  Anything not in this table defaults to
+#  ``BUILDING_DEFAULT_MAX_HEALTH``.  The CAMP is heavily armoured —
+#  it is the lose condition.
+# ═══════════════════════════════════════════════════════════════════
+
+PERSON_MAX_HEALTH: float = 30.0
+PERSON_DEATH_NOTIFY: bool = True
+
+BUILDING_DEFAULT_MAX_HEALTH: float = 100.0
+BUILDING_MAX_HEALTH: dict[str, float] = {
+    "CAMP":            800.0,
+    "HABITAT":         150.0,
+    "HOUSE":           80.0,
+    "PATH":            30.0,
+    "BRIDGE":          40.0,
+    "WALL":            220.0,    # walls are the player's primary blocker
+    "WOODCUTTER":      70.0,
+    "QUARRY":          80.0,
+    "GATHERER":        70.0,
+    "STORAGE":         120.0,
+    "REFINERY":        100.0,
+    "MINING_MACHINE":  120.0,
+    "FARM":            70.0,
+    "WELL":            50.0,
+    "WORKSHOP":        100.0,
+    "FORGE":           110.0,
+    "ASSEMBLER":       110.0,
+    "RESEARCH_CENTER": 130.0,
+    "TRIBAL_CAMP":     150.0,
+    "CHEMICAL_PLANT":  130.0,
+    "CONVEYOR":        20.0,
+    "SOLAR_ARRAY":     60.0,
+    "ROCKET_SILO":     400.0,
+    "OIL_DRILL":       100.0,
+    "OIL_REFINERY":    130.0,
+    "PIPE":            20.0,
+    "FLUID_TANK":      120.0,
+    "TURRET":          90.0,
+    "TRAP":            10.0,
+}
+
+# ═══════════════════════════════════════════════════════════════════
+#  COMBAT — ENEMIES
+#  Three escalating tiers.  Each entry is a string-keyed dict so we
+#  stay free of enum imports.
+#    hp           — total health
+#    damage       — damage per attack against a building or person
+#    attack_cd    — seconds between attacks (against an adjacent target)
+#    move_period  — seconds between 1-hex moves (lower = faster enemy)
+#    bounty       — wood awarded to player on kill (small economic loop)
+#    sprite       — file in assets/sprites/enemies/ (without .png)
+#    color        — fallback procedural colour when no sprite is present
+#    radius_px    — base sprite radius for procedural drawing
+# ═══════════════════════════════════════════════════════════════════
+
+ENEMY_TYPE_DATA: dict[str, dict] = {
+    "SCOUT": {
+        "hp":          30.0,
+        "damage":      6.0,
+        "attack_cd":   1.0,
+        "move_period": 0.55,
+        "bounty":      2,
+        "sprite":      "scout",
+        "color":       (180, 80, 200),
+        "radius_px":   8,
+    },
+    "BRUTE": {
+        "hp":          90.0,
+        "damage":      14.0,
+        "attack_cd":   1.2,
+        "move_period": 0.85,
+        "bounty":      5,
+        "sprite":      "brute",
+        "color":       (200, 60, 80),
+        "radius_px":   11,
+    },
+    "COLOSSUS": {
+        "hp":          260.0,
+        "damage":      32.0,
+        "attack_cd":   1.6,
+        "move_period": 1.2,
+        "bounty":      12,
+        "sprite":      "colossus",
+        "color":       (90, 60, 160),
+        "radius_px":   15,
+    },
+}
+
+# ═══════════════════════════════════════════════════════════════════
+#  COMBAT — WAVE COMPOSITION
+#  WAVE_COMPOSITION_PER_TOWER[wave_index] = list[(EnemyType, count)]
+#  Wave 0 fires after the FIRST awakening cutscene; wave 1 after the
+#  second; etc.  When the awakening list is exhausted, periodic waves
+#  use ``POST_AWAKENING_WAVE_COMPOSITION`` and scale further with
+#  population growth and elapsed time.
+# ═══════════════════════════════════════════════════════════════════
+
+# Per-tower spawn counts.  Total wave size = (n_towers * sum(counts)).
+WAVE_COMPOSITION_PER_TOWER: list[list[tuple[str, int]]] = [
+    # Wave 0 — gentle introduction; camp laser will mop these up
+    [("SCOUT", 3)],
+    # Wave 1 — first time the player needs turrets
+    [("SCOUT", 4), ("BRUTE", 1)],
+    # Wave 2 — last awakening, mixed force
+    [("SCOUT", 4), ("BRUTE", 3), ("COLOSSUS", 1)],
+]
+
+# After the final awakening, periodic waves spawn from random map
+# edges.  Composition is rolled per wave and scales with the wave
+# counter (see :data:`POST_AWAKENING_WAVE_SCALING`).
+POST_AWAKENING_WAVE_COMPOSITION: list[tuple[str, int]] = [
+    ("SCOUT", 6), ("BRUTE", 3), ("COLOSSUS", 1),
+]
+
+# Each post-awakening wave multiplies per-type counts by
+# (1 + wave_index * POST_AWAKENING_COUNT_GROWTH) and adds
+# (population // POST_AWAKENING_POP_DIVISOR) extra SCOUTs so a big
+# colony attracts proportionally bigger raids.
+POST_AWAKENING_COUNT_GROWTH: float = 0.15
+POST_AWAKENING_POP_DIVISOR: int = 8
+
+# Seconds between automatic post-awakening waves.  Decreases each
+# wave (clamped) so the late-game pressure keeps ramping.
+POST_AWAKENING_WAVE_INTERVAL_BASE: float = 240.0  # 4 sim minutes
+POST_AWAKENING_WAVE_INTERVAL_MIN: float = 90.0
+POST_AWAKENING_WAVE_INTERVAL_DECAY_PER_WAVE: float = 12.0
+
+# Extra delay after the final awakening before the first periodic
+# wave so the player gets a breather to rebuild.
+POST_AWAKENING_GRACE_PERIOD: float = 180.0
+
+# ═══════════════════════════════════════════════════════════════════
+#  COMBAT — SPAWN / MOVEMENT
+# ═══════════════════════════════════════════════════════════════════
+
+# How many hexes from a tower an enemy may spawn on (random in
+# [0, ENEMY_SPAWN_RADIUS]).  0 = always on the tower hex itself.
+ENEMY_SPAWN_RADIUS: int = 1
+
+# Enemies retarget every N seconds so they re-evaluate closest
+# building when one is destroyed.  Keep it small enough to feel
+# reactive but large enough to avoid per-frame BFS storms.
+ENEMY_RETARGET_INTERVAL: float = 1.5
+
+# Maximum A* search budget (nodes expanded) when an enemy looks for
+# a path to its current target.  A* with a hex-distance heuristic is
+# far cheaper than a flood-fill BFS, so we can afford a generous
+# budget that comfortably spans the whole map.
+ENEMY_PATHFIND_MAX_DEPTH: int = 4000
+
+# When the path-finder fails (target temporarily unreachable), wait
+# this long before retrying — prevents per-frame BFS storms when an
+# enemy is in a pocket it can't escape.
+ENEMY_RETARGET_FAIL_INTERVAL: float = 5.0
+
+# Hexes the enemy can stand on.  Walls / buildings block movement;
+# WATER and MOUNTAIN block by terrain.  PATH / BRIDGE / CONVEYOR are
+# walkable (acts as a small bonus for the defender — these are easy
+# to break, so funnelling enemies onto them is a viable strategy).
+ENEMY_TERRAIN_BLOCKERS: frozenset[str] = frozenset({"WATER", "MOUNTAIN"})
+
+# Building types that physically block enemy movement (they must be
+# attacked and destroyed before the enemy can pass).
+ENEMY_BUILDING_BLOCKERS: frozenset[str] = frozenset({
+    "WALL", "CAMP", "HABITAT", "STORAGE", "WORKSHOP", "FORGE",
+    "ASSEMBLER", "RESEARCH_CENTER", "REFINERY", "FARM", "WELL",
+    "WOODCUTTER", "QUARRY", "GATHERER", "MINING_MACHINE",
+    "TURRET", "CHEMICAL_PLANT", "SOLAR_ARRAY", "ROCKET_SILO",
+    "OIL_DRILL", "OIL_REFINERY", "FLUID_TANK",
+})
+
+# Building types enemies actively prefer to attack — they pick the
+# CLOSEST blocker to walk toward, but ties are broken by this
+# priority list (lower index = higher priority).
+ENEMY_TARGET_PRIORITY: list[str] = [
+    "CAMP", "ROCKET_SILO", "RESEARCH_CENTER", "TURRET",
+    "HABITAT", "STORAGE", "WORKSHOP", "FORGE", "ASSEMBLER",
+]

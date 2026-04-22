@@ -37,6 +37,7 @@ from compprog_pygame.games.hex_colony.overlay import (
 )
 from compprog_pygame.games.hex_colony.people import Task
 from compprog_pygame.games.hex_colony.world import World
+from compprog_pygame.games.hex_colony import params
 
 from compprog_pygame.games.hex_colony.render_utils import (
     BACKGROUND,
@@ -95,6 +96,9 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_oil_drill,
     draw_oil_refinery,
     draw_ancient_tower,
+    draw_turret,
+    draw_trap,
+    draw_enemy,
 )
 from compprog_pygame.games.hex_colony.render_terrain import (
     DIR_EDGE,
@@ -137,6 +141,10 @@ class Renderer:
         self._tl_screen: tuple[int, int] = (0, 0)
         self._ripples: list[OverlayRipple] = []
         self._static_overlays: list[OverlayItem] = []
+        # Set of (q, r) coords that host an OverlayRuin.  Built once
+        # from the initial overlay pass so per-placement ruin lookups
+        # are O(1) instead of O(static_overlays).
+        self._ruin_coords: set[tuple[int, int]] = set()
         self._edge_colors: dict[HexCoord, list[tuple[int, int, int]]] = {}
         self._cross_cat: dict[HexCoord, list[int]] = {}  # 0=same category, 2=cross-category: use own colour
         self._dirty_tiles: set[HexCoord] = set()  # tiles needing targeted redraw
@@ -229,6 +237,7 @@ class Renderer:
             self._draw_ripples(surface, camera, world.settings.hex_size)
         self._draw_buildings(surface, world, camera)
         self._draw_people(surface, world, camera)
+        self._draw_combat(surface, world, camera)
         self._draw_unreachable_markers(surface, world, camera)
         if self.show_resource_overlay:
             self._draw_resource_overlay(surface, world, camera)
@@ -260,6 +269,15 @@ class Renderer:
                 item for item in self._overlays
                 if isinstance(item, OverlayRipple)
             ]
+            # Pre-compute the set of hex coords that host a ruin.
+            # ``has_ruin_at`` is hit 7× per building placement by
+            # ``AncientThreat.notify_built``; without this set it
+            # linear-scanned all ~340k static overlays each call,
+            # adding ~700ms of stall per placement.
+            self._ruin_coords = {
+                item.coord for item in self._static_overlays
+                if isinstance(item, OverlayRuin)
+            }
         # Drain depleted-tile events from the simulation: strip stale
         # overlays (trees / stones / ore crystals) from the now-grass
         # tile and incrementally re-blend the affected region.  This
@@ -417,13 +435,7 @@ class Renderer:
 
     def has_ruin_at(self, coord: HexCoord) -> bool:
         """True if any OverlayRuin was generated on the given hex."""
-        key = (coord.q, coord.r)
-        for item in self._static_overlays:
-            if item.wx != item.wx:  # NaN — removed
-                continue
-            if isinstance(item, OverlayRuin) and item.coord == key:
-                return True
-        return False
+        return (coord.q, coord.r) in self._ruin_coords
 
     # ── Blended tile colours (two-pass smoothing) ────────────────
 
@@ -1218,6 +1230,19 @@ class Renderer:
                 draw_oil_refinery(surface, sx, sy, r, zoom)
             elif building.type == BuildingType.FLUID_TANK:
                 draw_fluid_tank(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.TURRET:
+                draw_turret(surface, sx, sy, r, zoom)
+            elif building.type == BuildingType.TRAP:
+                draw_trap(surface, sx, sy, r, zoom)
+
+            # Damage indicator: red HP bar floats above any building
+            # whose health is below max.
+            if (getattr(building, "max_health", 0.0) > 0
+                    and building.health < building.max_health
+                    and r >= 3):
+                self._draw_hp_bar(surface, sx, sy - r * 1.1,
+                                  building.health,
+                                  building.max_health, r)
 
             # Overcrowding indicator: red ! above dwelling
             if (building.housing_capacity > 0
@@ -1299,6 +1324,94 @@ class Renderer:
                 pygame.draw.circle(surface, (200, 180, 60),
                                    (isx + head_r + iz, isy - leg_h - body_h),
                                    max(1, int(zoom * 1.5)))
+
+            # HP bar over wounded colonists.
+            max_h = getattr(person, "max_health", 0.0)
+            cur_h = getattr(person, "health", 0.0)
+            if max_h > 0 and cur_h < max_h and zoom >= 0.5:
+                self._draw_hp_bar(
+                    surface, sx, sy - body_h - leg_h - head_r * 2 - 2,
+                    cur_h, max_h, max(8, int(8 * zoom)),
+                )
+
+    # ── Combat: enemies, projectiles, HP bars ────────────────────
+
+    def _draw_combat(
+        self, surface: pygame.Surface, world: World, camera: Camera,
+    ) -> None:
+        combat = getattr(world, "combat", None)
+        if combat is None:
+            return
+        zoom = camera.zoom
+        cam_x, cam_y = camera.x, camera.y
+        sw, sh = surface.get_size()
+        half_sw, half_sh = sw * 0.5, sh * 0.5
+
+        # Enemies.
+        for enemy in combat.enemies:
+            if enemy.dead:
+                continue
+            data = params.ENEMY_TYPE_DATA.get(enemy.type_name)
+            if data is None:
+                continue
+            sx = (enemy.px - cam_x) * zoom + half_sw
+            sy = (enemy.py - cam_y) * zoom + half_sh
+            if sx < -40 or sx > sw + 40 or sy < -40 or sy > sh + 40:
+                continue
+            draw_enemy(
+                surface, sx, sy,
+                enemy.type_name, data["color"], data["radius_px"], zoom,
+            )
+            # Always-on HP bar.
+            if enemy.max_health > 0 and zoom >= 0.4:
+                bar_w = max(14, int(data["radius_px"] * 2.4 * zoom))
+                self._draw_hp_bar(
+                    surface, sx, sy - data["radius_px"] * zoom - 6,
+                    enemy.health, enemy.max_health, bar_w,
+                    fg=(220, 90, 90),
+                )
+
+        # Projectiles.
+        for proj in combat.projectiles:
+            sx1 = (proj.src_px - cam_x) * zoom + half_sw
+            sy1 = (proj.src_py - cam_y) * zoom + half_sh
+            # Where the bolt currently is.
+            t = 0.0
+            if proj.distance > 0:
+                t = max(0.0, min(1.0, proj.travelled / proj.distance))
+            cx = proj.src_px + (proj.dst_px - proj.src_px) * t
+            cy = proj.src_py + (proj.dst_py - proj.src_py) * t
+            scx = (cx - cam_x) * zoom + half_sw
+            scy = (cy - cam_y) * zoom + half_sh
+            # Trail
+            tail_t = max(0.0, t - 0.18)
+            tx = proj.src_px + (proj.dst_px - proj.src_px) * tail_t
+            ty = proj.src_py + (proj.dst_py - proj.src_py) * tail_t
+            stx = (tx - cam_x) * zoom + half_sw
+            sty = (ty - cam_y) * zoom + half_sh
+            pygame.draw.line(surface, proj.color,
+                             (int(stx), int(sty)), (int(scx), int(scy)),
+                             max(1, int(2 * zoom)))
+            pygame.draw.circle(surface, proj.color,
+                               (int(scx), int(scy)), max(2, int(2 * zoom)))
+
+    def _draw_hp_bar(
+        self, surface: pygame.Surface,
+        cx: float, cy: float,
+        cur: float, full: float, width: int,
+        fg: tuple[int, int, int] = (90, 220, 110),
+        bg: tuple[int, int, int] = (40, 40, 40),
+    ) -> None:
+        if full <= 0:
+            return
+        ratio = max(0.0, min(1.0, cur / full))
+        h = max(4, width // 6)
+        x = int(cx - width // 2)
+        y = int(cy)
+        pygame.draw.rect(surface, bg, (x, y, width, h))
+        if ratio > 0:
+            pygame.draw.rect(surface, fg, (x, y, int(width * ratio), h))
+        pygame.draw.rect(surface, (0, 0, 0), (x, y, width, h), 1)
 
     # ── Selection highlight ──────────────────────────────────────
 
@@ -1625,6 +1738,10 @@ class Renderer:
                 draw_pipe(bld_surf, cx_local, cy_local, r, zoom, [], coord.q, coord.r)
             elif btype == BuildingType.FLUID_TANK:
                 draw_fluid_tank(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.TURRET:
+                draw_turret(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.TRAP:
+                draw_trap(bld_surf, cx_local, cy_local, r, zoom)
 
             if not self.ghost_valid:
                 red_tint = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)

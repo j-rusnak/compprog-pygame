@@ -1297,7 +1297,7 @@ def draw_solar_array(surface: pygame.Surface, sx: float, sy: float, r: int, z: f
     ]
     pygame.draw.polygon(surface, panel, poly)
     pygame.draw.polygon(surface, frame, poly, max(1, iz))
-    # Grid lines (3 cols �— 2 rows)
+    # Grid lines (3 cols �— 2 rows)
     for col in range(1, 3):
         x_top = isx - top_w // 2 + (top_w * col) // 3
         x_bot = isx - pw // 2 + (pw * col) // 3
@@ -1551,3 +1551,95 @@ def draw_ancient_tower(surface, sx, sy, r, z, rise=1.0):
             surface.blit(ring,
                          (int(sx) - pad_r * 2,
                           int(sy + r * 0.15) - pad_r * 2))
+
+
+# -- Defense buildings ---------------------------------------------
+
+
+def draw_turret(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Defensive auto-cannon. Stone base, swivel head, barrel."""
+    if _try_sprite(surface, "buildings/turret", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    base_col = (140, 135, 130)
+    metal = (90, 90, 105)
+    barrel = (60, 60, 70)
+    accent = (200, 80, 60)
+    # Stone base ring
+    base_r = max(4, int(r * 0.55))
+    pygame.draw.circle(surface, base_col, (isx, isy), base_r)
+    pygame.draw.circle(surface, _darken(base_col, 0.55), (isx, isy), base_r, max(1, iz))
+    # Swivel turret body
+    body_r = max(3, int(r * 0.32))
+    pygame.draw.circle(surface, metal, (isx, isy - max(2, int(r * 0.1))), body_r)
+    pygame.draw.circle(surface, _darken(metal, 0.6), (isx, isy - max(2, int(r * 0.1))), body_r, max(1, iz))
+    # Barrel
+    barrel_len = max(4, int(r * 0.7))
+    barrel_w = max(2, int(r * 0.16))
+    pygame.draw.rect(surface, barrel,
+                     pygame.Rect(isx, isy - max(2, int(r * 0.1)) - barrel_w // 2,
+                                 barrel_len, barrel_w))
+    # Red targeting tip
+    pygame.draw.circle(surface, accent,
+                       (isx + barrel_len, isy - max(2, int(r * 0.1))),
+                       max(1, int(r * 0.1)))
+
+
+def draw_trap(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Spike trap � wooden plate with iron spikes; one-shot."""
+    if _try_sprite(surface, "buildings/trap", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    plate = (110, 80, 50)
+    spike = (180, 180, 195)
+    spike_dark = (120, 120, 135)
+    # Wood plate
+    plate_r = max(3, int(r * 0.5))
+    pygame.draw.circle(surface, plate, (isx, isy), plate_r)
+    pygame.draw.circle(surface, _darken(plate, 0.6), (isx, isy), plate_r, max(1, iz))
+    # Spikes (8 around the rim, pointing outward)
+    import math as _m
+    sp_len = max(2, int(r * 0.28))
+    for i in range(8):
+        ang = i * (_m.pi / 4) + _m.pi / 8
+        bx = isx + int(_m.cos(ang) * plate_r * 0.55)
+        by = isy + int(_m.sin(ang) * plate_r * 0.55)
+        tx = isx + int(_m.cos(ang) * (plate_r + sp_len))
+        ty = isy + int(_m.sin(ang) * (plate_r + sp_len))
+        pygame.draw.line(surface, spike_dark, (bx, by), (tx, ty), max(2, iz + 1))
+        pygame.draw.line(surface, spike,
+                         (bx + iz, by - iz), (tx + iz, ty - iz), max(1, iz))
+
+
+def draw_enemy(
+    surface: pygame.Surface, sx: float, sy: float,
+    type_name: str, color: tuple, radius_px: int, z: float,
+) -> None:
+    """Procedural enemy fallback when no sprite exists.
+
+    Spider-like silhouette: dark body, glowing core, three pairs of
+    legs.  Larger `radius_px` for higher-tier enemies.
+    """
+    if _try_sprite(surface, f"enemies/{type_name.lower()}", sx, sy, max(4, int(radius_px * z)), z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    rr = max(3, int(radius_px * z))
+    # Body
+    body_col = _darken(color, 0.55)
+    pygame.draw.circle(surface, body_col, (isx, isy), rr)
+    # Core glow
+    pygame.draw.circle(surface, color, (isx, isy), max(2, rr // 2))
+    # Highlight
+    pygame.draw.circle(surface, _lighten(color, 1.4),
+                       (isx - rr // 4, isy - rr // 4), max(1, rr // 4))
+    # Legs
+    import math as _m
+    leg_len = int(rr * 1.4)
+    for i in range(6):
+        ang = i * (_m.pi / 3) + _m.pi / 6
+        tx = isx + int(_m.cos(ang) * leg_len)
+        ty = isy + int(_m.sin(ang) * leg_len)
+        pygame.draw.line(surface, body_col, (isx, isy), (tx, ty), max(1, iz))

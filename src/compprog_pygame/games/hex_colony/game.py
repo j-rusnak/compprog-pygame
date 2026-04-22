@@ -11,7 +11,7 @@ from compprog_pygame.games.hex_colony.buildings import (
 )
 from compprog_pygame.games.hex_colony.camera import Camera
 from compprog_pygame.games.hex_colony.people import Task
-from compprog_pygame.games.hex_colony.hex_grid import pixel_to_hex, Terrain
+from compprog_pygame.games.hex_colony.hex_grid import pixel_to_hex, Terrain, HexCoord
 from compprog_pygame.games.hex_colony.renderer import Renderer
 from compprog_pygame.games.hex_colony.settings import HexColonySettings
 from compprog_pygame.games.hex_colony.ui import UIManager
@@ -59,6 +59,8 @@ from compprog_pygame.games.hex_colony.strings import (
     NOTIF_RESEARCH_COMPLETE,
     NOTIF_GOD_MODE_ON,
     NOTIF_GOD_MODE_OFF,
+    NOTIF_GOD_SPAWN_ON,
+    NOTIF_GOD_SPAWN_OFF,
     NOTIF_REQUIRES_RESEARCH,
     NOTIF_REQUIRES_TIER,
     NOTIF_BUILT,
@@ -95,7 +97,40 @@ BUILDABLE = [
     BuildingType.OIL_REFINERY,
     BuildingType.PIPE,
     BuildingType.FLUID_TANK,
+    BuildingType.TURRET,
+    BuildingType.TRAP,
 ]
+
+
+def _hex_line(a: HexCoord, b: HexCoord) -> list[HexCoord]:
+    """Return a contiguous straight-ish hex chain from ``a`` to ``b``
+    (inclusive of both endpoints) using cube-coordinate interpolation.
+    """
+    n = a.distance(b)
+    if n == 0:
+        return [a]
+    out: list[HexCoord] = []
+    # Convert axial -> cube.
+    ax, az = a.q, a.r
+    ay = -ax - az
+    bx, bz = b.q, b.r
+    by = -bx - bz
+    for i in range(n + 1):
+        t = i / n
+        x = ax + (bx - ax) * t
+        y = ay + (by - ay) * t
+        z = az + (bz - az) * t
+        # cube round
+        rx, ry, rz = round(x), round(y), round(z)
+        dx, dy, dz = abs(rx - x), abs(ry - y), abs(rz - z)
+        if dx > dy and dx > dz:
+            rx = -ry - rz
+        elif dy > dz:
+            ry = -rx - rz
+        else:
+            rz = -rx - ry
+        out.append(HexCoord(rx, rz))
+    return out
 
 
 class Game:
@@ -125,6 +160,11 @@ class Game:
         # God mode: bypass tech/tier/inventory gates and reveal all
         # locked content in the UI.  Toggle at runtime with F1.
         self.god_mode: bool = self.settings.god_mode
+        # God-mode-only tool: when set to a key in
+        # ``params.ENEMY_TYPE_DATA``, left-clicking the world spawns
+        # one enemy of that type at the clicked hex.  F2 cycles
+        # through enemy types; right-click cancels.
+        self._spawn_enemy_mode: str | None = None
         self._build_dragging = False
         self._delete_dragging = False
         # Anchor for path chain placement: after first PATH click, the
@@ -266,6 +306,8 @@ class Game:
         # Wire game-over overlay callbacks
         self._game_over_overlay.on_return_to_menu = self._on_pause_return_to_menu
         self._game_over_overlay.on_quit = self._on_pause_quit
+        self._game_over_overlay.tier_tracker = self.tier_tracker
+        self._game_over_overlay.tech_tree = self.tech_tree
 
         # Background performance monitor — instruments _tick phases
         # and writes attributed spike records to a JSONL log from a
@@ -420,6 +462,8 @@ class Game:
         with self.perf.section("ui_draw"):
             self.ui.draw(screen, self.world)
             self.notifications.draw(screen)
+            if self.god_mode and self._spawn_enemy_mode is not None:
+                self._draw_spawn_tool_hud(screen)
         if self._awakening_cutscene is not None:
             self._awakening_cutscene.draw_overlay(screen)
 
@@ -497,6 +541,13 @@ class Game:
                 msg = NOTIF_GOD_MODE_ON if self.god_mode else NOTIF_GOD_MODE_OFF
                 col = (255, 215, 0) if self.god_mode else (200, 200, 200)
                 self.notifications.push(msg, col)
+                if not self.god_mode:
+                    # Disable any active god-only tools.
+                    self._spawn_enemy_mode = None
+            elif event.key == pygame.K_F2 and self.god_mode:
+                # Cycle the enemy-spawn tool: None -> SCOUT -> BRUTE
+                # -> COLOSSUS -> None.
+                self._cycle_spawn_enemy_mode()
 
         elif event.type == pygame.VIDEORESIZE:
             screen = pygame.display.get_surface()
@@ -507,9 +558,9 @@ class Game:
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1:  # left click
                 self._on_left_click(event.pos)
-                # PATH uses click-to-anchor chain placement; no drag.
+                # PATH/WALL use click-to-anchor chain placement; no drag.
                 if (self.build_mode is not None
-                        and self.build_mode != BuildingType.PATH):
+                        and self.build_mode not in (BuildingType.PATH, BuildingType.WALL)):
                     self._build_dragging = True
                 elif self.delete_mode:
                     self._delete_dragging = True
@@ -517,7 +568,10 @@ class Game:
                 self.camera.start_drag(event.pos)
                 self._drag_button = 2
             elif event.button == 3:  # right click
-                if self.build_mode is not None:
+                if self._spawn_enemy_mode is not None:
+                    self._spawn_enemy_mode = None
+                    self.notifications.push(NOTIF_GOD_SPAWN_OFF, (200, 200, 200))
+                elif self.build_mode is not None:
                     self.build_mode = None
                     self._build_dragging = False
                     btab = self._bottom_bar.buildings_tab
@@ -622,10 +676,16 @@ class Game:
         if coord not in self.world.grid:
             return
 
+        # God-mode enemy spawn tool takes precedence over all other
+        # left-click actions (build/delete/select).
+        if self.god_mode and self._spawn_enemy_mode is not None:
+            self._spawn_enemy_at(coord)
+            return
+
         if self.delete_mode:
             self._try_delete_building(coord)
         elif self.build_mode is not None:
-            if self.build_mode == BuildingType.PATH:
+            if self.build_mode in (BuildingType.PATH, BuildingType.WALL):
                 self._handle_path_click(coord)
             else:
                 self._try_place_building(coord)
@@ -646,6 +706,97 @@ class Game:
                 self._tile_info.tile = tile
                 self._tile_info.coord = coord
                 self._tile_info.has_ruin = self.renderer.has_ruin_at(coord)
+
+    # ── God-mode enemy spawn tool ────────────────────────────────
+
+    def _cycle_spawn_enemy_mode(self) -> None:
+        """F2 in god mode cycles through enemy types and OFF."""
+        from compprog_pygame.games.hex_colony import params
+        types = list(params.ENEMY_TYPE_DATA.keys())
+        if self._spawn_enemy_mode is None:
+            self._spawn_enemy_mode = types[0] if types else None
+        else:
+            try:
+                idx = types.index(self._spawn_enemy_mode)
+            except ValueError:
+                idx = -1
+            nxt = idx + 1
+            self._spawn_enemy_mode = types[nxt] if nxt < len(types) else None
+        if self._spawn_enemy_mode is None:
+            self.notifications.push(NOTIF_GOD_SPAWN_OFF, (200, 200, 200))
+        else:
+            # Disable conflicting build/delete modes while spawn tool is active.
+            self.build_mode = None
+            self._build_dragging = False
+            self.delete_mode = False
+            btab = self._bottom_bar.buildings_tab
+            if btab:
+                btab.selected_building = None
+                btab.delete_active = False
+            label = self._spawn_enemy_mode.title()
+            self.notifications.push(
+                NOTIF_GOD_SPAWN_ON.format(name=label), (255, 215, 0),
+            )
+
+    def _spawn_enemy_at(self, coord) -> None:
+        """Spawn one enemy of the active spawn-tool type at ``coord``."""
+        type_name = self._spawn_enemy_mode
+        if type_name is None:
+            return
+        combat = getattr(self.world, "combat", None)
+        if combat is None:
+            return
+        # Reuse the existing helper, but force the spawn point to the
+        # exact clicked tile (not a random nearby walkable hex) so the
+        # tool feels precise.
+        from compprog_pygame.games.hex_colony import params
+        from compprog_pygame.games.hex_colony.combat import Enemy
+        from compprog_pygame.games.hex_colony.hex_grid import hex_to_pixel
+        data = params.ENEMY_TYPE_DATA.get(type_name)
+        if data is None:
+            return
+        e = Enemy(
+            type_name=type_name,
+            coord=coord,
+            health=float(data["hp"]),
+            max_health=float(data["hp"]),
+            damage=float(data["damage"]),
+            bounty=int(data.get("bounty", 0)),
+        )
+        e.attack_timer = float(data["attack_cd"])
+        e.move_timer = float(data["move_period"])
+        wx, wy = hex_to_pixel(coord, self.settings.hex_size)
+        e.px, e.py = wx, wy
+        e.next_target_px, e.next_target_py = wx, wy
+        combat.enemies.append(e)
+
+    def _draw_spawn_tool_hud(self, surface) -> None:
+        """Small banner near the cursor showing the active enemy type."""
+        if self._spawn_enemy_mode is None:
+            return
+        from compprog_pygame.games.hex_colony import params
+        data = params.ENEMY_TYPE_DATA.get(self._spawn_enemy_mode)
+        if data is None:
+            return
+        mx, my = pygame.mouse.get_pos()
+        label = f"Spawn: {self._spawn_enemy_mode.title()}"
+        text = self._hint_font.render(label, True, (255, 230, 120))
+        pad = 6
+        bw, bh = text.get_width() + pad * 2, text.get_height() + pad * 2
+        bx, by = mx + 18, my + 18
+        sw, sh = surface.get_size()
+        if bx + bw > sw:
+            bx = sw - bw - 4
+        if by + bh > sh:
+            by = sh - bh - 4
+        bg = pygame.Surface((bw, bh), pygame.SRCALPHA)
+        bg.fill((20, 20, 30, 200))
+        surface.blit(bg, (bx, by))
+        pygame.draw.rect(surface, (255, 215, 0), (bx, by, bw, bh), 1)
+        # Color preview swatch
+        col = data.get("color", (200, 200, 200))
+        pygame.draw.circle(surface, col, (bx + pad + 4, by + bh // 2), 5)
+        surface.blit(text, (bx + pad + 14, by + pad))
 
     # ── Mid-game cutscenes ───────────────────────────────────────
 
@@ -792,6 +943,43 @@ class Game:
             # Re-clicking the anchor cancels the chain.
             self._path_anchor = None
             self.renderer.path_preview = []
+            return
+
+        # WALL chain placement: simple hex-line from anchor to clicked
+        # tile, place WALL on every empty land tile along the way
+        # (skipping existing buildings, water, mountains).
+        if self.build_mode == BuildingType.WALL:
+            line_coords = _hex_line(self._path_anchor, coord)
+            free_build = self.sandbox or self.god_mode
+            wall_stock = (
+                10 ** 9 if free_build
+                else self.world.building_inventory[BuildingType.WALL]
+            )
+            placed = 0
+            last_placed: HexCoord | None = None
+            original_mode = self.build_mode
+            try:
+                for step in line_coords:
+                    tile = self.world.grid.get(step)
+                    if tile is None:
+                        break
+                    if tile.building is not None:
+                        last_placed = step
+                        continue
+                    if wall_stock <= 0:
+                        break
+                    self.build_mode = BuildingType.WALL
+                    if self._try_place_building(step, silent=True):
+                        placed += 1
+                        last_placed = step
+                        wall_stock -= 1
+                    else:
+                        # Skip this hex but continue (e.g. water)
+                        continue
+            finally:
+                self.build_mode = original_mode
+            if last_placed is not None:
+                self._path_anchor = last_placed
             return
 
         bridges_unlocked = (
@@ -1098,8 +1286,8 @@ class Game:
             self._path_anchor = None
             return
 
-        # Switching to a non-PATH build mode cancels any path chain.
-        if self.build_mode != BuildingType.PATH:
+        # Switching to a non-chain build mode cancels any chain anchor.
+        if self.build_mode not in (BuildingType.PATH, BuildingType.WALL):
             self._path_anchor = None
 
         self.renderer.ghost_building = self.build_mode
@@ -1114,6 +1302,16 @@ class Game:
         else:
             self.renderer.ghost_coord = None
             self.renderer.ghost_valid = False
+
+        # Wall chain preview (straight hex line).
+        if (self.build_mode == BuildingType.WALL
+                and self._path_anchor is not None
+                and self.renderer.ghost_coord is not None
+                and self.renderer.ghost_coord != self._path_anchor):
+            self.renderer.path_preview = _hex_line(
+                self._path_anchor, self.renderer.ghost_coord,
+            )
+            return
 
         # Path chain preview
         if (self.build_mode == BuildingType.PATH
@@ -1175,7 +1373,7 @@ class Game:
                     self.renderer.path_preview = preview
             else:
                 self.renderer.path_preview = []
-        elif (self.build_mode == BuildingType.PATH
+        elif (self.build_mode in (BuildingType.PATH, BuildingType.WALL)
               and self._path_anchor is not None):
             # Show anchor tile highlighted even before a second point
             # is chosen, so the player sees where the chain starts.

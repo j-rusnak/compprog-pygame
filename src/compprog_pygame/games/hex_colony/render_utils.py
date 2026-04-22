@@ -84,6 +84,8 @@ BUILDING_COLORS: dict[BuildingType, tuple[int, int, int]] = {
     BuildingType.OIL_REFINERY: (90, 85, 105),
     BuildingType.PIPE: (155, 150, 145),
     BuildingType.FLUID_TANK: (110, 130, 150),
+    BuildingType.TURRET: (180, 80, 60),
+    BuildingType.TRAP: (140, 100, 50),
 }
 
 _PATH_BASE = (185, 165, 120)

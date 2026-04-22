@@ -207,6 +207,15 @@ class AwakeningCutscene:
     def _finish(self) -> None:
         self.active = False
         self.camera._target_zoom = self._return_zoom
+        # Spawn the combat wave associated with this awakening.  We do
+        # this *before* ``_on_finish`` so the awakening_index in the
+        # threat module hasn't been bumped yet — the combat manager
+        # uses ``self.event.tower_coords`` directly anyway.
+        try:
+            tower_coords = [s.tower.coord for s in self._subjects]
+            self.world.combat.spawn_awakening_wave(self.world, tower_coords)
+        except Exception:
+            pass
         self._on_finish()
 
     # ── Overlay drawing ──────────────────────────────────────────

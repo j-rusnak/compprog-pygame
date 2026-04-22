@@ -26,6 +26,7 @@ from compprog_pygame.games.hex_colony.settings import Difficulty
 from compprog_pygame.games.hex_colony.supply_chain import _hex_range
 from compprog_pygame.games.hex_colony.tech_tree import TECH_NODES, TechTree, TierTracker
 from compprog_pygame.games.hex_colony.ancient_threat import AncientThreat
+from compprog_pygame.games.hex_colony.combat import CombatManager
 from compprog_pygame.games.hex_colony import params
 from compprog_pygame.games.hex_colony.strings import (
     building_label,
@@ -171,6 +172,9 @@ class World:
         }
         self.time_elapsed: float = 0.0
         self.real_time_elapsed: float = 0.0
+        # Highest player-faction population observed during the
+        # session.  Surfaced on the game-over screen.
+        self.peak_population: int = 0
         self._housing_dirty: bool = True  # needs recalc on first frame
         # Networks only need rebuilding when buildings are added,
         # removed, or destroyed — population shifts alone don't change
@@ -251,6 +255,9 @@ class World:
         self._starved_cache: set[int] = set()
         # Ancient-tech threat — tracks awakening triggers and active towers.
         self.ancient: AncientThreat = AncientThreat()
+        # Combat — ancient mechanical invaders that spawn after each
+        # awakening and (post-final-awakening) periodically.
+        self.combat: CombatManager = CombatManager()
 
     # ── Player-colony aliases ────────────────────────────────────
     # These properties exist so the rest of the game (UI panels,
@@ -329,8 +336,35 @@ class World:
 
     @property
     def game_over(self) -> bool:
-        """The mission is lost when all *player* survivors are dead."""
-        return self.player_population_count == 0 and self.time_elapsed > 0
+        """The mission is lost when all *player* survivors are dead
+        OR the crashed spaceship (CAMP) is destroyed."""
+        if self.time_elapsed <= 0:
+            return False
+        if self.player_population_count == 0:
+            return True
+        # Camp destruction = instant loss.
+        camp = self.buildings.at(self.player_colony.camp_coord)
+        if camp is None or getattr(camp, "type", None) != BuildingType.CAMP:
+            return True
+        return False
+
+    @property
+    def game_over_reason(self) -> str | None:
+        """Why the game ended, or ``None`` if it hasn't.
+
+        Returns one of:
+            ``"camp_destroyed"`` — the crashed ship was destroyed
+            ``"no_survivors"``   — every colonist died
+            ``None``             — the game is still running
+        """
+        if self.time_elapsed <= 0:
+            return None
+        camp = self.buildings.at(self.player_colony.camp_coord)
+        if camp is None or getattr(camp, "type", None) != BuildingType.CAMP:
+            return "camp_destroyed"
+        if self.player_population_count == 0:
+            return "no_survivors"
+        return None
 
     def faction_population_count(self, faction: str) -> int:
         """Number of colonists currently homed to *faction*.
@@ -381,6 +415,7 @@ class World:
         """
         world = cls(settings)
         world.seed = seed
+        world.combat.configure_seed(seed)
         world.grid, _ai_camp_coords = generate_terrain(
             seed, settings, progress_callback=progress_callback,
         )
@@ -514,6 +549,12 @@ class World:
 
         # Ancient-tech threat: cheap escalation check.
         self.ancient.tick(self)
+        # Combat: enemies, projectiles, defensive weapons.
+        self.combat.tick(self, dt)
+        # Track high-water population for the end-of-game summary.
+        pop = self.player_population_count
+        if pop > self.peak_population:
+            self.peak_population = pop
 
     def mark_housing_dirty(self) -> None:
         """Flag that housing assignments need recalculation.
@@ -1257,9 +1298,24 @@ class World:
                 if want_workplace is not None:
                     # Production worker.
                     if p.is_logistics:
+                        # Stash any in-flight cargo back into faction
+                        # storage instead of silently destroying it —
+                        # the previous code zeroed the carrier without
+                        # depositing, leaking IRON_BAR/etc. and
+                        # leaving stale ``logistics_res``/``amount``
+                        # fields that confused the logistics monitor.
+                        if (p.logistics_res is not None
+                                and (p.logistics_amount or 0.0) > 0):
+                            self._stash_orphan_cargo(
+                                self.colony_of_person(p),
+                                p.logistics_res,
+                                p.logistics_amount,
+                            )
                         p.is_logistics = False
                         p.logistics_src = None
                         p.logistics_dst = None
+                        p.logistics_res = None
+                        p.logistics_amount = 0.0
                         p.carry_resource = None
                         p.path = []
                         p.task = Task.IDLE
@@ -1279,9 +1335,18 @@ class World:
                     # No slot at all — go idle (rare; only if camp is
                     # over capacity and we deliberately excluded them).
                     if p.is_logistics:
+                        if (p.logistics_res is not None
+                                and (p.logistics_amount or 0.0) > 0):
+                            self._stash_orphan_cargo(
+                                self.colony_of_person(p),
+                                p.logistics_res,
+                                p.logistics_amount,
+                            )
                         p.is_logistics = False
                         p.logistics_src = None
                         p.logistics_dst = None
+                        p.logistics_res = None
+                        p.logistics_amount = 0.0
                         p.carry_resource = None
                     p.workplace_target = None
                     p.workplace = None
@@ -1435,6 +1500,22 @@ class World:
                 cost = BUILDING_COSTS.get(b.recipe)
                 if cost is not None:
                     reserved.update(cost.costs.keys())
+        # Research Centers reserve every resource the currently
+        # active tech still needs.  Without this, once the RC's
+        # storage exceeds the per-resource demand cap (2x remaining)
+        # the resource is no longer demanded and is then offered as
+        # supply — workers haul it out faster than the research can
+        # consume it, the resource is sent elsewhere, and the
+        # research stalls a few percent short of completion.
+        if b.type == BuildingType.RESEARCH_CENTER:
+            tt = self.colony_for(b).tech_tree
+            if tt is not None and getattr(tt, "current_research", None):
+                node = TECH_NODES.get(tt.current_research)
+                if node is not None:
+                    consumed_now = getattr(tt, "_consumed", {}) or {}
+                    for res, total_amt in node.cost.items():
+                        if total_amt - consumed_now.get(res, 0.0) > 0:
+                            reserved.add(res)
         demanded = set(self._building_demand(b).keys())
         for r, amt in b.storage.items():
             if r in FLUID_RESOURCES:
@@ -1807,6 +1888,24 @@ class World:
         # hex_pos matches the expected coord".  Movement is handled
         # later by population.update() — we just set up the next step.
         if p.task == Task.LOGISTICS_IDLE or p.task == Task.IDLE:
+            # Defensive: an idle hauler must never be holding cargo or
+            # carrying stale src/dst/res fields from a previous job.
+            # When this happens (e.g. mid-delivery worker reassigned
+            # by ``_assign_workers``) the logistics monitor reports
+            # the stale job as a permanently-stuck IDLE delivery and
+            # the cargo never actually reaches its destination.
+            if (p.logistics_res is not None
+                    and (p.logistics_amount or 0.0) > 0):
+                self._stash_orphan_cargo(
+                    self.colony_of_person(p),
+                    p.logistics_res,
+                    p.logistics_amount,
+                )
+            p.logistics_src = None
+            p.logistics_dst = None
+            p.logistics_res = None
+            p.logistics_amount = 0.0
+            p.carry_resource = None
             self._logistics_find_job(p)
             return
 
@@ -1951,6 +2050,18 @@ class World:
             return
 
     def _logistics_reset(self, p) -> None:
+        # If the hauler is still holding cargo (e.g. supplier ran dry
+        # mid-route or the destination became unreachable), stash it
+        # back into faction storage instead of silently destroying it.
+        # Without this the simulation leaks resources every time a
+        # logistics route fails partway through.
+        if (p.logistics_res is not None
+                and (p.logistics_amount or 0.0) > 0):
+            self._stash_orphan_cargo(
+                self.colony_of_person(p),
+                p.logistics_res,
+                p.logistics_amount,
+            )
         p.task = Task.LOGISTICS_IDLE
         p.logistics_src = None
         p.logistics_dst = None

@@ -33,6 +33,9 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_well,
     draw_bridge,
     draw_wall,
+    draw_turret,
+    draw_trap,
+    draw_enemy,
 )
 from compprog_pygame.games.hex_colony.render_overlays import (
     draw_bush,
@@ -127,6 +130,15 @@ def _generate_buildings() -> None:
     s = _make_surface()
     draw_wall(s, _HALF, _HALF, _R, _Z, [], 0, 0)
     _save(s, "buildings", "wall.png")
+
+    # Defense buildings.
+    s = _make_surface()
+    draw_turret(s, _HALF, _HALF, _R, _Z)
+    _save(s, "buildings", "turret.png")
+
+    s = _make_surface()
+    draw_trap(s, _HALF, _HALF, _R, _Z)
+    _save(s, "buildings", "trap.png")
 
 
 def _generate_overlays() -> None:
@@ -287,6 +299,19 @@ def _generate_people() -> None:
     _save(s, "people", "person_gather.png")
 
 
+def _generate_enemies() -> None:
+    print("Generating enemy sprites...")
+    from compprog_pygame.games.hex_colony import params
+    for type_name, data in params.ENEMY_TYPE_DATA.items():
+        s = _make_surface()
+        # Draw at higher zoom so the procedural enemy fills the canvas.
+        draw_enemy(
+            s, _HALF, _HALF,
+            type_name, data["color"], data["radius_px"], 1.6,
+        )
+        _save(s, "enemies", f"{data['sprite']}.png")
+
+
 def main() -> None:
     pygame.init()
     # Need a display surface for convert_alpha() to work
@@ -295,6 +320,7 @@ def main() -> None:
     _generate_buildings()
     _generate_overlays()
     _generate_people()
+    _generate_enemies()
 
     print(f"\nAll sprites saved to {SPRITE_DIR}")
     pygame.quit()

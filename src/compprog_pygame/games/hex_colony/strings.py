@@ -37,6 +37,8 @@ BUILDING_LABELS: dict[str, str] = {
     "OIL_REFINERY":     "Oil Refinery",
     "PIPE":             "Pipe",
     "FLUID_TANK":       "Fluid Tank",
+    "TURRET":           "Turret",
+    "TRAP":             "Spike Trap",
 }
 
 # Short label used in the buildings tab (bottom bar).
@@ -51,6 +53,8 @@ BUILDING_SHORT_LABELS: dict[str, str] = {
     "OIL_REFINERY":    "Oil Refinery",
     "PIPE":            "Pipe",
     "FLUID_TANK":      "Tank",
+    "TURRET":          "Turret",
+    "TRAP":            "Trap",
 }
 
 
@@ -83,6 +87,8 @@ BUILDING_DESCRIPTIONS: dict[str, str] = {
     "OIL_REFINERY":     "Crafting station: turns Crude Oil into Petroleum (a powerful fuel) and Lubricant (used in Robotic Arms).",
     "PIPE":             "Carries fluids (Oil, Petroleum, Lubricant, Rocket Fuel) between buildings. Workers can't carry fluids \u2014 only pipes can.",
     "FLUID_TANK":       "Buffers one fluid type. Connect to producers and consumers via Pipes; click to select which fluid.",
+    "TURRET":           "Auto-cannon. Targets the nearest ancient invader within range and fires until destroyed. Costs Stone, Iron Bars and Planks.",
+    "TRAP":             "One-shot spike trap. Detonates when an enemy steps on it for heavy damage to all enemies in 1 hex. Cheap and disposable.",
 }
 
 
@@ -96,6 +102,7 @@ BUILDING_CATEGORY_NAMES: list[str] = [
     "Resource",
     "Processing",
     "Logistics",
+    "Defense",
 ]
 
 
@@ -166,6 +173,8 @@ def building_description(key: str) -> str:
 
 NOTIF_RESEARCH_COMPLETE  = "Research complete: {name}"
 NOTIF_GOD_MODE_ON        = "God mode ON"
+NOTIF_GOD_SPAWN_OFF      = "Spawn-enemy tool: OFF"
+NOTIF_GOD_SPAWN_ON       = "Spawn-enemy tool: {name}  (left-click to spawn, F2 to cycle, right-click to cancel)"
 NOTIF_GOD_MODE_OFF       = "God mode OFF"
 NOTIF_REQUIRES_RESEARCH  = "Requires {name} research"
 NOTIF_REQUIRES_TIER      = "Requires Tier {level}: {name}"
@@ -173,6 +182,11 @@ NOTIF_BUILT              = "Built {name}"
 NOTIF_BUILT_PATH         = "Built {count} {label}"  # label = "tile"/"tiles"
 NOTIF_NEW_COLONIST       = "A new colonist was born!"
 NOTIF_UNREACHABLE        = "No workers can reach {name}"
+NOTIF_WAVE_INCOMING      = "Enemy wave incoming!"
+NOTIF_BUILDING_DESTROYED = "{name} destroyed by ancient machines!"
+NOTIF_COLONIST_KILLED    = "A colonist was killed by ancient machines"
+NOTIF_DEFENSE_UNLOCKED   = "Defense buildings unlocked — build Turrets and Traps!"
+NOTIF_CAMP_DESTROYED     = "The Ship Wreckage has fallen. The colony is lost."
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -217,9 +231,31 @@ QUALITY_DESCRIPTIONS: dict[str, str] = {
 #  GAME OVER
 # ═════════════════════════════════════════════════════════════════
 
-GAME_OVER_TITLE      = "All Survivors Lost"
+GAME_OVER_TITLE      = "Colony Lost"
 GAME_OVER_BUTTONS: list[str] = ["Return to Main Menu", "Quit"]
 GAME_OVER_STATS      = "Survived {time}   |   Buildings: {buildings}"
+
+# Cause-specific titles + flavor lines shown above the stat block.
+GAME_OVER_TITLE_NO_SURVIVORS    = "All Survivors Lost"
+GAME_OVER_TITLE_CAMP_DESTROYED  = "The Ship Has Fallen"
+GAME_OVER_REASON_NO_SURVIVORS   = (
+    "Every colonist has perished. With no one left to tend the camp, "
+    "the colony falls silent."
+)
+GAME_OVER_REASON_CAMP_DESTROYED = (
+    "The crashed ship\u2014your last link to home\u2014was destroyed by the "
+    "ancient threat. The colony cannot continue without it."
+)
+
+# Stat-line labels (one per row in the summary panel).
+GAME_OVER_STAT_TIME          = "Time survived"
+GAME_OVER_STAT_TIER          = "Tier reached"
+GAME_OVER_STAT_RESEARCH      = "Tech researched"
+GAME_OVER_STAT_BUILDINGS     = "Buildings standing"
+GAME_OVER_STAT_PEAK_POP      = "Peak population"
+GAME_OVER_STAT_FINAL_POP     = "Survivors at end"
+GAME_OVER_STAT_ENEMIES       = "Enemies defeated"
+GAME_OVER_STAT_WAVES         = "Waves endured"
 
 
 # ═════════════════════════════════════════════════════════════════
