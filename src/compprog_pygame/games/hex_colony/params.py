@@ -905,20 +905,22 @@ TECH_TREE_DATA: dict[str, dict] = {
 #  RUINS
 # ═══════════════════════════════════════════════════════════════════
 
-# Ruins spawn as small clusters of weathered structures.  The map
-# generates 1-2 clusters on small maps and up to 3 on large maps.
-# Each cluster contains 5-8 ruin pieces placed on nearby tiles.
-RUINS_CLUSTERS_MIN: int = 1
-RUINS_CLUSTERS_MAX: int = 2
+# Ruins spawn as small clusters of weathered structures.  Each
+# cluster awakens *one* ancient tower (see AWAKENING_TOWERS_PER_EVENT)
+# so the map needs many more clusters than there are tower slots.
+# Cluster count scales further on large maps.
+RUINS_CLUSTERS_MIN: int = 8
+RUINS_CLUSTERS_MAX: int = 14
 # Map-radius threshold above which an extra cluster may appear.
-RUINS_EXTRA_CLUSTER_RADIUS: int = 80
-# Pieces per cluster.
-RUINS_PIECES_MIN: int = 5
-RUINS_PIECES_MAX: int = 8
+RUINS_EXTRA_CLUSTER_RADIUS: int = 40
+# Pieces per cluster — kept small now that each cluster only feeds
+# one tower; lots of small ruin sites read better than a few large ones.
+RUINS_PIECES_MIN: int = 3
+RUINS_PIECES_MAX: int = 6
 # Minimum hex distance from camp for any cluster centre.
 RUINS_MIN_DISTANCE: int = 8
 # Minimum hex distance between two cluster centres.
-RUINS_CLUSTER_SEPARATION: int = 10
+RUINS_CLUSTER_SEPARATION: int = 6
 # Radius (in hexes) around the cluster centre in which pieces are placed.
 RUINS_CLUSTER_RADIUS: int = 2
 
@@ -1017,3 +1019,52 @@ CAMERA_ZOOM_MAX: float = 3.0
 
 # Hex-distance radius for resource-collection buildings
 COLLECTION_RADIUS: int = 2
+
+
+# -------------------------------------------------------------------
+#  ANCIENT TECH THREAT  (towers that rise from the ground)
+# -------------------------------------------------------------------
+
+# How many awakenings can fire over the course of a game.
+AWAKENING_MAX_COUNT: int = 3
+
+# Population thresholds for trigger 1 (>= reaches the next awakening).
+AWAKENING_POP_THRESHOLDS: list[int] = [20, 50, 100]
+
+# Disturbance thresholds for trigger 2 (number of unique ruin tiles
+# disturbed by the player; ascending per awakening).
+AWAKENING_DISTURBANCE_THRESHOLDS: list[int] = [3, 7, 12]
+
+# How many towers spawn per awakening, escalating with index.
+AWAKENING_TOWERS_PER_EVENT: list[int] = [3, 6, 9]
+
+# Wasteland radius (in hexes) around each tower.
+AWAKENING_TOWER_RADIUS: int = 2
+
+# Sites are kept this many hexes apart so towers spread across the
+# map instead of clustering in one corner.
+AWAKENING_TOWER_SEPARATION: int = 12
+
+# Minimum / maximum hex distance from the player camp at which a
+# tower can spawn.  Keeps the spaceship safe and lets towers reach
+# most of the world rather than hugging the camp.
+AWAKENING_MIN_CAMP_DISTANCE: int = 8
+AWAKENING_MAX_CAMP_DISTANCE: int = 80
+
+# Cutscene timings (real seconds).
+AWAKENING_INTRO_TIME: float = 1.4
+AWAKENING_PAN_TIME: float = 1.1
+AWAKENING_RISE_TIME: float = 1.6
+AWAKENING_HOLD_TIME: float = 0.7
+AWAKENING_OUTRO_TIME: float = 1.2
+
+# Camera zoom forced during the cutscene.
+AWAKENING_ZOOM: float = 1.4
+
+# Letterbox bar height as a fraction of screen height.
+AWAKENING_LETTERBOX_FRAC: float = 0.10
+
+# Banner text shown over the cutscene.
+AWAKENING_TITLE_TEXT: str = "AWAKENING"
+AWAKENING_SUBTITLE_TEXT: str = "Ancient machines stir beneath the soil..."
+AWAKENING_SKIP_HINT: str = "Space / click to skip"

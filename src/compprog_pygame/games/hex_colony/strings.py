@@ -895,3 +895,12 @@ HELP_BUTTON_TOOLTIP = (
 HOME_TITLE           = "RePioneer"
 HOME_HINT            = "Press Play to begin  \u2022  ESC to quit"
 HOME_NO_GAMES        = "No games registered yet!"
+
+
+
+# -----------------------------------------------------------------
+#  ANCIENT TECH AWAKENING
+# -----------------------------------------------------------------
+
+NOTIF_AWAKENING_TRIGGERED = "Ancient technology awakens!"
+NOTIF_AWAKENING_BUILDING_LOST = "Ancient towers consumed your {building}"

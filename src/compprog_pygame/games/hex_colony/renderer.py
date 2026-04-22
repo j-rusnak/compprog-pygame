@@ -94,6 +94,7 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_rocket_silo,
     draw_oil_drill,
     draw_oil_refinery,
+    draw_ancient_tower,
 )
 from compprog_pygame.games.hex_colony.render_terrain import (
     DIR_EDGE,
@@ -217,6 +218,10 @@ class Renderer:
         dt: float = 1 / 60,
     ) -> None:
         self._water_tick += dt
+        # Expose renderer back to the world so simulation-side helpers
+        # (AncientThreat, etc.) can ask the renderer about overlay
+        # state — e.g. "is there a ruin on this tile".
+        world._renderer_ref = self
         self._ensure_data(world)
         surface.fill(BACKGROUND)
         self._blit_tile_layer(surface, world, camera)
@@ -1219,6 +1224,18 @@ class Renderer:
                     and building.residents > building.housing_capacity
                     and r >= 3):
                 draw_overcrowded(surface, sx, sy, r, zoom)
+
+        # Ancient tech towers (separate list, not buildings)
+        ancient = getattr(world, "ancient", None)
+        if ancient is not None:
+            for tower in ancient.towers:
+                wx, wy = self._get_pixel(tower.coord, size)
+                sx = (wx - cam_x) * zoom + half_sw
+                sy = (wy - cam_y) * zoom + half_sh
+                if sx < -margin or sx > sw + margin or sy < -margin or sy > sh + margin:
+                    continue
+                r = int(size * 0.75 * zoom)
+                draw_ancient_tower(surface, sx, sy, r, zoom, tower.rise_progress)
 
     # ── People ───────────────────────────────────────────────────
 

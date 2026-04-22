@@ -24,6 +24,7 @@ from compprog_pygame.games.hex_colony.ui_resource_bar import ResourceBar
 from compprog_pygame.games.hex_colony.ui_tile_info import TileInfoPanel
 from compprog_pygame.games.hex_colony.world import World
 from compprog_pygame.games.hex_colony.notifications import NotificationManager
+from compprog_pygame.games.hex_colony.awakening_cutscene import AwakeningCutscene
 from compprog_pygame.games.hex_colony.settings import Difficulty
 from compprog_pygame.games.hex_colony.tech_tree import (
     TechTree, TierTracker, TECH_REQUIREMENTS, TECH_NODES,
@@ -62,6 +63,7 @@ from compprog_pygame.games.hex_colony.strings import (
     NOTIF_REQUIRES_TIER,
     NOTIF_BUILT,
     NOTIF_BUILT_PATH,
+    NOTIF_AWAKENING_TRIGGERED,
     TAB_WORKERS,
     TAB_DEMAND,
     TAB_SUPPLY,
@@ -275,6 +277,11 @@ class Game:
         # thread.  Disabled by setting HEX_COLONY_LOGISTICS=0.
         self.logistics_mon = LogisticsMonitor()
 
+        # Active mid-game cutscene (currently only the ancient-tech
+        # awakening).  When set, the world simulation is paused and
+        # the cutscene drives the camera + tower-rise animation.
+        self._awakening_cutscene: AwakeningCutscene | None = None
+
     # ── Public entry point ───────────────────────────────────────
 
     def run(self, screen: pygame.Surface, clock: pygame.time.Clock) -> None:
@@ -334,7 +341,12 @@ class Game:
             for event in pygame.event.get():
                 self._handle_event(event)
 
-        if not self._pause_overlay.visible and not self.world.game_over:
+        # Mid-game cutscene takes precedence over world updates.
+        if self._awakening_cutscene is not None and self._awakening_cutscene.active:
+            self._awakening_cutscene.tick(dt)
+            if not self._awakening_cutscene.active:
+                self._awakening_cutscene = None
+        elif not self._pause_overlay.visible and not self.world.game_over:
             with self.perf.section("input_camera"):
                 self._update_keyboard_pan(dt)
                 self._update_alt_overlay()
@@ -342,6 +354,10 @@ class Game:
             with self.perf.section("world_update"):
                 self.world.update(dt * self._sim_speed)
                 self.world.real_time_elapsed += dt
+            # Pending ancient-tech awakening — hand control to the cutscene.
+            if (self._awakening_cutscene is None
+                    and self.world.ancient.pending_awakening is not None):
+                self._start_awakening_cutscene()
             with self.perf.section("logistics_mon"):
                 self.logistics_mon.maybe_sample(self.world)
             with self.perf.section("stats_sample"):
@@ -404,6 +420,8 @@ class Game:
         with self.perf.section("ui_draw"):
             self.ui.draw(screen, self.world)
             self.notifications.draw(screen)
+        if self._awakening_cutscene is not None:
+            self._awakening_cutscene.draw_overlay(screen)
 
         with self.perf.section("flip"):
             pygame.display.flip()
@@ -416,6 +434,11 @@ class Game:
         if event.type == pygame.QUIT:
             self.running = False
             self.quit_to_desktop = True
+            return
+
+        # Cutscene swallows input first while playing.
+        if self._awakening_cutscene is not None and self._awakening_cutscene.active:
+            self._awakening_cutscene.handle_event(event)
             return
 
         # Let UI consume events first
@@ -624,6 +647,42 @@ class Game:
                 self._tile_info.coord = coord
                 self._tile_info.has_ruin = self.renderer.has_ruin_at(coord)
 
+    # ── Mid-game cutscenes ───────────────────────────────────────
+
+    def _start_awakening_cutscene(self) -> None:
+        """Spin up the awakening cutscene for the pending event."""
+        assert self.camera is not None
+        event = self.world.ancient.pending_awakening
+        if event is None:
+            return
+
+        threat = self.world.ancient
+
+        def _apply(tower):
+            changed = threat.apply_tower(self.world, tower)
+            # Mark every changed coord dirty so the renderer redraws
+            # them with the wasteland palette.
+            for c in changed:
+                self.renderer.invalidate_tile(c)
+                self._minimap.invalidate(c)
+
+        def _commit(tower):
+            threat.commit_tower(tower)
+
+        def _finish():
+            threat.finalize_event()
+
+        self._awakening_cutscene = AwakeningCutscene(
+            event, self.world, self.camera,
+            on_apply_tower=_apply,
+            on_commit_tower=_commit,
+            on_finish=_finish,
+        )
+        # Push a one-shot toast so the player knows what just started.
+        self.notifications.push(
+            NOTIF_AWAKENING_TRIGGERED, (220, 130, 255),
+        )
+
     def _try_place_building(self, coord, silent: bool = False) -> bool:
         tile = self.world.grid[coord]
         # Can't build on unbuildable terrain (water, mountain, oil pool) —
@@ -705,6 +764,8 @@ class Game:
         if not silent:
             self.notifications.push(NOTIF_BUILT.format(name=building_label(self.build_mode.name)))
         self.world.mark_housing_dirty()
+        # Trigger 2: notify the ancient-tech threat about ruin disturbance.
+        self.world.ancient.notify_built(self.world, building)
         return True
 
     def _handle_path_click(self, coord) -> None:

@@ -1465,3 +1465,89 @@ def draw_oil_refinery(surface: pygame.Surface, sx: float, sy: float, r: int, z: 
         (left_col.centerx + max(1, iz), flame_y + iz),
         (left_col.centerx, flame_y - max(2, iz * 2)),
     ])
+
+# -----------------------------------------------------------------------
+#  ANCIENT TECH TOWER  (rises during awakening events)
+# -----------------------------------------------------------------------
+
+def draw_ancient_tower(surface, sx, sy, r, z, rise=1.0):
+    """Draw an ancient-tech obelisk tower.
+
+    ``rise`` 0..1 controls how far the tower has emerged from the
+    ground (used by the awakening cutscene).  At ``rise=0`` only a
+    glowing crack is visible; at ``rise=1`` the tower is fully out.
+    """
+    if _try_sprite(surface, "buildings/ancient_tower", sx, sy, r, z):
+        return
+    iz = max(1, int(z))
+    rise = max(0.0, min(1.0, rise))
+
+    # Base disc — cracked stone pad always visible.
+    base_col = (38, 30, 32)
+    crack_col = (180, 60, 200)
+    pad_r = max(3, int(r * 1.05))
+    pygame.draw.circle(surface, base_col, (int(sx), int(sy + r * 0.15)), pad_r)
+    # Cracks radiating out (always present).
+    for i in range(6):
+        ang = i * math.pi / 3.0 + 0.2
+        ex = sx + math.cos(ang) * pad_r * 0.95
+        ey = sy + r * 0.15 + math.sin(ang) * pad_r * 0.55
+        pygame.draw.line(surface, crack_col,
+                         (int(sx), int(sy + r * 0.15)),
+                         (int(ex), int(ey)), max(1, iz))
+
+    if rise <= 0.02:
+        return
+
+    # Tower body — tall hexagonal obelisk that scales from 0 to full
+    # height as ``rise`` grows.
+    full_h = r * 2.4
+    h = full_h * rise
+    half_w_top = r * 0.45
+    half_w_bot = r * 0.7
+    top_y = sy - h + r * 0.15
+
+    body_col = (52, 44, 70)
+    body_light = (110, 95, 160)
+    body_dark = (24, 18, 36)
+
+    pygame.draw.polygon(surface, body_col, [
+        (sx - half_w_bot, sy + r * 0.15),
+        (sx - half_w_top, top_y),
+        (sx + half_w_top, top_y),
+        (sx + half_w_bot, sy + r * 0.15),
+    ])
+    pygame.draw.line(surface, body_light,
+                     (sx, top_y + iz),
+                     (sx, sy + r * 0.05), max(1, iz))
+    pygame.draw.line(surface, body_dark,
+                     (sx + half_w_top, top_y),
+                     (sx + half_w_bot, sy + r * 0.15), max(1, iz))
+
+    # Glowing top eye / crystal — brightens with rise.
+    eye_y = top_y + r * 0.35
+    eye_r = max(2, int(r * 0.3))
+    eye_pulse = 0.6 + 0.4 * rise
+    eye_col = (
+        min(255, int(180 * eye_pulse)),
+        min(255, int(80 * eye_pulse)),
+        min(255, int(220 * eye_pulse)),
+    )
+    eye_glow = (220, 130, 255)
+    if eye_y < sy + r * 0.1:
+        pygame.draw.circle(surface, eye_col, (int(sx), int(eye_y)), eye_r)
+        pygame.draw.circle(surface, eye_glow, (int(sx), int(eye_y)), eye_r, max(1, iz))
+
+    # Soft floor glow ring during rise — sells the "emerging" feeling.
+    if rise < 1.0:
+        glow_a = int(160 * (1.0 - rise))
+        if pad_r > 4 and glow_a > 8:
+            ring_size = pad_r * 4
+            ring = pygame.Surface((ring_size, ring_size), pygame.SRCALPHA)
+            pygame.draw.circle(ring, (220, 110, 255, glow_a),
+                               (pad_r * 2, pad_r * 2), int(pad_r * 1.6))
+            pygame.draw.circle(ring, (0, 0, 0, 0),
+                               (pad_r * 2, pad_r * 2), int(pad_r * 0.9))
+            surface.blit(ring,
+                         (int(sx) - pad_r * 2,
+                          int(sy + r * 0.15) - pad_r * 2))

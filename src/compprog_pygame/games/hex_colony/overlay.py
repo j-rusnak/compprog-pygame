@@ -67,6 +67,7 @@ class OverlayRuin:
     color: tuple[int, int, int]
     highlight_color: tuple[int, int, int]
     coord: tuple[int, int]  # (q, r) for the hex this ruin sits on
+    cluster_id: int = -1  # which generated ruin cluster this piece belongs to
 
 OverlayItem = (
     OverlayTree | OverlayRock
@@ -622,7 +623,7 @@ def _gen_ruins(
     ruins: list[OverlayRuin] = []
     used: set[HexCoord] = set()
 
-    for centre in centres:
+    for cluster_idx, centre in enumerate(centres):
         # Gather candidate tiles within the cluster radius via BFS.
         frontier: list[HexCoord] = [centre]
         ring: list[HexCoord] = []
@@ -662,6 +663,7 @@ def _gen_ruins(
                 variant=variant,
                 color=color, highlight_color=highlight,
                 coord=(coord.q, coord.r),
+                cluster_id=cluster_idx,
             ))
 
     return ruins

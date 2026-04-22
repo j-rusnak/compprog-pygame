@@ -25,6 +25,7 @@ from compprog_pygame.games.hex_colony.settings import HexColonySettings
 from compprog_pygame.games.hex_colony.settings import Difficulty
 from compprog_pygame.games.hex_colony.supply_chain import _hex_range
 from compprog_pygame.games.hex_colony.tech_tree import TECH_NODES, TechTree, TierTracker
+from compprog_pygame.games.hex_colony.ancient_threat import AncientThreat
 from compprog_pygame.games.hex_colony import params
 from compprog_pygame.games.hex_colony.strings import (
     building_label,
@@ -248,6 +249,8 @@ class World:
         self._unreachable_accum: float = 0.0
         self._unreachable_cache: set[int] = set()
         self._starved_cache: set[int] = set()
+        # Ancient-tech threat — tracks awakening triggers and active towers.
+        self.ancient: AncientThreat = AncientThreat()
 
     # ── Player-colony aliases ────────────────────────────────────
     # These properties exist so the rest of the game (UI panels,
@@ -508,6 +511,9 @@ class World:
         if self._unreachable_accum >= 0.5:
             self._unreachable_accum = 0.0
             self._refresh_unreachable_caches()
+
+        # Ancient-tech threat: cheap escalation check.
+        self.ancient.tick(self)
 
     def mark_housing_dirty(self) -> None:
         """Flag that housing assignments need recalculation.

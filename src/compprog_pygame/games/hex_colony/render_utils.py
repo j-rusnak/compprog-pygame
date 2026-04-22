@@ -22,6 +22,7 @@ TERRAIN_BASE_COLOR: dict[Terrain, tuple[int, int, int]] = {
     Terrain.IRON_VEIN:     (120, 90, 75),
     Terrain.COPPER_VEIN:   (100, 130, 85),
     Terrain.OIL_DEPOSIT:   (28, 24, 30),
+    Terrain.WASTELAND:     (58, 44, 40),
 }
 
 # Blending weight for neighbor influence (0 = no blend, 1 = full average)
@@ -50,6 +51,7 @@ _TERRAIN_CAT: dict[Terrain, int] = {
     Terrain.IRON_VEIN: 4,
     Terrain.COPPER_VEIN: 4,
     Terrain.OIL_DEPOSIT: 5,
+    Terrain.WASTELAND: 6,
 }
 
 # ── Building colours ────────────────────────────────────────────
