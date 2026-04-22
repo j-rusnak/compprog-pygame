@@ -232,7 +232,7 @@ class LogisticsMonitor:
         for net in nets:
             faction = getattr(net, "faction", "SURVIVOR")
             if faction != "SURVIVOR":
-                # Skip clanker networks for now — they generate noise
+                # Skip rival faction networks for now — they generate noise
                 # without helping the player diagnose their own colony.
                 continue
             supply_totals: dict[str, float] = {}

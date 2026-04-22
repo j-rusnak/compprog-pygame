@@ -280,6 +280,7 @@ HELP_BINDINGS: list[tuple[str, str]] = [
     ("X",              "Toggle delete mode"),
     ("H",              "Toggle this help overlay"),
     ("I",              "Toggle game guide"),
+    ("R",              "Open rival colony / diplomacy panel"),
     ("1 / 2 / 3 / 5",  "Set game speed (5 = 10x)"),
     ("Tab",            "Toggle sandbox mode"),
     ("Alt (hold)",     "Show resource overlay"),
@@ -895,3 +896,79 @@ HELP_BUTTON_TOOLTIP = (
 HOME_TITLE           = "RePioneer"
 HOME_HINT            = "Press Play to begin  \u2022  ESC to quit"
 HOME_NO_GAMES        = "No games registered yet!"
+
+
+# -----------------------------------------------------------------
+#  RIVAL COLONY  (the "Other Colony" enemy faction)
+# -----------------------------------------------------------------
+
+# Notification toasts pushed during the rival's autonomous actions.
+NOTIF_RIVAL_TIER          = "{name} has reached {tier}"
+NOTIF_RIVAL_ROCKET_START  = "{name} has begun assembling a rocket!"
+NOTIF_RIVAL_LAUNCHED      = "{name} has launched into space \u2014 you have lost the race!"
+NOTIF_RIVAL_RAID          = "Raiders from {name} stole {amount} {resource} from your {building}"
+NOTIF_RIVAL_RAID_FAIL     = "Raiders from {name} found nothing worth taking"
+NOTIF_RIVAL_SABOTAGE      = "Saboteurs from {name} disabled your {building}"
+NOTIF_RIVAL_GIFT          = "{name} sent a gift: {amount} {resource}"
+
+# Notifications for player-initiated diplomatic actions.
+NOTIF_PLAYER_GIFT         = "Sent {amount} {resource} to {name}"
+NOTIF_PLAYER_WAR          = "You have declared war on {name}!"
+NOTIF_PLAYER_PEACE        = "{name} has accepted your offer of peace"
+NOTIF_PEACE_REJECTED      = "Peace requires a tribute of {amount} {resource}"
+NOTIF_TRADE_OK            = "Trade with {name} accepted"
+NOTIF_TRADE_REJECTED_WAR  = "{name} refuses to trade while at war"
+NOTIF_TRADE_REJECTED_STOCK = "{name} doesn't have what you asked for"
+NOTIF_TRADE_PLAYER_SHORT  = "You don't have enough to make that trade"
+
+# Lines written to the rival's recent-events log shown in the panel.
+RIVAL_LOG_TIER            = "{name} reached {tier}"
+RIVAL_LOG_ROCKET_START    = "{name} began assembling a rocket"
+RIVAL_LOG_LAUNCHED        = "{name} launched into space"
+RIVAL_LOG_RAID            = "Raiders stole {amount} {resource} from your {building}"
+RIVAL_LOG_RAID_FAIL       = "A raid found nothing of value"
+RIVAL_LOG_SABOTAGE        = "Saboteurs disabled your {building}"
+RIVAL_LOG_GIFT            = "Received gift: {amount} {resource}"
+RIVAL_LOG_PLAYER_GIFT     = "Sent gift: {amount} {resource}"
+RIVAL_LOG_PLAYER_WAR      = "You declared war on {name}"
+RIVAL_LOG_PLAYER_PEACE    = "Peace agreed with {name}"
+RIVAL_LOG_TRADE           = "Trade: -{give_amt} {give} / +{get_amt} {get}"
+
+# Diplomacy panel UI labels.
+RIVAL_PANEL_TITLE         = "The Other Colony"
+RIVAL_PANEL_DISMISS       = "Press R or Escape to close"
+RIVAL_PANEL_REL_LABEL     = "Relations"
+RIVAL_PANEL_TIER_LABEL    = "Tier"
+RIVAL_PANEL_TECH_LABEL    = "Tech researched"
+RIVAL_PANEL_POWER_LABEL   = "Power rating"
+RIVAL_PANEL_POPULATION    = "Population (est.)"
+RIVAL_PANEL_BUILDINGS     = "Settlements"
+RIVAL_PANEL_NEXT_TIER     = "Next tier in"
+RIVAL_PANEL_ROCKET_LABEL  = "Rocket assembly"
+RIVAL_PANEL_ROCKET_LOCKED = "Not yet building a rocket"
+RIVAL_PANEL_LOG_HEADER    = "Recent events"
+RIVAL_PANEL_NO_EVENTS     = "(no events yet)"
+RIVAL_PANEL_ACTIONS       = "Diplomacy"
+
+RIVAL_BTN_GIFT            = "Send gift"
+RIVAL_BTN_TRADE           = "Trade"
+RIVAL_BTN_WAR             = "Declare war"
+RIVAL_BTN_PEACE           = "Sue for peace"
+RIVAL_BTN_BACK            = "Back"
+
+RIVAL_GIFT_TITLE          = "Send a Gift"
+RIVAL_GIFT_HINT           = "Click a resource, then a quantity. Generosity raises relations."
+RIVAL_TRADE_TITLE         = "Propose a Trade"
+RIVAL_TRADE_HINT          = "Click an offer to execute. Successful trades raise relations slightly."
+RIVAL_TRADE_FORMAT        = "Give {give_amt} {give}  \u2192  Get {get_amt} {get}"
+RIVAL_PEACE_HINT          = "Pay {amount} {resource} to end the war."
+
+# Diplomacy state names shown in the badge.
+RIVAL_STATE_HOSTILE       = "At War"
+RIVAL_STATE_TENSE         = "Tense"
+RIVAL_STATE_NEUTRAL       = "Neutral"
+RIVAL_STATE_FRIENDLY      = "Friendly"
+RIVAL_STATE_ALLIED        = "Allied"
+
+# Game-over override when the rival reaches space first.
+GAME_OVER_RIVAL_TITLE     = "{name} Reached Space First"

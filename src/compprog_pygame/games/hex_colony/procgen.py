@@ -410,7 +410,7 @@ def _generate_ore_veins(
     # this, ``rng.choice`` over the flat eligible list will happen to
     # cluster many veins in the same region just from sampling
     # variance — fine for a small map but visibly uneven on larger
-    # ones, leaving outer rings with no ore for clanker rivals.
+    # ones, leaving outer rings with no ore for AI rivals.
     #
     # Seeds are distributed in proportion to each ring's *eligible
     # tile count* (≈ ring area).  Earlier versions assigned one seed
@@ -872,7 +872,7 @@ def generate_terrain(
     camp_indices = set(selector_rng.sample(range(6), _AI_TRIBE_COUNT))
     ai_camp_coords = [centres[i + 1] for i in sorted(camp_indices)]
     # Guarantee at least one iron + one copper vein within 12 hex of
-    # every AI camp so clankers always have an ore source they can
+    # every AI camp so rivals always have an ore source they can
     # reach in their bootstrap window.  Uses a per-camp RNG seeded
     # from the world seed + camp coords so results are deterministic.
     for camp in ai_camp_coords:
@@ -881,7 +881,7 @@ def generate_terrain(
         )
         _ensure_nearby_ore(grid, ore_rng, camp, search_radius=12)
         # Also guarantee at least one wood, stone, and fibre patch
-        # within 10 tiles of every AI camp so clankers can bootstrap
+        # within 10 tiles of every AI camp so rivals can bootstrap
         # their basic gather chain.
         starter_rng = _random.Random(
             seed_to_int(seed) ^ (camp.q * 0x1F1F1F1F) ^ (camp.r * 0x2B2B2B2B)

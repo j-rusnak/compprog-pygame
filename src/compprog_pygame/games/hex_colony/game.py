@@ -17,17 +17,13 @@ from compprog_pygame.games.hex_colony.settings import HexColonySettings
 from compprog_pygame.games.hex_colony.ui import UIManager
 from compprog_pygame.games.hex_colony.ui_bottom_bar import BottomBar
 from compprog_pygame.games.hex_colony.ui_building_info import BuildingInfoPanel
-from compprog_pygame.games.hex_colony.ui_clanker_possession import (
-    ClankerLogOverlay,
-    ClankerPossessionPanel,
-)
 from compprog_pygame.games.hex_colony.ui_game_over import GameOverOverlay
 from compprog_pygame.games.hex_colony.ui_help_overlay import HelpOverlay
+from compprog_pygame.games.hex_colony.ui_rival_colony import RivalColonyOverlay
 from compprog_pygame.games.hex_colony.ui_pause_menu import PauseOverlay
 from compprog_pygame.games.hex_colony.ui_resource_bar import ResourceBar
 from compprog_pygame.games.hex_colony.ui_tile_info import TileInfoPanel
 from compprog_pygame.games.hex_colony.world import World
-from compprog_pygame.games.hex_colony.clankers import ClankerManager
 from compprog_pygame.games.hex_colony.notifications import NotificationManager
 from compprog_pygame.games.hex_colony.settings import Difficulty
 from compprog_pygame.games.hex_colony.tech_tree import (
@@ -58,7 +54,6 @@ from compprog_pygame.games.hex_colony.ui_tutorial import TutorialPanel
 from compprog_pygame.games.hex_colony import params
 from compprog_pygame.games.hex_colony.perf_monitor import PerfMonitor
 from compprog_pygame.games.hex_colony.logistics_monitor import LogisticsMonitor
-from compprog_pygame.games.hex_colony.clanker_monitor import ClankerMonitor
 from compprog_pygame.games.hex_colony.strings import (
     building_label,
     NOTIF_RESEARCH_COMPLETE,
@@ -149,7 +144,7 @@ class Game:
         self._drag_button: int = 0  # which mouse button started camera drag
 
         # Tech tree, tier tracker & notifications.  These are now
-        # owned by the player's :class:`ColonyState` (so clankers can
+        # owned by the player's :class:`ColonyState` (so non-player
         # have their own independent copies); ``Game`` just keeps
         # references for the UI panels that haven't been refactored
         # to look them up via the world.
@@ -159,22 +154,16 @@ class Game:
         self.world.notifications = self.notifications
         self.blueprints = BlueprintManager()
 
-        # Rival AI ("clanker") colonies — only populated on Hard
-        # difficulty.  On Easy this is an empty manager and adds zero
-        # per-frame cost.
-        self.clankers = ClankerManager(self.world)
-
         # UI
         self.ui = UIManager()
         self._resource_bar = ResourceBar()
         self._bottom_bar = BottomBar()
         self._building_info = BuildingInfoPanel()
         self._tile_info = TileInfoPanel()
-        self._possession_panel = ClankerPossessionPanel()
-        self._possession_log_overlay = ClankerLogOverlay()
         self._pause_overlay = PauseOverlay()
         self._game_over_overlay = GameOverOverlay()
         self._help_overlay = HelpOverlay()
+        self._rival_overlay = RivalColonyOverlay()
         self._minimap = MinimapPanel()
         self._tech_tree_overlay = TechTreeOverlay()
         self._advanced_stats_overlay = AdvancedStatsOverlay()
@@ -187,10 +176,9 @@ class Game:
         self.ui.add_panel(self._bottom_bar)
         self.ui.add_panel(self._building_info)
         self.ui.add_panel(self._tile_info)
-        self.ui.add_panel(self._possession_panel)
-        self.ui.add_panel(self._possession_log_overlay)
         self.ui.add_panel(self._minimap)
         self.ui.add_panel(self._help_overlay)
+        self.ui.add_panel(self._rival_overlay)
         self.ui.add_panel(self._tech_tree_overlay)
         self.ui.add_panel(self._advanced_stats_overlay)
         self.ui.add_panel(self._worker_priority_overlay)
@@ -269,15 +257,9 @@ class Game:
 
         # Wire building info -> tech tree overlay
         self._building_info.on_open_tech_tree = self._on_open_tech_tree
-        self._building_info.on_possess = self._on_possess_building
         self._building_info.tier_tracker = self.tier_tracker
         self._tech_tree_overlay.on_close = self._on_close_tech_tree
         self._tech_tree_overlay.tech_tree = self.tech_tree
-
-        # Possession panel — clicking Unpossess closes it.
-        self._possession_panel.on_unpossess = self._on_unpossess
-        self._possession_panel.on_view_all_logs = self._on_view_all_logs
-        self._possession_log_overlay.on_close = self._on_close_log_overlay
 
         # ``world.tech_tree`` is now a property pointing at the
         # player's colony; no assignment needed.
@@ -295,10 +277,6 @@ class Game:
         # buildings to ``hex_colony_logistics.jsonl`` from a daemon
         # thread.  Disabled by setting HEX_COLONY_LOGISTICS=0.
         self.logistics_mon = LogisticsMonitor()
-        # Background clanker-AI diagnostics — snapshots every
-        # clanker's decision state to ``hex_colony_clankers.jsonl``
-        # from a daemon thread.  Disabled by HEX_COLONY_CLANKERS=0.
-        self.clanker_mon = ClankerMonitor()
 
     # ── Public entry point ───────────────────────────────────────
 
@@ -326,7 +304,6 @@ class Game:
         gc_accum = 0.0
         self.perf.start()
         self.logistics_mon.start()
-        self.clanker_mon.start()
         try:
             while self.running:
                 dt = clock.tick(self.settings.fps) / 1000.0
@@ -346,7 +323,6 @@ class Game:
         finally:
             self.perf.stop()
             self.logistics_mon.stop()
-            self.clanker_mon.stop()
             gc.unfreeze()
             gc.set_threshold(*prev_gc_thresholds)
             if prev_gc_enabled:
@@ -371,10 +347,6 @@ class Game:
                 self.world.real_time_elapsed += dt
             with self.perf.section("logistics_mon"):
                 self.logistics_mon.maybe_sample(self.world)
-            with self.perf.section("clankers_update"):
-                self.clankers.update(dt * self._sim_speed)
-            with self.perf.section("clanker_mon"):
-                self.clanker_mon.maybe_sample(self.world, self.clankers)
             with self.perf.section("stats_sample"):
                 # Sample stats every frame regardless of whether the
                 # Stats tab is currently visible — the user wants
@@ -501,6 +473,8 @@ class Game:
                         btab.delete_active = False
             elif event.key in (pygame.K_h, pygame.K_i):
                 self._help_overlay.toggle()
+            elif event.key == pygame.K_r:
+                self._rival_overlay.toggle()
             elif event.key == pygame.K_1:
                 self._sim_speed = 3.0
             elif event.key == pygame.K_2:
@@ -652,34 +626,12 @@ class Game:
             self.renderer.selected_hex = coord
             # Show building info if there's a building, otherwise show tile info
             building = self.world.buildings.at(coord)
-            possessed_fid = (
-                self._possession_panel.clanker.faction_id
-                if self._possession_panel.clanker is not None
-                else None
-            )
             if building is not None and building.faction == "SURVIVOR":
                 self._building_info.building = building
                 self._tile_info.tile = None
                 self._tile_info.has_ruin = False
-            elif (building is not None
-                    and possessed_fid is not None
-                    and getattr(building, "faction", "SURVIVOR")
-                    == possessed_fid):
-                # While possessing this faction, the player can
-                # inspect any of its buildings just like their own.
-                self._building_info.building = building
-                self._tile_info.tile = None
-                self._tile_info.has_ruin = False
-            elif (building is not None
-                    and building.type == BuildingType.TRIBAL_CAMP):
-                # Rival faction's home base — open the read-only popup
-                # so the player can hit "Possess" and inspect the AI.
-                self._building_info.building = building
-                self._tile_info.tile = None
-                self._tile_info.has_ruin = False
             else:
-                # Empty tile, or an AI ("clanker") building the player
-                # cannot inspect or control.  Show the tile-info panel
+                # Empty tile or non-player building: show tile info.
                 # so the player still gets terrain context.
                 self._building_info.building = None
                 tile = self.world.grid.get(coord)
@@ -923,7 +875,7 @@ class Game:
         # Can't delete the camp
         if building.type == BuildingType.CAMP:
             return
-        # Player cannot demolish AI ("clanker") buildings.
+        # Player cannot demolish non-player faction buildings.
         if building.faction != "SURVIVOR":
             return
         # Unassign workers and residents referencing this building
@@ -990,49 +942,6 @@ class Game:
     def _on_close_tech_tree(self) -> None:
         """Close the tech tree overlay (unpause is automatic — overlay consumes events)."""
         pass
-
-    def _on_possess_building(self, building) -> None:
-        """Open the read-only Possession panel for the rival faction
-        whose TRIBAL_CAMP the player just clicked Possess on.
-        """
-        faction = getattr(building, "faction", "SURVIVOR")
-        if faction == "SURVIVOR":
-            return
-        # Find the matching clanker.
-        target = None
-        for c in self.clankers.clankers:
-            if c.faction_id == faction:
-                target = c
-                break
-        if target is None:
-            return
-        self._possession_panel.set_clanker(target)
-        self._building_info.possessed_faction_id = faction
-        # Hide the building info popup so the possession panel has the
-        # right side of the screen to itself.
-        self._building_info.building = None
-
-    def _on_unpossess(self) -> None:
-        """Close the Possession panel."""
-        self._possession_panel.set_clanker(None)
-        self._possession_log_overlay.open_for(None)
-        self._building_info.possessed_faction_id = None
-        # Drop any open AI-building inspector so the player isn't
-        # left looking at a now-foreign building's stats.
-        if (self._building_info.building is not None
-                and getattr(self._building_info.building, "faction",
-                            "SURVIVOR") != "SURVIVOR"):
-            self._building_info.building = None
-
-    def _on_view_all_logs(self) -> None:
-        """Open the modal log overlay for the currently possessed clanker."""
-        c = self._possession_panel.clanker
-        if c is not None:
-            self._possession_log_overlay.open_for(c)
-
-    def _on_close_log_overlay(self) -> None:
-        """Close the modal log overlay (possession panel stays open)."""
-        self._possession_log_overlay.open_for(None)
 
     def _on_open_advanced_stats(self) -> None:
         """Open the Advanced Statistics popup."""

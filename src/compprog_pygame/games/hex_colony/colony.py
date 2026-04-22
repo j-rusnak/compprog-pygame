@@ -2,7 +2,7 @@
 
 Originally Hex Colony had a single global ``Inventory``,
 ``BuildingInventory``, ``TechTree``, and ``TierTracker`` hanging off
-``World``.  That made it impossible for AI rivals ("clankers") to
+``World``.  That made it impossible for AI rivals to
 play the game alongside the player without stealing resources from
 the same pool.
 
@@ -36,8 +36,8 @@ class ColonyState:
 
     *faction_id* is the stable string used everywhere else (e.g.
     ``"SURVIVOR"`` for the player, ``"PRIMITIVE_0"``, ``"PRIMITIVE_1"``
-    for clankers).  *camp_coord* is the hex of the faction's home
-    base — the player's CAMP, or a clanker's TRIBAL_CAMP — and acts
+    for AI rivals).  *camp_coord* is the hex of the faction's home
+    base — the player's CAMP, or a rival's TRIBAL_CAMP — and acts
     as the BFS root for housing connectivity for that colony.
     """
     faction_id: str

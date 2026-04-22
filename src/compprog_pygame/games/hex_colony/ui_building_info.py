@@ -127,13 +127,6 @@ class _TechTreeBtn:
 
 
 @dataclass
-class _PossessBtn:
-    """Button shown on rival TRIBAL_CAMP popups so the player can
-    inspect the controlling clanker (read-only)."""
-    height: int = _LINE_H + 10
-
-
-@dataclass
 class _StorageResBtn:
     resource: Resource
     selected: bool
@@ -164,7 +157,7 @@ class _RecipeDropdownHeader:
 
 _Item = (
     _Line | _IconLine | _Spacer | _RecipeBtn | _MaterialRecipeBtn
-    | _TechTreeBtn | _PossessBtn | _StorageResBtn | _GathererOutputBtn
+    | _TechTreeBtn | _StorageResBtn | _GathererOutputBtn
     | _QuarryOutputBtn | _RecipeDropdownHeader
 )
 
@@ -183,7 +176,6 @@ class BuildingInfoPanel(Panel):
         self._gatherer_output_rects: list[tuple[pygame.Rect, Resource | None]] = []
         self._quarry_output_rects: list[tuple[pygame.Rect, Resource | None]] = []
         self._tech_tree_btn: pygame.Rect | None = None
-        self._possess_btn: pygame.Rect | None = None
         self._recipe_dropdown_open: bool = False
         self._recipe_dropdown_btn: pygame.Rect | None = None
         # Floating-overlay rect + internal scroll offset, used so the
@@ -192,10 +184,6 @@ class BuildingInfoPanel(Panel):
         self._recipe_dropdown_rect: pygame.Rect | None = None
         self._dropdown_scroll: int = 0
         self.on_open_tech_tree: typing.Callable[[], None] | None = None
-        self.on_possess: typing.Callable[["Building"], None] | None = None
-        # When set, buildings owned by this faction are shown in the
-        # full inspector view (read-only) just like the player's own.
-        self.possessed_faction_id: str | None = None
         self.tier_tracker: typing.Any = None
         self.tech_tree: typing.Any = None
         self.god_mode_getter: typing.Callable[[], bool] | None = None
@@ -219,7 +207,6 @@ class BuildingInfoPanel(Panel):
             self._gatherer_output_rects = []
             self._quarry_output_rects = []
             self._tech_tree_btn = None
-            self._possess_btn = None
             self._recipe_dropdown_open = False
             self._recipe_dropdown_btn = None
             self._recipe_dropdown_rect = None
@@ -261,7 +248,6 @@ class BuildingInfoPanel(Panel):
         self._gatherer_output_rects = []
         self._quarry_output_rects = []
         self._tech_tree_btn = None
-        self._possess_btn = None
 
         for item in items:
             if isinstance(item, _Spacer):
@@ -313,8 +299,6 @@ class BuildingInfoPanel(Panel):
                 self._draw_recipe_dropdown_header(surface, x, cy, item)
             elif isinstance(item, _TechTreeBtn):
                 self._draw_tech_btn(surface, x, cy)
-            elif isinstance(item, _PossessBtn):
-                self._draw_possess_btn(surface, x, cy)
             cy += item.height
 
         surface.set_clip(prev_clip)
@@ -649,21 +633,6 @@ class BuildingInfoPanel(Panel):
         ))
         self._tech_tree_btn = btn_rect
 
-    def _draw_possess_btn(
-        self, surface: pygame.Surface, x: int, cy: int,
-    ) -> None:
-        btn_rect = pygame.Rect(
-            x + _PADDING, cy + 4, _PANEL_W - _PADDING * 2, _LINE_H + 4,
-        )
-        pygame.draw.rect(surface, UI_ACCENT, btn_rect, border_radius=4)
-        pygame.draw.rect(surface, UI_BORDER, btn_rect, width=2, border_radius=4)
-        surf = Fonts.body().render("Possess", True, UI_TEXT)
-        surface.blit(surf, (
-            btn_rect.centerx - surf.get_width() // 2,
-            btn_rect.centery - surf.get_height() // 2,
-        ))
-        self._possess_btn = btn_rect
-
     def _draw_scrollbar(self, surface: pygame.Surface, max_scroll: int) -> None:
         track = pygame.Rect(
             self.rect.right - _SCROLLBAR_W - 2,
@@ -697,27 +666,6 @@ class BuildingInfoPanel(Panel):
         label = building_label(b.type.name)
         items.append(_Line(label, UI_ACCENT, Fonts.title(), 34))
         items.append(_Spacer(4))
-
-        # Rival faction (TRIBAL_CAMP) — minimal read-only popup with
-        # a Possess button.  We deliberately skip the rest of the
-        # player-facing controls (recipes, workers, storage) because
-        # those would let the player meddle with AI buildings.  When
-        # the player is *currently possessing* this faction, fall
-        # through to the full info view so they can read the same
-        # stats as their own buildings.
-        b_faction = getattr(b, "faction", "SURVIVOR")
-        is_possessed_view = (
-            b_faction != "SURVIVOR"
-            and self.possessed_faction_id == b_faction
-        )
-        if (b.type == BuildingType.TRIBAL_CAMP
-                and b_faction != "SURVIVOR"
-                and not is_possessed_view):
-            line(f"Faction: {b.faction}", UI_MUTED, Fonts.small())
-            line("A rival colony's home base.", UI_MUTED, Fonts.small())
-            items.append(_Spacer())
-            items.append(_PossessBtn())
-            return items
 
         # Housing
         cap = BUILDING_HOUSING.get(b.type, 0)
@@ -1081,39 +1029,6 @@ class BuildingInfoPanel(Panel):
             return False
         if not hasattr(event, "pos"):
             return False
-        # Read-only mode for AI buildings — even when the player is
-        # possessing the faction.  Allow scroll wheel for browsing
-        # but swallow any clicks so the player can't change recipes
-        # or assign workers on the AI's behalf.
-        b_faction = getattr(self.building, "faction", "SURVIVOR")
-        if b_faction != "SURVIVOR":
-            in_panel = self.rect.collidepoint(event.pos)
-            if not in_panel:
-                return False
-            if event.type == pygame.MOUSEWHEEL:
-                self._scroll = max(
-                    0, self._scroll - event.y * 30,
-                )
-                return True
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 4:
-                    self._scroll = max(0, self._scroll - 30)
-                    return True
-                if event.button == 5:
-                    self._scroll += 30
-                    return True
-                # The Possess button lives inside the read-only AI
-                # popup — let it fire before swallowing the click.
-                if (event.button == 1
-                        and self._possess_btn is not None
-                        and self._possess_btn.collidepoint(event.pos)):
-                    if (self.on_possess is not None
-                            and self.building is not None):
-                        self.on_possess(self.building)
-                    return True
-                # Swallow other clicks to prevent recipe/worker mods.
-                return True
-            return True
         # When the recipe dropdown is open, allow clicks on the
         # floating option rects even if they fall outside the panel.
         in_panel = self.rect.collidepoint(event.pos)
@@ -1161,11 +1076,6 @@ class BuildingInfoPanel(Panel):
             if self._tech_tree_btn is not None and self._tech_tree_btn.collidepoint(event.pos):
                 if self.on_open_tech_tree is not None:
                     self.on_open_tech_tree()
-                return True
-            if (self._possess_btn is not None
-                    and self._possess_btn.collidepoint(event.pos)):
-                if self.on_possess is not None and self.building is not None:
-                    self.on_possess(self.building)
                 return True
             if self.building.type in (
                 BuildingType.WORKSHOP,

@@ -33,6 +33,7 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_well,
     draw_bridge,
     draw_wall,
+    RIVAL_TIER_DRAWERS,
 )
 from compprog_pygame.games.hex_colony.render_overlays import (
     draw_bush,
@@ -127,6 +128,29 @@ def _generate_buildings() -> None:
     s = _make_surface()
     draw_wall(s, _HALF, _HALF, _R, _Z, [], 0, 0)
     _save(s, "buildings", "wall.png")
+
+    # Rival faction tier sprites — one PNG per tier so artists can
+    # replace any of them by dropping a new file in
+    # ``assets/sprites/buildings/rival_tier_<N>.png``.  The canvas is
+    # sized to fit the largest tier (tier 7 = 8 hex radii) so all
+    # eight share a uniform pixel resolution and can be swapped in
+    # any order without recompositing.
+    print("Generating rival colony tier sprites...")
+    # Clear sprite cache so the draw_* functions use the procedural
+    # fallback (otherwise an old PNG would be re-blitted into itself).
+    sprites._sprites.clear()
+    sprites._loaded = False
+    rival_canvas = 256
+    rival_half = rival_canvas // 2
+    # Largest sprite (tier 7) wants radius ~ rival_half - margin so
+    # corner highlights aren't clipped.
+    rival_r = rival_half - 8
+    for tier, drawer in enumerate(RIVAL_TIER_DRAWERS):
+        s = pygame.Surface((rival_canvas, rival_canvas), pygame.SRCALPHA)
+        # Scale stroke width proportionally to canvas size so the
+        # outlines look right at any zoom level.
+        drawer(s, rival_half, rival_half, rival_r, 2.0)
+        _save(s, "buildings", f"rival_tier_{tier}.png")
 
 
 def _generate_overlays() -> None:

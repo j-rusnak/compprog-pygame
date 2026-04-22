@@ -156,10 +156,10 @@ class World:
         self.buildings = BuildingManager()
         self.population = PopulationManager()
         # Per-faction colony state.  The player's "SURVIVOR" colony is
-        # always present; clanker colonies are added by
-        # ``_place_ai_tribal_camps`` on Hard difficulty.  Convenience
-        # properties below alias the player's colony so legacy UI / Game
-        # code can keep using ``world.inventory`` etc. unchanged.
+        # always present; rival factions (future enemies) will add their
+        # own ColonyState entries here.  Convenience properties below
+        # alias the player's colony so legacy UI / Game code can keep
+        # using ``world.inventory`` etc. unchanged.
         self.player_colony: ColonyState = ColonyState(
             faction_id="SURVIVOR",
             camp_coord=HexCoord(0, 0),
@@ -168,10 +168,19 @@ class World:
         self.colonies: dict[str, ColonyState] = {
             self.player_colony.faction_id: self.player_colony,
         }
-        # Coordinates of AI tribal camps placed at world-gen time.
-        # Empty on Easy difficulty (or any seed without spawn points).
-        # Used by ``Game`` to bootstrap one ``Clanker`` AI per camp.
-        self.ai_camp_coords: list[HexCoord] = []
+        # AI rival colonies ("The Other Colony" enemy faction).
+        # Populated by :meth:`_spawn_rival_colony` during generation.
+        # Forward-typed as ``list`` to avoid a circular import; the
+        # actual element type is
+        # :class:`compprog_pygame.games.hex_colony.rival_colony.RivalColony`.
+        self.rivals: list = []
+        # Becomes True the moment any rival's rocket bar fills,
+        # ending the run with a rival-victory game-over screen.
+        self.rival_launched: bool = False
+        # Name of the rival that launched first — used by the
+        # game-over overlay to show the right "X reached space first"
+        # message.
+        self.rival_winner_name: str = ""
         self.time_elapsed: float = 0.0
         self.real_time_elapsed: float = 0.0
         self._housing_dirty: bool = True  # needs recalc on first frame
@@ -323,18 +332,23 @@ class World:
     def player_networks(self) -> list["Network"]:
         """Subset of :attr:`networks` belonging to the player's faction.
 
-        AI ("clanker") networks are simulated separately and must not
-        appear in the player's worker / demand / supply UI panels.
+        AI rival networks (when added) are simulated separately and
+        must not appear in the player's worker / demand / supply UI panels.
         """
         return [n for n in self.networks if n.faction == "SURVIVOR"]
 
     @property
     def game_over(self) -> bool:
-        """The mission is lost when all *player* survivors are dead.
+        """The mission is lost when all *player* survivors are dead
+        OR when an AI rival has launched their rocket first.
 
-        AI rivals (clankers) live and die in their own colonies — the
-        player's run only ends when their own population reaches zero.
+        AI rivals live and die in their own colonies — the player's
+        survival check only counts player-faction colonists.  The
+        rival-launch check is set by :class:`RivalColony` when its
+        ``rocket_progress`` fills.
         """
+        if self.rival_launched:
+            return True
         return self.player_population_count == 0 and self.time_elapsed > 0
 
     def faction_population_count(self, faction: str) -> int:
@@ -395,14 +409,50 @@ class World:
         world._init_colony_resources(world.player_colony)
         world._init_colony_building_inventory(world.player_colony)
         world._spawn_colony_people(world.player_colony)
-        # AI tribal camps only spawn on Hard difficulty.  Each one
-        # gets its own ``ColonyState`` so its production / research /
-        # tier progress is fully isolated from the player.  On Easy
-        # the camps list is empty so this is a no-op.
-        if settings.difficulty == Difficulty.HARD:
-            world._place_ai_tribal_camps(ai_camp_coords)
-            world.ai_camp_coords = list(ai_camp_coords)
+        # Spawn the AI rival colony — "The Other Colony" enemy.
+        # Always present so the game has a built-in race and the
+        # diplomacy panel always has someone to interact with.  HARD
+        # difficulty enables faster + more aggressive defaults; EASY
+        # uses the relaxed parameters in params.py.
+        if ai_camp_coords:
+            world._spawn_rival_colony(ai_camp_coords[0], seed)
         return world
+
+    # ── Rival colony bootstrap ───────────────────────────────────
+
+    def _spawn_rival_colony(self, camp_coord: HexCoord, seed: str) -> None:
+        """Place a TRIBAL_CAMP for the rival faction at *camp_coord*
+        and register the corresponding :class:`RivalColony` so the
+        per-frame tick can advance it.
+
+        Imported here (not at module top) to avoid a circular import
+        between :mod:`world` and :mod:`rival_colony`.
+        """
+        from compprog_pygame.games.hex_colony.rival_colony import (
+            RivalColony, name_for_seed,
+        )
+        if camp_coord not in self.grid:
+            return
+        tile = self.grid[camp_coord]
+        # If procgen guaranteed this tile was buildable but somehow
+        # a player CAMP coordinate landed here (impossible in normal
+        # generation), bail out cleanly rather than overwrite.
+        if tile.building is not None:
+            return
+        camp = self.buildings.place(BuildingType.TRIBAL_CAMP, camp_coord)
+        faction_id = "RIVAL_0"
+        camp.faction = faction_id
+        tile.building = camp
+        rival = RivalColony.create(
+            faction_id=faction_id,
+            name=name_for_seed(seed),
+            camp_coord=camp_coord,
+            seed=seed,
+        )
+        self.colonies[faction_id] = rival.colony
+        self.rivals.append(rival)
+        # Networks must be rebuilt so the new building joins one.
+        self.mark_housing_dirty()
 
     def _place_starting_camp(self) -> None:
         origin = HexCoord(0, 0)
@@ -426,84 +476,6 @@ class World:
                                 s.start_stone, s.start_food))
             + params.START_IRON + params.START_COPPER,
         )
-
-    def _place_ai_tribal_camps(self, coords: list[HexCoord]) -> None:
-        """Place a primitive AI tribe camp at each given coordinate.
-
-        Each camp belongs to its own ``"PRIMITIVE_<i>"`` faction and
-        gets its own :class:`ColonyState` (independent inventory,
-        building inventory, tech tree, and tier tracker) so the
-        clanker AI can play the game alongside the player using the
-        same systems.  If the target tile is unbuildable
-        (water/mountain), the nearest passable hex within a small
-        radius is used as a fallback.
-        """
-        for i, coord in enumerate(coords):
-            target = coord
-            tile = self.grid.get(target)
-            # Slide off impassable tiles to the nearest valid hex.
-            if tile is None or tile.terrain in UNBUILDABLE or tile.building is not None:
-                for radius in range(1, 6):
-                    found = False
-                    for q in range(-radius, radius + 1):
-                        for r in range(max(-radius, -q - radius),
-                                       min(radius, -q + radius) + 1):
-                            cand = HexCoord(coord.q + q, coord.r + r)
-                            ct = self.grid.get(cand)
-                            if (ct is not None
-                                    and ct.terrain not in UNBUILDABLE
-                                    and ct.building is None):
-                                target = cand
-                                tile = ct
-                                found = True
-                                break
-                        if found:
-                            break
-                    if found:
-                        break
-            if tile is None:
-                continue
-            faction_id = f"PRIMITIVE_{i}"
-            camp = self.buildings.place(BuildingType.TRIBAL_CAMP, target)
-            camp.faction = faction_id
-            tile.building = camp
-            # Stamp the camp with the same starting resources the
-            # player gets — ``_init_colony_resources`` writes into the
-            # colony inventory and the camp's local storage matches the
-            # player CAMP so logistics has something to draw from.
-            s = self.settings
-            m = params.CAMP_STORAGE_MULTIPLIER
-            camp.storage = {
-                Resource.WOOD: float(s.start_wood * m),
-                Resource.FIBER: float(s.start_fiber * m),
-                Resource.STONE: float(s.start_stone * m),
-                Resource.FOOD: float(s.start_food * m),
-                Resource.IRON: float(params.START_IRON),
-                Resource.COPPER: float(params.START_COPPER),
-            }
-            camp.storage_capacity = max(
-                params.BUILDING_STORAGE_CAMP,
-                sum(v * m for v in (s.start_wood, s.start_fiber,
-                                    s.start_stone, s.start_food))
-                + params.START_IRON + params.START_COPPER,
-            )
-            # Clanker colony state.
-            colony = ColonyState(
-                faction_id=faction_id,
-                camp_coord=target,
-                is_player=False,
-            )
-            self.colonies[faction_id] = colony
-            # NOTE: Unlike the player, clankers deliberately do NOT
-            # seed raw resources into their flat ``colony.inventory``.
-            # Their starting wood/stone/iron/etc. live in
-            # ``camp.storage`` and must move through the logistics
-            # network like any other resource.  This keeps the
-            # AI's "what do I have on hand?" picture honest: it
-            # only counts material that's actually in storage
-            # buildings or being hauled, not phantom inventory.
-            self._init_colony_building_inventory(colony)
-            self._spawn_colony_people(colony)
 
     def _init_colony_resources(self, colony: ColonyState) -> None:
         s = self.settings
@@ -601,6 +573,16 @@ class World:
         if self._unreachable_accum >= 0.5:
             self._unreachable_accum = 0.0
             self._refresh_unreachable_caches()
+
+        # Rival AI tick.  Runs after the player simulation so any
+        # building placements / removals this frame are visible to the
+        # rival's raid targeting and house-placement BFS.
+        if self.rivals:
+            for rival in self.rivals:
+                rival.tick(self, dt, self.notifications)
+                if rival.launched and not self.rival_launched:
+                    self.rival_launched = True
+                    self.rival_winner_name = rival.name
 
     def mark_housing_dirty(self) -> None:
         """Flag that housing assignments need recalculation.
@@ -2516,7 +2498,7 @@ class World:
         for net in self.networks:
             if net.id in populated_net_ids:
                 continue
-            # AI (clanker) networks are simulated separately and have
+            # AI rival networks are simulated separately and have
             # no player workers to be 'unreachable' from.
             if net.faction != "SURVIVOR":
                 continue
@@ -2972,7 +2954,7 @@ class World:
         when no building has room — matches the legacy behaviour
         the UI / tier tracker depends on.
 
-        For **clanker** colonies the flat inventory must stay empty
+        For **rival** colonies the flat inventory must stay empty
         of raw resources (otherwise the AI thinks it has phantom
         stockpiles and makes bad decisions).  If no storage has
         room, the cargo is discarded — equivalent to the player's
@@ -2998,7 +2980,7 @@ class World:
                 if dep > 0:
                     remaining -= dep
         if remaining > 1e-6 and colony.is_player:
-            # Player-only legacy fallback.  Clanker cargo is simply
+            # Player-only legacy fallback.  Rival cargo is simply
             # lost when the logistics network has no room — this
             # matches what happens to a player whose storage is
             # equally full.
@@ -3030,7 +3012,7 @@ class World:
         dep = self._deposit(b, res, amount)
         if dep > 0:
             # Credit the building's owning faction for tier-progress
-            # tracking — the player and each clanker each maintain
+            # tracking — the player and each rival each maintain
             # their own "lifetime gathered" counter.
             self.colony_for(b).total_produced[res] += dep
         return dep
@@ -3373,21 +3355,21 @@ class World:
             for res, amount in cost.costs.items():
                 self._station_consume(station, res, amount)
             # Crafted placeable buildings go into the *owning faction's*
-            # building inventory so each clanker has its own stockpile.
+            # building inventory so each rival has its own stockpile.
             self.colony_for(station).building_inventory.add(station.recipe)
             station.craft_progress = 0.0
 
     # Crafting stations that maintain reserved input buffers — these
     # are excluded from the shared input pool so workshops don't
     # steal each other's incoming deliveries.
-    _CLANKER_CRAFTING_STATION_TYPES = None  # initialised lazily below
+    _FACTION_CRAFTING_STATION_TYPES = None  # initialised lazily below
 
-    def _clanker_input_pool(self, colony, exclude_station=None) -> "list":
+    def _faction_input_pool(self, colony, exclude_station=None) -> "list":
         """Every faction-owned building whose storage is fair game as
         a crafting input source for *colony*'s stations.
 
         For the player, ``colony.inventory`` plays this role.  For AI
-        clankers (which deliberately never get the flat-inventory
+        rivals (which deliberately never get the flat-inventory
         fallback in :meth:`_inventory_deposit_with_fallback`), we
         instead let stations draw from the storage of any faction-
         owned building **except** other crafting stations (so a
@@ -3398,8 +3380,8 @@ class World:
         produced anywhere in the colony are visible to every workshop
         for crafting purposes.
         """
-        if World._CLANKER_CRAFTING_STATION_TYPES is None:
-            World._CLANKER_CRAFTING_STATION_TYPES = frozenset({
+        if World._FACTION_CRAFTING_STATION_TYPES is None:
+            World._FACTION_CRAFTING_STATION_TYPES = frozenset({
                 BuildingType.WORKSHOP,
                 BuildingType.FORGE,
                 BuildingType.REFINERY,
@@ -3409,7 +3391,7 @@ class World:
             })
         out = []
         fid = colony.faction_id
-        excluded = World._CLANKER_CRAFTING_STATION_TYPES
+        excluded = World._FACTION_CRAFTING_STATION_TYPES
         for b in self.buildings.buildings:
             if b is exclude_station:
                 continue
@@ -3428,13 +3410,13 @@ class World:
         """How much of *res* the station can draw on, counting its own
         storage first, then its faction's shared pool (flat inventory
         for the player; every faction-owned non-crafting building's
-        storage for AI clanker colonies)."""
+        storage for AI rival colonies)."""
         colony = self.colony_for(station)
         total = station.storage.get(res, 0.0)
         if colony.is_player:
             total += colony.inventory[res]
         else:
-            for b in self._clanker_input_pool(colony, exclude_station=station):
+            for b in self._faction_input_pool(colony, exclude_station=station):
                 total += b.storage.get(res, 0.0)
                 if total >= amount:
                     break
@@ -3458,8 +3440,8 @@ class World:
         if colony.is_player:
             colony.inventory.spend(res, rem)
             return
-        # AI clanker: drain across the faction's shared input pool.
-        for b in self._clanker_input_pool(colony, exclude_station=station):
+        # AI rival: drain across the faction's shared input pool.
+        for b in self._faction_input_pool(colony, exclude_station=station):
             if rem <= 1e-6:
                 break
             avail = b.storage.get(res, 0.0)
