@@ -320,6 +320,52 @@ class ClankerMonitor:
                 "blocked_targets": len(
                     getattr(c, "_blocked_targets", {}) or {},
                 ),
+                # Comprehensive diagnostics added to answer "is the
+                # AI actually making progress?" without tailing 3k log
+                # lines.  All four counters are lifetime totals.
+                "counters": {
+                    "build_attempts": int(
+                        getattr(c, "_build_attempts", 0)),
+                    "builds_placed": int(
+                        getattr(c, "_builds_placed", 0)),
+                    "path_tiles_laid": int(
+                        getattr(c, "_path_tiles_laid", 0)),
+                    "path_extends_ok": int(
+                        getattr(c, "_path_extends_ok", 0)),
+                    "path_extends_fail": int(
+                        getattr(c, "_path_extends_fail", 0)),
+                    "research_started": int(
+                        getattr(c, "_research_started", 0)),
+                    "recipes_set": int(
+                        getattr(c, "_recipes_set", 0)),
+                    "priorities_set": int(
+                        getattr(c, "_priorities_set", 0)),
+                },
+                # Blacklist breakdown: which building types the AI
+                # keeps failing to place (top 6 by count).  Helpful
+                # for spotting "QUARRY always unreachable" symptoms.
+                "blocked_by_btype": _top_btypes_blocked(c, 6),
+                # Which btype families are currently on the
+                # "don't retry yet" cooldown, and for how much longer.
+                "btype_cooldowns": _btype_cooldowns_remaining(c, sim_t),
+                # Path/bridge network footprint — raw size of the AI's
+                # reachable road graph.  Cheap proxy for "how much
+                # expansion has the AI managed so far".
+                "network": {
+                    "path_tiles": int(
+                        btype_counts.get("PATH", 0)),
+                    "bridge_tiles": int(
+                        btype_counts.get("BRIDGE", 0)),
+                    "path_stock": int(
+                        colony.building_inventory.__getitem__(
+                            BuildingType.PATH,
+                        )),
+                    "bridge_stock": int(
+                        colony.building_inventory.__getitem__(
+                            BuildingType.BRIDGE,
+                        )),
+                    "owned_buildings": sum(btype_counts.values()),
+                },
             })
 
         return {
@@ -404,6 +450,38 @@ def _recipe_has_inputs(world, clanker, building, recipe) -> bool:
                 return False
         return True
     return True
+
+
+def _top_btypes_blocked(clanker, limit: int) -> dict[str, int]:
+    """Aggregate the clanker's target blacklist by BuildingType
+    name and return the *limit* most-populated families."""
+    blocked = getattr(clanker, "_blocked_targets", None) or {}
+    counts: dict[str, int] = {}
+    for key in blocked:
+        # Keys are (btype_name, q, r) tuples.
+        if isinstance(key, tuple) and key:
+            name = key[0]
+            if isinstance(name, str):
+                counts[name] = counts.get(name, 0) + 1
+    if not counts:
+        return {}
+    top = sorted(counts.items(), key=lambda kv: -kv[1])[:limit]
+    return dict(top)
+
+
+def _btype_cooldowns_remaining(clanker, sim_t: float) -> dict[str, float]:
+    """For each btype still on the failure-cooldown, return how much
+    sim-time is left before the planner will retry."""
+    from compprog_pygame.games.hex_colony.clankers import (
+        _BTYPE_FAIL_COOLDOWN,
+    )
+    cooldowns = getattr(clanker, "_btype_fail_cooldown", None) or {}
+    out: dict[str, float] = {}
+    for name, t_set in cooldowns.items():
+        remaining = _BTYPE_FAIL_COOLDOWN - (sim_t - t_set)
+        if remaining > 0:
+            out[name] = round(float(remaining), 1)
+    return out
 
 
 __all__ = ["ClankerMonitor", "default_log_path"]

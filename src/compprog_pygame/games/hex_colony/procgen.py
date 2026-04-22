@@ -382,6 +382,7 @@ def _generate_ore_veins(
     num_veins: int,
     vein_min: int,
     vein_max: int,
+    seed_centers: list[HexCoord] | None = None,
 ) -> None:
     """Generate clusters of ore veins on any non-water tile.
 
@@ -391,22 +392,106 @@ def _generate_ore_veins(
     """
     origin = HexCoord(0, 0)
     radius = settings.world_radius
-    # Eligible tiles: any land tile not in safe zone and not water
+    # Eligible tiles: any land tile outside the camp's safe zone.
+    # (Earlier versions excluded an extra 2-hex buffer past SAFE_RADIUS,
+    # which left the inner ring — the six hexes that ring the player's
+    # clearing — ore-free and made ore feel concentrated further out.)
     eligible = [
         c for c in grid.coords()
-        if c.distance(origin) > SAFE_RADIUS + 2
+        if c.distance(origin) > SAFE_RADIUS
         and grid[c].terrain not in {Terrain.WATER, Terrain.MOUNTAIN,
                                      Terrain.IRON_VEIN, Terrain.COPPER_VEIN}
     ]
     if not eligible:
         return
 
-    placed: set[HexCoord] = set()
+    # Bucket eligible tiles by distance ring so we can guarantee an
+    # even spatial spread of seeds across the whole map.  Without
+    # this, ``rng.choice`` over the flat eligible list will happen to
+    # cluster many veins in the same region just from sampling
+    # variance — fine for a small map but visibly uneven on larger
+    # ones, leaving outer rings with no ore for clanker rivals.
+    #
+    # Seeds are distributed in proportion to each ring's *eligible
+    # tile count* (≈ ring area).  Earlier versions assigned one seed
+    # per ring round-robin, which concentrated ore toward the center
+    # because inner rings have far fewer tiles than outer ones —
+    # equal counts per ring meant much higher density inner-ring.
+    ring_step = max(6, radius // 8)
+    rings: dict[int, list[HexCoord]] = {}
+    for c in eligible:
+        bucket = c.distance(origin) // ring_step
+        rings.setdefault(bucket, []).append(c)
+    ring_keys = sorted(rings.keys())
+    total_eligible = sum(len(rings[k]) for k in ring_keys)
 
-    for _ in range(num_veins):
-        if not eligible:
-            break
-        seed = rng.choice(eligible)
+    # Per-ring seed quota proportional to tile count.  Use Bresenham-
+    # style fractional carry so rounding errors don't all land on the
+    # same ring and leave others empty.
+    seed_quota: dict[int, int] = {k: 0 for k in ring_keys}
+    if total_eligible > 0:
+        carry = 0.0
+        remaining = num_veins
+        for k in ring_keys[:-1]:
+            exact = num_veins * len(rings[k]) / total_eligible + carry
+            assign = int(exact)
+            carry = exact - assign
+            seed_quota[k] = assign
+            remaining -= assign
+        if ring_keys:
+            seed_quota[ring_keys[-1]] = max(0, remaining)
+
+    placed: set[HexCoord] = set()
+    # Seed-center list tracks where vein seeds have been placed so
+    # each new seed can be pushed away from the others (Mitchell's
+    # best-candidate spread).  When callers pass in a shared list,
+    # iron and copper seeds also repel each other, preventing both
+    # ore types from piling up in the same half of the map.
+    centers: list[HexCoord] = seed_centers if seed_centers is not None else []
+
+    # Flat list of ring keys repeated by quota, then shuffled so the
+    # order of seed placement isn't biased center→outward (which made
+    # outer-ring seeds likely to be pre-empted by neighbour growth).
+    seed_plan: list[int] = []
+    for k in ring_keys:
+        seed_plan.extend([k] * seed_quota[k])
+    rng.shuffle(seed_plan)
+
+    # Number of random candidates to score per seed slot.  Higher
+    # values give tighter angular spread at a small generation cost;
+    # 12 is plenty for typical map sizes and keeps worst-case work
+    # per call at ~num_veins * 12 distance checks against ≤num_veins
+    # existing centers.
+    _CANDIDATE_SAMPLES = 12
+
+    def _pick_spread(pool: list[HexCoord]) -> HexCoord:
+        """Pick a tile from ``pool`` that is far from existing centers."""
+        if not centers or len(pool) <= 1:
+            return rng.choice(pool)
+        sample_n = min(_CANDIDATE_SAMPLES, len(pool))
+        candidates = rng.sample(pool, sample_n)
+        best = candidates[0]
+        best_score = -1
+        for cand in candidates:
+            # Minimum hex distance to any already-placed seed center.
+            score = min(cand.distance(ctr) for ctr in centers)
+            if score > best_score:
+                best_score = score
+                best = cand
+        return best
+
+    for ring_key in seed_plan:
+        pool = [c for c in rings.get(ring_key, []) if c not in placed]
+        if not pool:
+            # Fall back to any remaining eligible tile.
+            fallback = [c for c in eligible if c not in placed]
+            if not fallback:
+                break
+            seed = _pick_spread(fallback)
+        else:
+            seed = _pick_spread(pool)
+            rings[ring_key] = pool
+        centers.append(seed)
         vein_size = rng.randint(vein_min, vein_max)
 
         # BFS growth from seed
@@ -691,22 +776,36 @@ def _build_multi_region_terrain(
     _report(0.82, "Placing stone deposits")
 
     # --- Pass 5b: ore veins (scaled to overall map size) -------------
-    iron_veins = max(params.ORE_IRON_VEIN_COUNT_MIN,
-                     params.ORE_IRON_VEIN_COUNT_BASE
-                     + effective_radius // params.ORE_IRON_VEIN_COUNT_RADIUS_DIVISOR)
-    copper_veins = max(params.ORE_COPPER_VEIN_COUNT_MIN,
-                       params.ORE_COPPER_VEIN_COUNT_BASE
-                       + effective_radius // params.ORE_COPPER_VEIN_COUNT_RADIUS_DIVISOR)
+    # Counts stay small — uniform spatial spread is enforced inside
+    # ``_generate_ore_veins`` by bucketing seeds across distance
+    # rings, so a modest count still reaches the outer map without
+    # filling the whole world in ore.
+    iron_veins = max(
+        params.ORE_IRON_VEIN_COUNT_MIN,
+        params.ORE_IRON_VEIN_COUNT_BASE
+        + effective_radius // params.ORE_IRON_VEIN_COUNT_RADIUS_DIVISOR,
+    )
+    copper_veins = max(
+        params.ORE_COPPER_VEIN_COUNT_MIN,
+        params.ORE_COPPER_VEIN_COUNT_BASE
+        + effective_radius // params.ORE_COPPER_VEIN_COUNT_RADIUS_DIVISOR,
+    )
     ore_settings = _replace(settings, world_radius=effective_radius) \
         if effective_radius != radius else settings
+    # Shared across both ore calls so copper seeds are pushed away
+    # from the iron seeds placed in the first pass (and vice-versa),
+    # preventing both ores from clumping in the same region.
+    shared_ore_centers: list[HexCoord] = []
     _generate_ore_veins(grid, rng, ore_settings, Terrain.IRON_VEIN,
                         num_veins=iron_veins,
                         vein_min=params.ORE_IRON_VEIN_SIZE_MIN,
-                        vein_max=params.ORE_IRON_VEIN_SIZE_MAX)
+                        vein_max=params.ORE_IRON_VEIN_SIZE_MAX,
+                        seed_centers=shared_ore_centers)
     _generate_ore_veins(grid, rng, ore_settings, Terrain.COPPER_VEIN,
                         num_veins=copper_veins,
                         vein_min=params.ORE_COPPER_VEIN_SIZE_MIN,
-                        vein_max=params.ORE_COPPER_VEIN_SIZE_MAX)
+                        vein_max=params.ORE_COPPER_VEIN_SIZE_MAX,
+                        seed_centers=shared_ore_centers)
     oil_clusters = max(params.OIL_DEPOSIT_CLUSTER_COUNT_MIN,
                        params.OIL_DEPOSIT_CLUSTER_COUNT_BASE
                        + effective_radius // params.OIL_DEPOSIT_CLUSTER_COUNT_RADIUS_DIVISOR)
@@ -772,6 +871,24 @@ def generate_terrain(
     selector_rng = _random.Random(seed_to_int(seed) ^ 0xA17C_AAFE)
     camp_indices = set(selector_rng.sample(range(6), _AI_TRIBE_COUNT))
     ai_camp_coords = [centres[i + 1] for i in sorted(camp_indices)]
+    # Guarantee at least one iron + one copper vein within 12 hex of
+    # every AI camp so clankers always have an ore source they can
+    # reach in their bootstrap window.  Uses a per-camp RNG seeded
+    # from the world seed + camp coords so results are deterministic.
+    for camp in ai_camp_coords:
+        ore_rng = _random.Random(
+            seed_to_int(seed) ^ (camp.q * 73856093) ^ (camp.r * 19349663)
+        )
+        _ensure_nearby_ore(grid, ore_rng, camp, search_radius=12)
+        # Also guarantee at least one wood, stone, and fibre patch
+        # within 10 tiles of every AI camp so clankers can bootstrap
+        # their basic gather chain.
+        starter_rng = _random.Random(
+            seed_to_int(seed) ^ (camp.q * 0x1F1F1F1F) ^ (camp.r * 0x2B2B2B2B)
+        )
+        _ensure_starter_resources(
+            grid, starter_rng, camp, search_radius=10, min_count=1,
+        )
     return grid, ai_camp_coords
 
 
@@ -785,10 +902,10 @@ def _count_terrain_near(
     grid: HexGrid, origin: HexCoord, targets: set[Terrain], radius: int,
 ) -> int:
     count = 0
-    for q in range(-radius, radius + 1):
-        for r in range(max(-radius, -q - radius),
-                       min(radius, -q + radius) + 1):
-            c = HexCoord(q, r)
+    for dq in range(-radius, radius + 1):
+        for dr in range(max(-radius, -dq - radius),
+                        min(radius, -dq + radius) + 1):
+            c = HexCoord(origin.q + dq, origin.r + dr)
             if c.distance(origin) > radius:
                 continue
             tile = grid.get(c)
@@ -813,29 +930,43 @@ def _stamp_cluster(
     a BFS cluster of *size* tiles, converting each to *terrain* with
     a resource amount drawn from *resource_range*.
     """
-    # Candidate seed tiles: grass just outside the safe zone, within
-    # search_radius of origin, with enough grassy neighbours to grow.
+    # Candidate seed tiles: prefer grass just outside the safe zone with
+    # enough grassy neighbours to grow.  Falls back to any non-blocked
+    # tile when no grass is available (e.g. AI camps deep in forest).
     inner = SAFE_RADIUS + 1
+    blocked = {
+        Terrain.WATER, Terrain.MOUNTAIN,
+        Terrain.IRON_VEIN, Terrain.COPPER_VEIN,
+    }
     candidates: list[HexCoord] = []
-    for q in range(-search_radius, search_radius + 1):
-        for r in range(max(-search_radius, -q - search_radius),
-                       min(search_radius, -q + search_radius) + 1):
-            c = HexCoord(q, r)
+    fallback: list[HexCoord] = []
+    for dq in range(-search_radius, search_radius + 1):
+        for dr in range(max(-search_radius, -dq - search_radius),
+                        min(search_radius, -dq + search_radius) + 1):
+            c = HexCoord(origin.q + dq, origin.r + dr)
             d = c.distance(origin)
             if d < inner or d > search_radius:
                 continue
             tile = grid.get(c)
-            if tile is None or tile.terrain != Terrain.GRASS:
+            if tile is None or tile.terrain in blocked:
                 continue
-            # Need some grassy room for a cluster.
-            grassy_nb = sum(
-                1 for nb in c.neighbors()
-                if grid.get(nb) is not None
-                and grid.get(nb).terrain == Terrain.GRASS
-                and nb.distance(origin) > SAFE_RADIUS
-            )
-            if grassy_nb >= 2:
-                candidates.append(c)
+            if tile.building is not None:
+                continue
+            if tile.terrain == terrain:
+                continue
+            if tile.terrain == Terrain.GRASS:
+                grassy_nb = sum(
+                    1 for nb in c.neighbors()
+                    if grid.get(nb) is not None
+                    and grid.get(nb).terrain == Terrain.GRASS
+                    and nb.distance(origin) > SAFE_RADIUS
+                )
+                if grassy_nb >= 2:
+                    candidates.append(c)
+            else:
+                fallback.append(c)
+    if not candidates:
+        candidates = fallback
     if not candidates:
         return
     # Prefer candidates closer to origin to keep the starter ring tight.
@@ -854,7 +985,9 @@ def _stamp_cluster(
         if cur in placed:
             continue
         tile = grid.get(cur)
-        if tile is None or tile.terrain != Terrain.GRASS:
+        if tile is None or tile.terrain in blocked or tile.terrain == terrain:
+            continue
+        if tile.building is not None:
             continue
         if cur.distance(origin) <= SAFE_RADIUS:
             continue
@@ -871,15 +1004,14 @@ def _stamp_cluster(
 
 def _ensure_starter_resources(
     grid: HexGrid, rng: _random.Random, origin: HexCoord,
+    search_radius: int = _STARTER_SEARCH_RADIUS,
+    min_count: int = 3,
 ) -> None:
     """Ensure wood, stone, and fibre tiles exist near the spawn."""
     wood_terrains = {Terrain.FOREST, Terrain.DENSE_FOREST}
     stone_terrains = {Terrain.STONE_DEPOSIT}
     fibre_terrains = {Terrain.FIBER_PATCH}
-    # Each category needs at least 3 tiles near spawn so the first
-    # gatherer assignment doesn't starve.
-    min_count = 3
-    r = _STARTER_SEARCH_RADIUS
+    r = search_radius
 
     if _count_terrain_near(grid, origin, wood_terrains, r) < min_count:
         _stamp_cluster(
@@ -926,10 +1058,10 @@ def _stamp_ore_cluster(
         Terrain.IRON_VEIN, Terrain.COPPER_VEIN,
     }
     candidates: list[HexCoord] = []
-    for q in range(-search_radius, search_radius + 1):
-        for r in range(max(-search_radius, -q - search_radius),
-                       min(search_radius, -q + search_radius) + 1):
-            c = HexCoord(q, r)
+    for dq in range(-search_radius, search_radius + 1):
+        for dr in range(max(-search_radius, -dq - search_radius),
+                        min(search_radius, -dq + search_radius) + 1):
+            c = HexCoord(origin.q + dq, origin.r + dr)
             d = c.distance(origin)
             if d < inner or d > search_radius:
                 continue
@@ -970,9 +1102,12 @@ def _stamp_ore_cluster(
 
 def _ensure_nearby_ore(
     grid: HexGrid, rng: _random.Random, origin: HexCoord,
+    search_radius: int = _ORE_SEARCH_RADIUS,
 ) -> None:
-    """Guarantee at least one iron vein and one copper vein within 25 tiles."""
-    r = _ORE_SEARCH_RADIUS
+    """Guarantee at least one iron vein and one copper vein within
+    *search_radius* tiles of *origin* (defaults to the player's
+    25-tile starter ring; AI camps use 20)."""
+    r = search_radius
     iron_terrains = {Terrain.IRON_VEIN}
     copper_terrains = {Terrain.COPPER_VEIN}
 

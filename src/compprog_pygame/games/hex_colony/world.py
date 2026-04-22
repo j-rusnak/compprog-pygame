@@ -3377,27 +3377,101 @@ class World:
             self.colony_for(station).building_inventory.add(station.recipe)
             station.craft_progress = 0.0
 
+    # Crafting stations that maintain reserved input buffers — these
+    # are excluded from the shared input pool so workshops don't
+    # steal each other's incoming deliveries.
+    _CLANKER_CRAFTING_STATION_TYPES = None  # initialised lazily below
+
+    def _clanker_input_pool(self, colony, exclude_station=None) -> "list":
+        """Every faction-owned building whose storage is fair game as
+        a crafting input source for *colony*'s stations.
+
+        For the player, ``colony.inventory`` plays this role.  For AI
+        clankers (which deliberately never get the flat-inventory
+        fallback in :meth:`_inventory_deposit_with_fallback`), we
+        instead let stations draw from the storage of any faction-
+        owned building **except** other crafting stations (so a
+        WORKSHOP's reserved input buffer isn't drained by a sibling
+        WORKSHOP) and the source station itself.
+
+        This mirrors the player's flat-inventory model: raw resources
+        produced anywhere in the colony are visible to every workshop
+        for crafting purposes.
+        """
+        if World._CLANKER_CRAFTING_STATION_TYPES is None:
+            World._CLANKER_CRAFTING_STATION_TYPES = frozenset({
+                BuildingType.WORKSHOP,
+                BuildingType.FORGE,
+                BuildingType.REFINERY,
+                BuildingType.ASSEMBLER,
+                BuildingType.CHEMICAL_PLANT,
+                BuildingType.OIL_REFINERY,
+            })
+        out = []
+        fid = colony.faction_id
+        excluded = World._CLANKER_CRAFTING_STATION_TYPES
+        for b in self.buildings.buildings:
+            if b is exclude_station:
+                continue
+            if getattr(b, "faction", "SURVIVOR") != fid:
+                continue
+            if b.type in excluded:
+                continue
+            if not b.storage:
+                continue
+            out.append(b)
+        return out
+
     def _station_available(
         self, station, res: Resource, amount: float,
     ) -> float:
         """How much of *res* the station can draw on, counting its own
-        storage first, then its faction's global inventory."""
-        colony_inv = self.colony_for(station).inventory
-        return station.storage.get(res, 0.0) + colony_inv[res]
+        storage first, then its faction's shared pool (flat inventory
+        for the player; every faction-owned non-crafting building's
+        storage for AI clanker colonies)."""
+        colony = self.colony_for(station)
+        total = station.storage.get(res, 0.0)
+        if colony.is_player:
+            total += colony.inventory[res]
+        else:
+            for b in self._clanker_input_pool(colony, exclude_station=station):
+                total += b.storage.get(res, 0.0)
+                if total >= amount:
+                    break
+        return total
 
     def _station_consume(
         self, station, res: Resource, amount: float,
     ) -> None:
         """Consume *amount* of *res*, preferring the station's storage,
-        then drawing from its faction's global inventory."""
+        then drawing from the colony's shared pool (flat inventory for
+        the player; faction-owned non-crafting buildings for AI)."""
         from_local = min(station.storage.get(res, 0.0), amount)
         if from_local > 0:
             station.storage[res] = station.storage.get(res, 0.0) - from_local
             if station.storage[res] <= 1e-6:
                 station.storage.pop(res, None)
         rem = amount - from_local
-        if rem > 0:
-            self.colony_for(station).inventory.spend(res, rem)
+        if rem <= 0:
+            return
+        colony = self.colony_for(station)
+        if colony.is_player:
+            colony.inventory.spend(res, rem)
+            return
+        # AI clanker: drain across the faction's shared input pool.
+        for b in self._clanker_input_pool(colony, exclude_station=station):
+            if rem <= 1e-6:
+                break
+            avail = b.storage.get(res, 0.0)
+            if avail <= 0:
+                continue
+            take = min(avail, rem)
+            new_amt = avail - take
+            if new_amt <= 1e-6:
+                b.storage.pop(res, None)
+            else:
+                b.storage[res] = new_amt
+            rem -= take
 
     def _tick_material_recipe(self, station, recipe, dt: float) -> None:
         # Ensure there's room to deposit the next batch of output.

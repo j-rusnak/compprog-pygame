@@ -114,6 +114,13 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         trigger=lambda w, ctx: ctx.get("time", 0) < 2.0,
     ),
     _TutorialStep(
+        id="basic_controls",
+        title=_text("basic_controls")[0],
+        lines=_text("basic_controls")[1],
+        trigger=lambda w, ctx: True,
+        after="welcome",
+    ),
+    _TutorialStep(
         id="build_gatherer",
         title=_text("build_gatherer")[0],
         lines=_text("build_gatherer")[1],

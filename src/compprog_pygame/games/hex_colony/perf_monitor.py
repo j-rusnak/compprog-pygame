@@ -48,6 +48,13 @@ from typing import Iterator
 SPIKE_FRAME_MS: float = 33.0
 SPIKE_FACTOR: float = 1.75
 
+# Emit a rolling "window summary" record this often (wall-clock
+# seconds).  Lets post-mortem analysis see steady-state p50/p95 over
+# time without sampling every frame to disk.  Set to 0 to disable.
+WINDOW_SUMMARY_S: float = float(
+    os.environ.get("HEX_COLONY_PERF_WINDOW_S", "5.0"),
+)
+
 # Maximum queued spike records before we start dropping (so a long
 # stall storm cannot pile up unbounded memory).
 _QUEUE_MAX: int = 4096
@@ -108,6 +115,16 @@ class PerfMonitor:
         # Module-level constant + small list — no per-call allocation
         # beyond the append/pop pair.
         self._stack: list[tuple[str, float]] = []
+
+        # Rolling-window aggregation state.  Lets us emit a per-window
+        # summary without keeping every frame on-disk.  Updated in
+        # frame_end(); flushed every ``WINDOW_SUMMARY_S`` seconds.
+        self._win_t0: float = self._t0
+        self._win_frame_count: int = 0
+        self._win_spike_count: int = 0
+        self._win_frame_ms: list[float] = []
+        self._win_section_sum: dict[str, float] = {}
+        self._win_section_max: dict[str, float] = {}
 
         # Writer thread + queue.
         self._queue: queue.Queue[dict | None] = queue.Queue(
@@ -170,28 +187,97 @@ class PerfMonitor:
         self._frame_count += 1
         frame_ms = frame_dur * 1000.0
         budget_ms = 1000.0 / self.fps_target
-        if frame_ms < SPIKE_FRAME_MS and frame_ms < budget_ms * SPIKE_FACTOR:
+
+        # Roll the window counters regardless of spike/no-spike so
+        # the periodic summary reflects *every* frame in the window.
+        self._win_frame_count += 1
+        self._win_frame_ms.append(frame_ms)
+        for k, v in self._sections.items():
+            v_ms = v * 1000.0
+            self._win_section_sum[k] = (
+                self._win_section_sum.get(k, 0.0) + v_ms
+            )
+            prev = self._win_section_max.get(k, 0.0)
+            if v_ms > prev:
+                self._win_section_max[k] = v_ms
+
+        is_spike = (
+            frame_ms >= SPIKE_FRAME_MS
+            or frame_ms >= budget_ms * SPIKE_FACTOR
+        )
+        if is_spike:
+            self._win_spike_count += 1
+            # Snapshot is necessary because we reuse ``_sections``
+            # next frame.  Rare, so allocation is acceptable here.
+            sections_ms = {k: v * 1000.0 for k, v in self._sections.items()}
+            worst = (
+                max(sections_ms, key=sections_ms.get) if sections_ms else ""
+            )
+            record = {
+                "t": round(time.perf_counter() - self._t0, 3),
+                "frame_ms": round(frame_ms, 2),
+                "fps_target": self.fps_target,
+                "budget_ms": round(budget_ms, 2),
+                "sections": {k: round(v, 2) for k, v in sections_ms.items()},
+                "worst": worst,
+                "frame_index": self._frame_count,
+            }
+            self._spike_count += 1
+            try:
+                self._queue.put_nowait(record)
+            except queue.Full:
+                # Drop on the floor rather than block the game loop.
+                pass
+
+        # Periodic rolling-window summary so offline analysis can
+        # track steady-state perf, not just spikes.
+        now = time.perf_counter()
+        if (WINDOW_SUMMARY_S > 0
+                and (now - self._win_t0) >= WINDOW_SUMMARY_S):
+            self._flush_window(now)
+
+    def _flush_window(self, now: float) -> None:
+        n = self._win_frame_count
+        if n <= 0:
+            self._win_t0 = now
             return
-        # Snapshot is necessary because we reuse ``_sections`` next
-        # frame.  This only happens on spikes (rare), so allocation is
-        # acceptable here.
-        sections_ms = {k: v * 1000.0 for k, v in self._sections.items()}
-        worst = max(sections_ms, key=sections_ms.get) if sections_ms else ""
-        record = {
-            "t": round(time.perf_counter() - self._t0, 3),
-            "frame_ms": round(frame_ms, 2),
-            "fps_target": self.fps_target,
-            "budget_ms": round(budget_ms, 2),
-            "sections": {k: round(v, 2) for k, v in sections_ms.items()},
-            "worst": worst,
-            "frame_index": self._frame_count,
+        fm = self._win_frame_ms
+        fm_sorted = sorted(fm)
+        mean = sum(fm) / n
+        p50 = fm_sorted[n // 2]
+        p95 = fm_sorted[min(n - 1, int(n * 0.95))]
+        worst = max(fm)
+        section_mean = {
+            k: round(v / n, 2)
+            for k, v in self._win_section_sum.items()
         }
-        self._spike_count += 1
+        section_max = {
+            k: round(v, 2) for k, v in self._win_section_max.items()
+        }
+        record = {
+            "kind": "window",
+            "t": round(now - self._t0, 3),
+            "window_s": round(now - self._win_t0, 3),
+            "frames": n,
+            "spikes": self._win_spike_count,
+            "frame_ms_mean": round(mean, 2),
+            "frame_ms_p50": round(p50, 2),
+            "frame_ms_p95": round(p95, 2),
+            "frame_ms_max": round(worst, 2),
+            "section_mean_ms": section_mean,
+            "section_max_ms": section_max,
+        }
         try:
             self._queue.put_nowait(record)
         except queue.Full:
-            # Drop on the floor rather than block the game loop.
             pass
+        # Reset window state.
+        self._win_t0 = now
+        self._win_frame_count = 0
+        self._win_spike_count = 0
+        self._win_frame_ms.clear()
+        self._win_section_sum.clear()
+        self._win_section_max.clear()
 
     # ── Stats helpers (cheap; useful for an in-game overlay later) ──
 
@@ -234,6 +320,7 @@ class PerfMonitor:
                     "fps_target": self.fps_target,
                     "spike_frame_ms": SPIKE_FRAME_MS,
                     "spike_factor": SPIKE_FACTOR,
+                    "window_summary_s": WINDOW_SUMMARY_S,
                 }) + "\n")
             except OSError:
                 pass

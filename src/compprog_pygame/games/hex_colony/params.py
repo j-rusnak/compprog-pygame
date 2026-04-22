@@ -945,16 +945,20 @@ TILE_RESOURCE_COPPER_VEIN: tuple[float, float] = (200.0, 500.0)
 #  ORE VEIN GENERATION
 # ═══════════════════════════════════════════════════════════════════
 
-# Number of veins = max(ORE_VEIN_COUNT_MIN, ORE_VEIN_COUNT_BASE + radius // ORE_VEIN_COUNT_RADIUS_DIVISOR)
+# Number of veins = max(ORE_VEIN_COUNT_MIN, ORE_VEIN_COUNT_BASE
+#   + radius // ORE_VEIN_COUNT_RADIUS_DIVISOR)
 # Iron and copper are tuned identically so the player gets roughly equal
-# stocks of both metals.
-ORE_IRON_VEIN_COUNT_MIN: int = 5
-ORE_IRON_VEIN_COUNT_BASE: int = 4
-ORE_IRON_VEIN_COUNT_RADIUS_DIVISOR: int = 10
+# stocks of both metals.  Counts are kept small — even distribution
+# across the map is enforced by ring-bucketing the seed picker (see
+# ``_generate_ore_veins``), so a low count still reaches every ring
+# of the map without painting the whole world in ore.
+ORE_IRON_VEIN_COUNT_MIN: int = 8
+ORE_IRON_VEIN_COUNT_BASE: int = 6
+ORE_IRON_VEIN_COUNT_RADIUS_DIVISOR: int = 8
 
-ORE_COPPER_VEIN_COUNT_MIN: int = 5
-ORE_COPPER_VEIN_COUNT_BASE: int = 4
-ORE_COPPER_VEIN_COUNT_RADIUS_DIVISOR: int = 10
+ORE_COPPER_VEIN_COUNT_MIN: int = 8
+ORE_COPPER_VEIN_COUNT_BASE: int = 6
+ORE_COPPER_VEIN_COUNT_RADIUS_DIVISOR: int = 8
 
 # Vein size range (number of tiles per vein) — equal for iron and copper.
 ORE_IRON_VEIN_SIZE_MIN: int = 8

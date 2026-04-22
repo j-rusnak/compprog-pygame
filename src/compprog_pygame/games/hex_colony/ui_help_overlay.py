@@ -753,7 +753,7 @@ class HelpOverlay(Panel):
             Resource.WOOD:   "Woodcutter on Forest / Dense Forest",
             Resource.STONE:  "Quarry adjacent to Mountain / Stone Deposit",
             Resource.FIBER:  "Gatherer on Fiber Patch / Grass",
-            Resource.FOOD:   "Gatherer or Farm on Grass; Well boosts farms",
+            Resource.FOOD:   "Gatherer on Fiber, Farm anywhere; Well boosts farms",
             Resource.IRON:   "Quarry adjacent to Iron Vein (or Mining Machine)",
             Resource.COPPER: "Quarry adjacent to Copper Vein (or Mining Machine)",
             Resource.OIL:    "Oil Drill placed directly on an Oil Deposit",
