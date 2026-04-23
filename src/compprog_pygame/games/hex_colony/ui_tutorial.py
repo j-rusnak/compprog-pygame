@@ -91,6 +91,25 @@ def _has_building(world: "World", type_name: str) -> bool:
         return False
 
 
+def _is_hard_mode(world: "World") -> bool:
+    """True if this run was started on a difficulty that has enemies
+    (HARD/Evolution or DESOLATION)."""
+    from compprog_pygame.games.hex_colony.settings import Difficulty
+    settings = getattr(world, "settings", None)
+    if settings is None:
+        return False
+    diff = getattr(settings, "difficulty", None)
+    return diff in (Difficulty.HARD, Difficulty.DESOLATION)
+
+
+def _waves_triggered(world: "World") -> int:
+    """Total number of enemy waves that have spawned so far."""
+    combat = getattr(world, "combat", None)
+    if combat is None:
+        return 0
+    return int(getattr(combat, "waves_triggered", 0))
+
+
 # Build a lookup from step id -> text dict for quick access.
 _TEXT_BY_ID: dict[str, dict] = {d["id"]: d for d in _TUTORIAL_TEXT}  # type: ignore[arg-type]
 
@@ -332,6 +351,18 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         lines=_text("advanced_materials_intro")[1],
         trigger=lambda w, ctx: ctx.get("current_tier_level", 0) >= 5,
         after="petrochemical_intro",
+    ),
+    # ── Hard-mode (Evolution) combat tutorials ────────────────────
+    _TutorialStep(
+        id="first_raid",
+        title=_text("first_raid")[0],
+        lines=_text("first_raid")[1],
+        # Fire once, on hard mode, immediately after the first wave
+        # has been spawned (awakening cutscene counts as wave #1).
+        trigger=lambda w, ctx: (
+            _is_hard_mode(w) and _waves_triggered(w) >= 1
+        ),
+        after=None,
     ),
 ]
 

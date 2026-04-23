@@ -256,23 +256,6 @@ class HomeScreen:
             )
             pygame.draw.line(surf, col, (0, y), (self.width, y))
 
-        # Soft nebula blobs (additive, gold-tinted)
-        nebula = pygame.Surface(size, pygame.SRCALPHA)
-        rng = random.Random(0xA1B2C3)
-        for _ in range(5):
-            cx = int(rng.uniform(0.1, 0.9) * self.width)
-            cy = int(rng.uniform(0.1, 0.9) * self.height)
-            base = rng.choice((NEBULA_A, NEBULA_B))
-            radius = int(rng.uniform(0.18, 0.34) * min(self.width, self.height))
-            steps = 24
-            for i in range(steps, 0, -1):
-                a = int(7 * (i / steps) ** 2)
-                if a <= 0:
-                    continue
-                r = int(radius * (1 - i / steps) + radius * 0.15)
-                pygame.draw.circle(nebula, (*base, a), (cx, cy), max(1, r))
-        surf.blit(nebula, (0, 0), special_flags=pygame.BLEND_ADD)
-
         self._bg_cache = surf
         self._bg_cache_size = size
         return surf
@@ -344,18 +327,6 @@ class HomeScreen:
         lr = self._logo_rect()
         assert lr is not None
         lw, lh = logo.get_size()
-        pulse = 0.6 + 0.4 * math.sin(t_ms * 0.0018)
-
-        # Soft pulsing halo behind the logo
-        halo = pygame.Surface((lw + 80, lh + 80), pygame.SRCALPHA)
-        for rad, a_base in ((36, 22), (22, 36), (12, 56)):
-            a = int(a_base * pulse)
-            pygame.draw.ellipse(
-                halo,
-                (*TITLE_GLOW, a),
-                pygame.Rect(40 - rad, 40 - rad, lw + rad * 2, lh + rad * 2),
-            )
-        surface.blit(halo, (lr.x - 40, lr.y - 40), special_flags=pygame.BLEND_ADD)
 
         # Drop shadow
         shadow = pygame.Surface((lw, lh), pygame.SRCALPHA)

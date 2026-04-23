@@ -113,6 +113,42 @@ sprites.load_all()
 # Building types that collect resources (show range ring)
 _COLLECTION_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER, BuildingType.MINING_MACHINE, BuildingType.OIL_DRILL}
 
+# Sentinel used by per-frame caches to distinguish "not yet looked up"
+# from "looked up and found None".
+_MISSING_SENTINEL = object()
+
+# Dispatch table for the second-pass non-path/wall building draw.
+# A dict lookup is dramatically faster than the long if/elif chain
+# this used to be when the renderer iterates hundreds of buildings
+# per frame.
+_BUILDING_DRAW: dict[BuildingType, callable] = {
+    BuildingType.CAMP: draw_camp,
+    BuildingType.HOUSE: draw_house,
+    BuildingType.HABITAT: draw_habitat,
+    BuildingType.WOODCUTTER: draw_woodcutter,
+    BuildingType.QUARRY: draw_quarry,
+    BuildingType.GATHERER: draw_gatherer,
+    BuildingType.STORAGE: draw_storage,
+    BuildingType.REFINERY: draw_refinery,
+    BuildingType.MINING_MACHINE: draw_mining_machine,
+    BuildingType.FORGE: draw_forge,
+    BuildingType.ASSEMBLER: draw_assembler,
+    BuildingType.FARM: draw_farm,
+    BuildingType.WELL: draw_well,
+    BuildingType.WORKSHOP: draw_workshop,
+    BuildingType.RESEARCH_CENTER: draw_research_center,
+    BuildingType.TRIBAL_CAMP: draw_tribal_camp,
+    BuildingType.CHEMICAL_PLANT: draw_chemical_plant,
+    BuildingType.CONVEYOR: draw_conveyor,
+    BuildingType.SOLAR_ARRAY: draw_solar_array,
+    BuildingType.ROCKET_SILO: draw_rocket_silo,
+    BuildingType.OIL_DRILL: draw_oil_drill,
+    BuildingType.OIL_REFINERY: draw_oil_refinery,
+    BuildingType.FLUID_TANK: draw_fluid_tank,
+    BuildingType.TURRET: draw_turret,
+    BuildingType.TRAP: draw_trap,
+}
+
 class Renderer:
     """Draws the entire game scene."""
 
@@ -179,6 +215,19 @@ class Renderer:
         self._unreach_font_size: int = -1
         self._unreach_glyph: pygame.Surface | None = None
         self._unreach_shadow: pygame.Surface | None = None
+
+        # Pre-allocated scratch surface used by the zoom-scale path
+        # of ``_blit_tile_layer``.  Without this, ``pygame.transform.scale``
+        # allocated a new screen-sized RGB surface (≈8 MB at 1920×1080)
+        # every animated zoom frame, which dominated render cost during
+        # smooth zoom and added significant GC churn.
+        self._scale_scratch: pygame.Surface | None = None
+
+        # Per-(type, zoom-bucket) cache of pre-rendered enemy procedural
+        # sprites.  Each enemy used to issue ~10 small draw calls every
+        # frame; with the cache we issue a single blit per enemy.  The
+        # zoom bucket is quantized to keep the cache compact.
+        self._enemy_proc_cache: dict[tuple[str, int], pygame.Surface] = {}
 
     @property
     def graphics_quality(self) -> str:
@@ -715,9 +764,18 @@ class Renderer:
             # Exact zoom match — fast direct blit
             surface.blit(self._tile_layer, (0, 0), (isrc_x, isrc_y, sw, sh))
         else:
-            # Zoom mismatch — scale the relevant portion to the screen
+            # Zoom mismatch — scale the relevant portion to the screen.
+            # Reuse a pre-allocated scratch surface so the per-frame
+            # ``transform.scale`` does not allocate a fresh ~screen-sized
+            # surface (which dominated zoom-animation cost and triggered
+            # frequent GC pauses).
+            scratch = self._scale_scratch
+            if scratch is None or scratch.get_size() != (sw, sh):
+                scratch = pygame.Surface((sw, sh)).convert()
+                self._scale_scratch = scratch
             sub = self._tile_layer.subsurface((isrc_x, isrc_y, isrc_w, isrc_h))
-            surface.blit(pygame.transform.scale(sub, (sw, sh)), (0, 0))
+            pygame.transform.scale(sub, (sw, sh), scratch)
+            surface.blit(scratch, (0, 0))
 
     def _rebuild_tile_layer(
         self, world: World, camera: Camera, sw: int, sh: int,
@@ -1184,56 +1242,9 @@ class Renderer:
                 pygame.draw.circle(surface, color, (int(sx), int(sy)), max(2, r))
                 continue
 
-            if building.type == BuildingType.CAMP:
-                draw_camp(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.HOUSE:
-                draw_house(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.HABITAT:
-                draw_habitat(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.WOODCUTTER:
-                draw_woodcutter(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.QUARRY:
-                draw_quarry(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.GATHERER:
-                draw_gatherer(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.STORAGE:
-                draw_storage(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.REFINERY:
-                draw_refinery(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.MINING_MACHINE:
-                draw_mining_machine(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.FORGE:
-                draw_forge(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.ASSEMBLER:
-                draw_assembler(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.FARM:
-                draw_farm(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.WELL:
-                draw_well(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.WORKSHOP:
-                draw_workshop(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.RESEARCH_CENTER:
-                draw_research_center(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.TRIBAL_CAMP:
-                draw_tribal_camp(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.CHEMICAL_PLANT:
-                draw_chemical_plant(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.CONVEYOR:
-                draw_conveyor(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.SOLAR_ARRAY:
-                draw_solar_array(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.ROCKET_SILO:
-                draw_rocket_silo(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.OIL_DRILL:
-                draw_oil_drill(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.OIL_REFINERY:
-                draw_oil_refinery(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.FLUID_TANK:
-                draw_fluid_tank(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.TURRET:
-                draw_turret(surface, sx, sy, r, zoom)
-            elif building.type == BuildingType.TRAP:
-                draw_trap(surface, sx, sy, r, zoom)
+            drawer = _BUILDING_DRAW.get(building.type)
+            if drawer is not None:
+                drawer(surface, sx, sy, r, zoom)
 
             # Damage indicator: red HP bar floats above any building
             # whose health is below max.
@@ -1347,26 +1358,58 @@ class Renderer:
         sw, sh = surface.get_size()
         half_sw, half_sh = sw * 0.5, sh * 0.5
 
+        # Per-type sprite resolution cache.  Avoids the per-enemy
+        # f-string allocation and SpriteManager dict lookup that the
+        # previous implementation paid for every enemy every frame.
+        type_data_lookup = params.ENEMY_TYPE_DATA
+        sprite_lookup: dict[str, object] = {}
+        hp_bar_min_zoom = 0.4
+
         # Enemies.
         for enemy in combat.enemies:
             if enemy.dead:
                 continue
-            data = params.ENEMY_TYPE_DATA.get(enemy.type_name)
+            data = type_data_lookup.get(enemy.type_name)
             if data is None:
                 continue
             sx = (enemy.px - cam_x) * zoom + half_sw
             sy = (enemy.py - cam_y) * zoom + half_sh
             if sx < -40 or sx > sw + 40 or sy < -40 or sy > sh + 40:
                 continue
-            draw_enemy(
-                surface, sx, sy,
-                enemy.type_name, data["color"], data["radius_px"], zoom,
-            )
-            # Always-on HP bar.
-            if enemy.max_health > 0 and zoom >= 0.4:
-                bar_w = max(14, int(data["radius_px"] * 2.4 * zoom))
+
+            type_name = enemy.type_name
+            sheet = sprite_lookup.get(type_name, _MISSING_SENTINEL)
+            if sheet is _MISSING_SENTINEL:
+                sheet = sprites.get(f"enemies/{type_name.lower()}")
+                sprite_lookup[type_name] = sheet
+
+            radius_px = data["radius_px"]
+            if sheet is not None:
+                # Sprite blit fast path — inlined version of _try_sprite
+                # without the per-call key string and dict lookup.
+                r = max(4, int(radius_px * zoom))
+                target_w = max(4, int(r * 2.8))
+                bw, bh = sheet.base_size
+                aspect = (bh / bw) if bw else 1.0
+                target_h = max(4, int(target_w * aspect))
+                img = sheet.get(target_w, target_h)
+                surface.blit(
+                    img,
+                    (int(sx) - target_w // 2, int(sy) - target_h // 2),
+                )
+            else:
+                draw_enemy(
+                    surface, sx, sy,
+                    type_name, data["color"], radius_px, zoom,
+                )
+            # HP bar over wounded enemies only.  Skipping the rect
+            # triple draw on full-health enemies is a meaningful win
+            # in big raids (3 rects \u00d7 hundreds of enemies / frame).
+            if (enemy.max_health > 0 and enemy.health < enemy.max_health
+                    and zoom >= hp_bar_min_zoom):
+                bar_w = max(14, int(radius_px * 2.4 * zoom))
                 self._draw_hp_bar(
-                    surface, sx, sy - data["radius_px"] * zoom - 6,
+                    surface, sx, sy - radius_px * zoom - 6,
                     enemy.health, enemy.max_health, bar_w,
                     fg=(220, 90, 90),
                 )

@@ -329,6 +329,13 @@ class BuildingsTabContent(TabContent):
         self._cat_tab_rects: list[pygame.Rect] = []
         self._card_rects: list[tuple[pygame.Rect, BuildingType]] = []
         self._delete_rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
+        # Categories actually shown this frame; recomputed in
+        # ``draw_content`` so handle_event uses the same list when
+        # mapping clicks to category indices.  The Defense tab is
+        # filtered out on Isolation (peaceful sandbox).
+        self._visible_categories: list[tuple[str, list[BuildingType]]] = list(
+            type(self)._CATEGORIES
+        )
 
     def set_on_select(self, callback) -> None:
         self._on_select = callback
@@ -344,9 +351,26 @@ class BuildingsTabContent(TabContent):
     def draw_content(
         self, surface: pygame.Surface, rect: pygame.Rect, world: World,
     ) -> None:
+        # Recompute the visible category list for this frame.  On
+        # Isolation/EASY (peaceful sandbox) we drop the Defense tab
+        # entirely — no enemies, no walls, no turrets.
+        from compprog_pygame.games.hex_colony.settings import Difficulty
+        difficulty = getattr(world.settings, "difficulty", None)
+        full = type(self)._CATEGORIES
+        if difficulty == Difficulty.EASY:
+            self._visible_categories = [
+                (name, types) for (name, types) in full
+                if name != BUILDING_CATEGORY_NAMES[5]
+            ]
+        else:
+            self._visible_categories = list(full)
+        # Clamp the active tab into range after filtering.
+        if self._active_cat >= len(self._visible_categories):
+            self._active_cat = 0
+
         self._draw_category_tabs(surface, rect)
 
-        _, cat_types = self._CATEGORIES[self._active_cat]
+        _, cat_types = self._visible_categories[self._active_cat]
         # Hide locked buildings unless god mode is on.
         if not self._god():
             cat_types = [
@@ -393,7 +417,7 @@ class BuildingsTabContent(TabContent):
         y = rect.y + 2
         x = rect.x + _CARD_MARGIN_X
         self._cat_tab_rects = []
-        for ci, (cat_name, _) in enumerate(self._CATEGORIES):
+        for ci, (cat_name, _) in enumerate(self._visible_categories):
             tw = cat_font.size(cat_name)[0] + 18
             tr = pygame.Rect(x, y, tw, _CAT_TAB_H)
             self._cat_tab_rects.append(tr)

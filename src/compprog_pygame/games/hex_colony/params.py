@@ -218,6 +218,16 @@ POPULATION_FOOD_PER_BIRTH: float = 25.0
 # Minimum food a dwelling must hold before a birth can occur.
 POPULATION_MIN_FOOD_TO_BIRTH: float = 25.0
 
+# ── Desolation difficulty multipliers ─────────────────────────
+# These tweak the base economy & combat numbers when the player
+# selects the DESOLATION game mode.  All other modes ignore them.
+DESOLATION_GATHER_RATE_MULT: float = 2.0 / 3.0  # gather rates cut by 1/3
+DESOLATION_FARM_FOOD_MULT:   float = 0.10        # farm food output cut by 90%
+DESOLATION_BIRTH_FOOD:       float = 50.0       # food per new colonist (vs 25)
+DESOLATION_ENEMY_HP_MULT:    float = 2.0        # enemies twice as tough
+DESOLATION_ENEMY_DAMAGE_MULT: float = 2.0       # enemies twice as deadly
+DESOLATION_ENEMY_COUNT_MULT: int = 2            # spawn twice as many enemies
+
 # ═══════════════════════════════════════════════════════════════════
 #  BUILDING DELETE REFUND
 # ═══════════════════════════════════════════════════════════════════
@@ -307,6 +317,10 @@ BUILDING_RECIPE_STATION: dict[str, str] = {
     "OIL_REFINERY":     "ASSEMBLER",
     "PIPE":             "WORKSHOP",
     "FLUID_TANK":       "ASSEMBLER",
+    # Defense buildings — crafted at the Workshop once
+    # ``defense_basics`` research unlocks them.
+    "TURRET":           "WORKSHOP",
+    "TRAP":             "WORKSHOP",
 }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1266,7 +1280,7 @@ ENEMY_RETARGET_INTERVAL: float = 1.5
 # a path to its current target.  A* with a hex-distance heuristic is
 # far cheaper than a flood-fill BFS, so we can afford a generous
 # budget that comfortably spans the whole map.
-ENEMY_PATHFIND_MAX_DEPTH: int = 4000
+ENEMY_PATHFIND_MAX_DEPTH: int = 1500
 
 # When the path-finder fails (target temporarily unreachable), wait
 # this long before retrying — prevents per-frame BFS storms when an
@@ -1296,3 +1310,24 @@ ENEMY_TARGET_PRIORITY: list[str] = [
     "CAMP", "ROCKET_SILO", "RESEARCH_CENTER", "TURRET",
     "HABITAT", "STORAGE", "WORKSHOP", "FORGE", "ASSEMBLER",
 ]
+
+# Pre-computed {building_name: priority_index} dict so the combat
+# tick can do an O(1) lookup instead of an O(N) ``list.index`` per
+# enemy retarget.  Names not in the priority list fall through to
+# ``len(ENEMY_TARGET_PRIORITY)``.
+ENEMY_TARGET_PRIORITY_INDEX: dict[str, int] = {
+    name: i for i, name in enumerate(ENEMY_TARGET_PRIORITY)
+}
+
+# Maximum number of enemy retargets (A* + nearest-target scan) we
+# allow per simulation tick.  Above this we defer the rest to the
+# next frame.  Without this, a wave of N hundred enemies all coming
+# off cooldown together can spike the frame to 200+ ms even though
+# the per-call cost is reasonable.
+ENEMY_RETARGET_BUDGET_PER_TICK: int = 20
+
+# How often (sim seconds) the world refreshes its "starved /
+# unreachable" caches.  Visible in the renderer as the dim/red overlay
+# on isolated buildings — humans don't notice update lag below ~2 s.
+# Auto-tuned by ``perf_autotune`` based on map complexity.
+UNREACHABLE_RECHECK_INTERVAL: float = 0.5

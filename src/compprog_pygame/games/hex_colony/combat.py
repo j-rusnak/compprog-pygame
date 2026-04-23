@@ -107,6 +107,27 @@ class CombatManager:
         # Persistent RNG so post-awakening wave variety is deterministic
         # given the world seed.
         self._rng: _random.Random = _random.Random()
+        # Cache of every grid hex with walkable terrain.  Terrain is
+        # static during a session, so this is built once on first
+        # tick and reused forever.  ``invalidate_terrain_cache()``
+        # forces a rebuild (e.g. world regen).
+        self._terrain_walkable_cache: set[HexCoord] | None = None
+        # Pre-built table of axial offsets per ring distance, keyed
+        # by max distance.  Used by ``_closest_enemy_in_range`` to
+        # iterate only the hexes inside a turret's range.
+        self._range_offsets: dict[int, list[tuple[int, int]]] = {}
+
+    def invalidate_terrain_cache(self) -> None:
+        """Drop the static walkable-terrain cache (call after world regen)."""
+        self._terrain_walkable_cache = None
+
+    def _enemy_count_mult(self, world: "World") -> int:
+        """Per-difficulty enemy spawn-count multiplier."""
+        from compprog_pygame.games.hex_colony.settings import Difficulty
+        if (getattr(world.settings, "difficulty", None)
+                == Difficulty.DESOLATION):
+            return int(params.DESOLATION_ENEMY_COUNT_MULT)
+        return 1
 
     # ── Public hooks ────────────────────────────────────────────
 
@@ -127,9 +148,10 @@ class CombatManager:
         idx = min(self.awakening_waves_triggered,
                   len(params.WAVE_COMPOSITION_PER_TOWER) - 1)
         comp = params.WAVE_COMPOSITION_PER_TOWER[idx]
+        count_mult = self._enemy_count_mult(world)
         for tc in tower_coords:
             for type_name, count in comp:
-                for _ in range(count):
+                for _ in range(count * count_mult):
                     self._spawn_enemy_near(world, type_name, tc)
         self.awakening_waves_triggered += 1
         self.waves_triggered += 1
@@ -150,11 +172,12 @@ class CombatManager:
         pop_bonus = (world.player_population_count
                      // max(1, params.POST_AWAKENING_POP_DIVISOR))
         edge_coord = self._pick_edge_spawn_point(world)
+        count_mult = self._enemy_count_mult(world)
         for type_name, base_count in params.POST_AWAKENING_WAVE_COMPOSITION:
-            count = max(0, int(round(base_count * scale)))
+            count = max(0, int(round(base_count * scale))) * count_mult
             for _ in range(count):
                 self._spawn_enemy_near(world, type_name, edge_coord)
-        for _ in range(pop_bonus):
+        for _ in range(pop_bonus * count_mult):
             self._spawn_enemy_near(world, "SCOUT", edge_coord)
         self.waves_triggered += 1
         # Schedule the next one.
@@ -177,12 +200,17 @@ class CombatManager:
             if self.next_periodic_wave_in <= 0.0:
                 self.spawn_periodic_wave(world)
 
+        # Build all per-tick caches in one place so every sub-tick can
+        # read from O(1)-friendly data structures instead of repeating
+        # O(buildings) / O(enemies) scans.
+        ctx = self._build_tick_context(world)
+
         if self.enemies:
-            self._tick_enemies(world, dt)
+            self._tick_enemies(world, dt, ctx)
         if self.projectiles:
-            self._tick_projectiles(world, dt)
+            self._tick_projectiles(world, dt, ctx)
         # Defensive weapons (camp laser + turrets).
-        self._tick_defenders(world, dt)
+        self._tick_defenders(world, dt, ctx)
 
         # Sweep dead entities.
         if self.enemies:
@@ -192,6 +220,95 @@ class CombatManager:
                 p for p in self.projectiles if p.travelled < p.distance
             ]
 
+    def _build_tick_context(self, world: "World") -> dict:
+        """Construct the per-tick caches every sub-tick reuses.
+
+        Returns a dict with:
+          - ``valid_coords``     set[HexCoord] of walkable terrain (static).
+          - ``blocker_coords``   set[HexCoord] of SURVIVOR blocker buildings.
+          - ``blocker_by_coord`` dict[HexCoord, Building].
+          - ``blocker_targets``  list[Building] of targetable SURVIVOR blockers.
+          - ``weapon_buildings`` list[(Building, str)] for turret/camp.
+          - ``enemy_index``      dict[HexCoord, list[Enemy]] (live only).
+          - ``enemy_by_id``      dict[int, Enemy].
+        """
+        # 1) Static terrain walkability — cache forever.
+        if self._terrain_walkable_cache is None:
+            terrain_blockers = params.ENEMY_TERRAIN_BLOCKERS
+            self._terrain_walkable_cache = {
+                t.coord for t in world.grid.tiles()
+                if t.terrain.name not in terrain_blockers
+            }
+        valid_coords = self._terrain_walkable_cache
+
+        # 2) Blockers + weapon-bearing buildings in a single pass.
+        blocker_set = params.ENEMY_BUILDING_BLOCKERS
+        blocker_targets: list[Building] = []
+        blocker_coords: set[HexCoord] = set()
+        blocker_by_coord: dict[HexCoord, Building] = {}
+        weapon_buildings: list[tuple[Building, str]] = []
+        TURRET = BuildingType.TURRET
+        CAMP = BuildingType.CAMP
+        for b in world.buildings.buildings:
+            if b.faction != "SURVIVOR":
+                continue
+            btype = b.type
+            if btype.name in blocker_set:
+                blocker_targets.append(b)
+                blocker_coords.add(b.coord)
+                blocker_by_coord[b.coord] = b
+            if btype is TURRET:
+                weapon_buildings.append((b, "TURRET"))
+            elif btype is CAMP:
+                weapon_buildings.append((b, "CAMP"))
+
+        # 3) Spatial enemy index + id lookup for projectiles.
+        enemy_index: dict[HexCoord, list[Enemy]] = {}
+        enemy_by_id: dict[int, Enemy] = {}
+        for e in self.enemies:
+            if e.dead:
+                continue
+            enemy_by_id[id(e)] = e
+            bucket = enemy_index.get(e.coord)
+            if bucket is None:
+                enemy_index[e.coord] = [e]
+            else:
+                bucket.append(e)
+
+        return {
+            "valid_coords": valid_coords,
+            "blocker_coords": blocker_coords,
+            "blocker_by_coord": blocker_by_coord,
+            "blocker_targets": blocker_targets,
+            "weapon_buildings": weapon_buildings,
+            "enemy_index": enemy_index,
+            "enemy_by_id": enemy_by_id,
+        }
+
+    def _range_offsets_for(self, range_hex: int) -> list[tuple[int, int]]:
+        """Return cached axial offsets covering all hexes within ``range_hex``.
+
+        Sorted by hex distance ascending so callers iterate inner rings
+        first \u2014 letting them break out as soon as a target is found at
+        the smallest possible distance.
+        """
+        cached = self._range_offsets.get(range_hex)
+        if cached is not None:
+            return cached
+        offsets: list[tuple[int, tuple[int, int]]] = []
+        for dq in range(-range_hex, range_hex + 1):
+            for dr in range(-range_hex, range_hex + 1):
+                if abs(dq + dr) > range_hex:
+                    continue
+                d = (abs(dq) + abs(dr) + abs(dq + dr)) // 2
+                if d > range_hex:
+                    continue
+                offsets.append((d, (dq, dr)))
+        offsets.sort(key=lambda x: x[0])
+        flat = [off for _, off in offsets]
+        self._range_offsets[range_hex] = flat
+        return flat
+
     # ── Spawning helpers ─────────────────────────────────────────
 
     def _spawn_enemy_near(self, world: "World", type_name: str,
@@ -199,13 +316,20 @@ class CombatManager:
         data = params.ENEMY_TYPE_DATA.get(type_name)
         if data is None:
             return
+        from compprog_pygame.games.hex_colony.settings import Difficulty
+        is_desolation = (
+            getattr(world.settings, "difficulty", None)
+            == Difficulty.DESOLATION
+        )
+        hp_mult = params.DESOLATION_ENEMY_HP_MULT if is_desolation else 1.0
+        dmg_mult = params.DESOLATION_ENEMY_DAMAGE_MULT if is_desolation else 1.0
         coord = self._pick_spawn_tile(world, near)
         e = Enemy(
             type_name=type_name,
             coord=coord,
-            health=float(data["hp"]),
-            max_health=float(data["hp"]),
-            damage=float(data["damage"]),
+            health=float(data["hp"]) * hp_mult,
+            max_health=float(data["hp"]) * hp_mult,
+            damage=float(data["damage"]) * dmg_mult,
             bounty=int(data.get("bounty", 0)),
         )
         e.attack_timer = float(data["attack_cd"])
@@ -256,11 +380,19 @@ class CombatManager:
 
     # ── Enemy update ─────────────────────────────────────────────
 
-    def _tick_enemies(self, world: "World", dt: float) -> None:
+    def _tick_enemies(self, world: "World", dt: float, ctx: dict) -> None:
         size = world.settings.hex_size
         retarget_ok = float(params.ENEMY_RETARGET_INTERVAL)
         retarget_fail = float(params.ENEMY_RETARGET_FAIL_INTERVAL)
         type_data = params.ENEMY_TYPE_DATA
+        blocker_targets: list[Building] = ctx["blocker_targets"]
+        blocker_coords: set[HexCoord] = ctx["blocker_coords"]
+        blocker_by_coord: dict[HexCoord, Building] = ctx["blocker_by_coord"]
+        valid_coords: set[HexCoord] = ctx["valid_coords"]
+        # Per-tick budget of expensive retargets (A* + scan).  The rest
+        # are deferred to the next tick by leaving their timer at <= 0
+        # so they get picked up next frame.
+        retarget_budget = int(params.ENEMY_RETARGET_BUDGET_PER_TICK)
         for enemy in self.enemies:
             if enemy.dead:
                 continue
@@ -283,15 +415,19 @@ class CombatManager:
             # (no path), the timer is set to the longer fail interval
             # so we don't spend every frame doing fruitless A*.
             enemy.retarget_timer -= dt
-            if enemy.retarget_timer <= 0.0:
-                self._update_enemy_target(world, enemy)
+            if enemy.retarget_timer <= 0.0 and retarget_budget > 0:
+                retarget_budget -= 1
+                self._update_enemy_target(
+                    world, enemy, blocker_targets,
+                    valid_coords, blocker_coords,
+                )
                 if enemy.path or enemy.target_building_id != 0:
                     enemy.retarget_timer = retarget_ok
                 else:
                     enemy.retarget_timer = retarget_fail
 
             # If adjacent to current target building, attack it.
-            if self._try_attack_adjacent(world, enemy, dt):
+            if self._try_attack_adjacent(world, enemy, dt, blocker_by_coord):
                 continue
 
             # Otherwise progress along the path.
@@ -300,21 +436,143 @@ class CombatManager:
                 self._advance_one_hex(world, enemy)
                 enemy.move_timer = period
 
-    def _update_enemy_target(self, world: "World", enemy: Enemy) -> None:
-        """BFS to nearest player-faction blocking building; cache the path."""
-        target = self._find_nearest_player_target(world, enemy.coord)
-        if target is None:
+    def _update_enemy_target(self, world: "World", enemy: Enemy,
+                             blocker_targets: list[Building],
+                             valid_coords: set[HexCoord],
+                             blocker_coords: set[HexCoord]) -> None:
+        """A* from the enemy toward the nearest *reachable* SURVIVOR
+        blocker.
+
+        The heuristic is the minimum hex distance to any blocker, and
+        the goal test is "current tile is adjacent to a blocker".  This
+        gives us correct behaviour in two important cases:
+
+        * if the closest blocker by raw distance is walled off, A*
+          naturally falls through to the next-nearest reachable one
+          rather than getting stuck (the old multi-target BFS handled
+          this too);
+        * because A* is heuristic-guided, it scales to the full ~80-
+          radius map.  A pure flood BFS bounded at ~1500 nodes only
+          covers ~22 hexes, which is why enemies spawned at edge
+          ancient towers used to just sit there — the player's base
+          was outside the BFS horizon.
+        """
+        if not blocker_targets:
             enemy.target_building_id = 0
             enemy.path = []
             enemy.target_coord = None
             return
-        enemy.target_building_id = id(target)
-        path = self._bfs_path(world, enemy.coord, target.coord,
-                              max_depth=params.ENEMY_PATHFIND_MAX_DEPTH,
-                              attack_dest=True)
-        # Drop the first hex (== current coord).
-        if path and path[0] == enemy.coord:
+
+        blocker_by_coord: dict[HexCoord, Building] = {
+            b.coord: b for b in blocker_targets
+        }
+        priority_idx = params.ENEMY_TARGET_PRIORITY_INDEX
+        fallback = len(priority_idx)
+
+        # Edge case: enemy is already on / adjacent to a blocker.
+        start = enemy.coord
+        adj_target: Building | None = None
+        adj_key: tuple[int, int] | None = None
+        if start in blocker_by_coord:
+            adj_target = blocker_by_coord[start]
+            adj_key = (0, priority_idx.get(adj_target.type.name, fallback))
+        for nb in start.neighbors():
+            b = blocker_by_coord.get(nb)
+            if b is None:
+                continue
+            key = (1, priority_idx.get(b.type.name, fallback))
+            if adj_key is None or key < adj_key:
+                adj_target, adj_key = b, key
+        if adj_target is not None:
+            enemy.target_building_id = id(adj_target)
+            enemy.path = []
+            enemy.target_coord = None
+            enemy.next_target_px, enemy.next_target_py = (
+                hex_to_pixel(enemy.coord, world.settings.hex_size)
+            )
+            return
+
+        # Multi-target A*.  Heuristic = min hex distance to any blocker
+        # minus one (we only need to reach an adjacent tile).
+        blocker_list = list(blocker_by_coord.keys())
+
+        def heuristic(c: HexCoord) -> int:
+            best = 1_000_000
+            for bc in blocker_list:
+                d = c.distance(bc)
+                if d < best:
+                    best = d
+                    if best <= 1:
+                        return 0
+            return best - 1 if best > 0 else 0
+
+        max_depth = int(params.ENEMY_PATHFIND_MAX_DEPTH)
+        open_heap: list[tuple[int, int, HexCoord]] = []
+        tie = 0
+        heapq.heappush(open_heap, (heuristic(start), tie, start))
+        g_score: dict[HexCoord, int] = {start: 0}
+        prev: dict[HexCoord, HexCoord] = {}
+        found_endpoint: HexCoord | None = None
+        found_target: Building | None = None
+        expanded = 0
+        while open_heap:
+            _, _, cur = heapq.heappop(open_heap)
+            # Goal test: adjacent to any blocker.
+            best_adj: Building | None = None
+            best_adj_key: tuple[int, int] | None = None
+            for nb in cur.neighbors():
+                b = blocker_by_coord.get(nb)
+                if b is None:
+                    continue
+                k = (0, priority_idx.get(b.type.name, fallback))
+                if best_adj_key is None or k < best_adj_key:
+                    best_adj, best_adj_key = b, k
+            if best_adj is not None:
+                found_endpoint = cur
+                found_target = best_adj
+                break
+            expanded += 1
+            if expanded > max_depth:
+                break
+            cur_g = g_score[cur]
+            for nb in cur.neighbors():
+                if nb not in valid_coords:
+                    continue
+                if nb in blocker_coords:
+                    # Other blockers act as walls (they'll be picked
+                    # up by the goal test above when we're adjacent).
+                    continue
+                tentative = cur_g + 1
+                old = g_score.get(nb)
+                if old is not None and tentative >= old:
+                    continue
+                g_score[nb] = tentative
+                prev[nb] = cur
+                tie += 1
+                heapq.heappush(
+                    open_heap,
+                    (tentative + heuristic(nb), tie, nb),
+                )
+
+        if found_target is None or found_endpoint is None:
+            # Nothing in range — wander toward the map centre / camp
+            # so the enemy doesn't sit at its spawn forever waiting
+            # for a building to come within A* horizon.  We pick the
+            # walkable neighbour that most reduces hex-distance to the
+            # fallback target.
+            self._set_wander_step(world, enemy, valid_coords,
+                                  blocker_coords)
+            return
+
+        # Reconstruct path from start → found_endpoint.
+        path: list[HexCoord] = [found_endpoint]
+        while path[-1] in prev:
+            path.append(prev[path[-1]])
+        path.reverse()
+        if path and path[0] == start:
             path = path[1:]
+
+        enemy.target_building_id = id(found_target)
         enemy.path = path
         if enemy.path:
             enemy.target_coord = enemy.path[0]
@@ -325,6 +583,55 @@ class CombatManager:
             enemy.next_target_px, enemy.next_target_py = (
                 hex_to_pixel(enemy.coord, world.settings.hex_size)
             )
+
+    def _set_wander_step(self, world: "World", enemy: Enemy,
+                         valid_coords: set[HexCoord],
+                         blocker_coords: set[HexCoord]) -> None:
+        """Fallback when no SURVIVOR blocker is reachable: step one
+        hex toward the map centre (camp coord, falling back to (0,0)
+        if the camp is gone).  Called every retarget tick so the
+        enemy keeps moving inwards until it finds something to fight.
+        """
+        enemy.target_building_id = 0
+        # Pick fallback goal: the camp if it still exists, else origin.
+        fallback = HexCoord(0, 0)
+        try:
+            fallback = world.player_colony.camp_coord
+        except Exception:
+            pass
+        cur = enemy.coord
+        cur_dist = cur.distance(fallback)
+        if cur_dist == 0:
+            enemy.path = []
+            enemy.target_coord = None
+            return
+        # Pick the walkable neighbour minimising distance to fallback.
+        best: HexCoord | None = None
+        best_d = cur_dist
+        for nb in cur.neighbors():
+            if nb not in valid_coords:
+                continue
+            if nb in blocker_coords:
+                continue
+            d = nb.distance(fallback)
+            if d < best_d:
+                best_d = d
+                best = nb
+        if best is None:
+            # Boxed in by water/mountain/blockers — accept any walkable
+            # neighbour just so we make some movement.
+            for nb in cur.neighbors():
+                if nb in valid_coords and nb not in blocker_coords:
+                    best = nb
+                    break
+        if best is None:
+            enemy.path = []
+            enemy.target_coord = None
+            return
+        enemy.path = [best]
+        enemy.target_coord = best
+        tx, ty = hex_to_pixel(best, world.settings.hex_size)
+        enemy.next_target_px, enemy.next_target_py = tx, ty
 
     def _advance_one_hex(self, world: "World", enemy: Enemy) -> None:
         if not enemy.path:
@@ -357,24 +664,22 @@ class CombatManager:
             )
 
     def _try_attack_adjacent(self, world: "World", enemy: Enemy,
-                             dt: float) -> bool:
+                             dt: float,
+                             blocker_by_coord: dict[HexCoord, Building],
+                             ) -> bool:
         """If a player building / colonist is on or adjacent to the
         enemy, attack it.  Returns True if an attack occurred this
         frame (so the caller skips the move step).
         """
-        # Look for adjacent player buildings first.
-        target_b: Building | None = None
-        for c in (enemy.coord, *enemy.coord.neighbors()):
-            tile = world.grid.get(c)
-            if tile is None or tile.building is None:
-                continue
-            b = tile.building
-            if b.faction != "SURVIVOR":
-                continue
-            if b.type.name not in params.ENEMY_BUILDING_BLOCKERS:
-                continue
-            target_b = b
-            break
+        # Look for adjacent player buildings via the per-tick blocker
+        # dict — avoids 7 grid.get + attribute lookups per enemy.
+        target_b: Building | None = blocker_by_coord.get(enemy.coord)
+        if target_b is None:
+            for c in enemy.coord.neighbors():
+                b = blocker_by_coord.get(c)
+                if b is not None:
+                    target_b = b
+                    break
         if target_b is None:
             return False
 
@@ -402,6 +707,11 @@ class CombatManager:
         except Exception:
             pass
         world.mark_housing_dirty()
+        # Emergency safety net: if the player just lost their last
+        # basic producer and has none of its resource on hand they
+        # would have no way to bootstrap back.  Grant a free copy
+        # in their build inventory so they can restart production.
+        self._maybe_grant_emergency_refund(world, b)
         # Notify the player.
         notif = getattr(world, "notifications", None)
         if notif is not None:
@@ -411,6 +721,55 @@ class CombatManager:
             notif.push(
                 NOTIF_BUILDING_DESTROYED.format(name=building_label(b.type.name)),
                 (255, 110, 90),
+            )
+
+    # Producer-type → resource(s) that being out of would soft-lock
+    # the player.  WOOD/STONE have unique producers; FIBER comes only
+    # from gatherers (food has farms, so we don't gate on it).
+    _EMERGENCY_RESOURCES: dict[BuildingType, tuple[str, ...]] = {
+        BuildingType.WOODCUTTER: ("WOOD",),
+        BuildingType.QUARRY:     ("STONE",),
+        BuildingType.GATHERER:   ("FIBER",),
+    }
+
+    def _maybe_grant_emergency_refund(
+        self, world: "World", destroyed: Building,
+    ) -> None:
+        if destroyed.faction != "SURVIVOR":
+            return
+        # Desolation explicitly disables the safety net — the player is
+        # meant to be able to soft-lock themselves.
+        from compprog_pygame.games.hex_colony.settings import Difficulty
+        if (getattr(world.settings, "difficulty", None)
+                == Difficulty.DESOLATION):
+            return
+        btype = destroyed.type
+        res_names = self._EMERGENCY_RESOURCES.get(btype)
+        if res_names is None:
+            return
+        # Any other player-owned producer of the same type left?
+        for other in world.buildings.buildings:
+            if (other.type is btype
+                    and other.faction == "SURVIVOR"
+                    and other is not destroyed):
+                return
+        # Player has any of the resource(s) it produces?
+        from compprog_pygame.games.hex_colony.resources import Resource
+        inv = world.player_colony.inventory
+        for name in res_names:
+            res = getattr(Resource, name, None)
+            if res is not None and inv[res] > 0:
+                return
+        # Soft-lock incoming — grant one free building.
+        world.player_colony.building_inventory.add(btype, 1)
+        notif = getattr(world, "notifications", None)
+        if notif is not None:
+            from compprog_pygame.games.hex_colony.strings import (
+                NOTIF_EMERGENCY_REFUND, building_label,
+            )
+            notif.push(
+                NOTIF_EMERGENCY_REFUND.format(name=building_label(btype.name)),
+                (130, 220, 130),
             )
 
     def _detonate_trap(self, world: "World", trap: Building,
@@ -467,29 +826,26 @@ class CombatManager:
 
     # ── Defender weapons (camp laser + turrets) ──────────────────
 
-    def _tick_defenders(self, world: "World", dt: float) -> None:
+    def _tick_defenders(self, world: "World", dt: float, ctx: dict) -> None:
         if not self.enemies:
             return
         size = world.settings.hex_size
-        # Defender weapons never modify the buildings list (they only
-        # spawn projectiles), so we can iterate it directly.
-        for b in world.buildings.buildings:
-            if b.faction != "SURVIVOR":
-                continue
-            if b.type == BuildingType.TURRET:
+        enemy_index: dict[HexCoord, list[Enemy]] = ctx["enemy_index"]
+        # Pre-filtered list: only buildings with weapons.  Avoids
+        # walking the whole O(buildings) list every frame.
+        for b, kind in ctx["weapon_buildings"]:
+            if kind == "TURRET":
                 self._fire_weapon(
-                    world, b, size, dt,
+                    world, b, size, dt, enemy_index,
                     range_hex=params.TURRET_RANGE_HEXES,
                     damage=params.TURRET_DAMAGE,
                     reload=params.TURRET_RELOAD_SECONDS,
                     speed=params.TURRET_PROJECTILE_SPEED,
                     color=(255, 220, 120),
                 )
-            elif b.type == BuildingType.CAMP:
-                # The crashed ship is always armed: it auto-targets
-                # the closest enemy within its short range.
+            else:  # "CAMP"
                 self._fire_weapon(
-                    world, b, size, dt,
+                    world, b, size, dt, enemy_index,
                     range_hex=params.CAMP_LASER_RANGE_HEXES,
                     damage=params.CAMP_LASER_DAMAGE,
                     reload=params.CAMP_LASER_RELOAD_SECONDS,
@@ -498,13 +854,16 @@ class CombatManager:
                 )
 
     def _fire_weapon(self, world: "World", b: Building, size: int,
-                     dt: float, *, range_hex: int, damage: float,
+                     dt: float,
+                     enemy_index: dict[HexCoord, list[Enemy]],
+                     *, range_hex: int, damage: float,
                      reload: float, speed: float,
                      color: tuple[int, int, int]) -> None:
         b.weapon_cooldown = max(0.0, b.weapon_cooldown - dt)
         if b.weapon_cooldown > 0.0:
             return
-        target = self._closest_enemy_in_range(b.coord, range_hex)
+        target = self._closest_enemy_in_range(b.coord, range_hex,
+                                              enemy_index)
         if target is None:
             return
         b.weapon_cooldown = float(reload)
@@ -519,35 +878,44 @@ class CombatManager:
         self.projectiles.append(proj)
 
     def _closest_enemy_in_range(self, origin: HexCoord,
-                                range_hex: int) -> Enemy | None:
-        best: Enemy | None = None
-        best_d: int = range_hex + 1
-        for e in self.enemies:
-            if e.dead:
+                                range_hex: int,
+                                enemy_index: dict[HexCoord, list[Enemy]],
+                                ) -> Enemy | None:
+        """Find the closest live enemy within ``range_hex`` of ``origin``.
+
+        Uses the per-tick spatial index to iterate hexes in expanding
+        rings instead of scanning every enemy in the world.  With a
+        4-hex range that's at most 61 dict lookups per turret.
+        """
+        if not enemy_index:
+            return None
+        offsets = self._range_offsets_for(range_hex)
+        oq, orr = origin.q, origin.r
+        for dq, dr in offsets:
+            bucket = enemy_index.get(HexCoord(oq + dq, orr + dr))
+            if bucket is None:
                 continue
-            d = origin.distance(e.coord)
-            if d <= range_hex and d < best_d:
-                best, best_d = e, d
-        return best
+            for e in bucket:
+                if not e.dead:
+                    return e
+        return None
 
     # ── Projectiles ──────────────────────────────────────────────
 
-    def _tick_projectiles(self, world: "World", dt: float) -> None:
+    def _tick_projectiles(self, world: "World", dt: float, ctx: dict) -> None:
+        enemy_by_id: dict[int, Enemy] = ctx["enemy_by_id"]
         for p in self.projectiles:
             p.travelled += p.speed * dt
             if p.travelled < p.distance:
                 continue
-            # Resolve hit.
-            for e in self.enemies:
-                if e.dead:
-                    continue
-                if id(e) != p.target_id:
-                    continue
-                e.health -= p.damage
-                if e.health <= 0.0:
-                    e.dead = True
-                    self._on_enemy_killed(world, e)
-                break
+            # Resolve hit — O(1) lookup via the per-tick id index.
+            e = enemy_by_id.get(p.target_id)
+            if e is None or e.dead:
+                continue
+            e.health -= p.damage
+            if e.health <= 0.0:
+                e.dead = True
+                self._on_enemy_killed(world, e)
 
     # ── Path-finding helpers ─────────────────────────────────────
 
@@ -565,7 +933,10 @@ class CombatManager:
 
     def _bfs_path(self, world: "World", start: HexCoord, goal: HexCoord,
                   *, max_depth: int,
-                  attack_dest: bool) -> list[HexCoord]:
+                  attack_dest: bool,
+                  valid_coords: set[HexCoord] | None = None,
+                  blocker_coords: set[HexCoord] | None = None,
+                  ) -> list[HexCoord]:
         """A* from ``start`` to a tile adjacent to ``goal`` (when
         ``attack_dest`` is True) or ``goal`` itself otherwise.
 
@@ -573,12 +944,32 @@ class CombatManager:
         expanded \u2014 with a hex-distance heuristic this is plenty for
         the full map and dramatically cheaper than a flood BFS.
 
+        ``valid_coords`` and ``blocker_coords`` are pre-computed sets
+        (built once per tick by :meth:`_tick_enemies`) used to skip
+        per-node attribute lookups.  When omitted we fall back to the
+        slow per-tile checks via :meth:`_is_walkable`.
+
         Returns the path including the start tile, or [] if no route
         was found within the budget.
         """
         if start == goal:
             return [start]
         ignore = goal if attack_dest else None
+
+        # Build a fast `is_walkable` closure.  When the per-tick
+        # sets are available it reduces to two set lookups per call;
+        # otherwise we fall back to the original method.
+        if valid_coords is not None and blocker_coords is not None:
+            def is_walkable(c: HexCoord) -> bool:
+                if c not in valid_coords:
+                    return False
+                if c in blocker_coords and c != ignore:
+                    return False
+                return True
+        else:
+            def is_walkable(c: HexCoord) -> bool:
+                return self._is_walkable(world, c,
+                                         ignore_building_at=ignore)
 
         def heuristic(c: HexCoord) -> int:
             # We want to *reach* a tile adjacent to the goal, so the
@@ -609,8 +1000,7 @@ class CombatManager:
                 break
             cur_g = g_score[cur]
             for nb in cur.neighbors():
-                if not self._is_walkable(world, nb,
-                                         ignore_building_at=ignore):
+                if not is_walkable(nb):
                     continue
                 tentative = cur_g + 1
                 old = g_score.get(nb)
@@ -632,25 +1022,23 @@ class CombatManager:
         path.reverse()
         return path
 
-    def _find_nearest_player_target(self, world: "World",
-                                    origin: HexCoord) -> Building | None:
+    def _find_nearest_player_target(self, origin: HexCoord,
+                                    blockers: list[Building]
+                                    ) -> Building | None:
         """Pick the player-faction blocking building whose hex is
         closest to ``origin`` (Chebyshev / hex distance), breaking
         ties by ``ENEMY_TARGET_PRIORITY`` order.
+
+        ``blockers`` is the pre-filtered list of SURVIVOR buildings
+        whose type is in ``ENEMY_BUILDING_BLOCKERS`` (built once per
+        tick by :meth:`_tick_enemies`).
         """
-        priority = params.ENEMY_TARGET_PRIORITY
+        priority_idx = params.ENEMY_TARGET_PRIORITY_INDEX
+        fallback = len(priority_idx)
         best: Building | None = None
         best_key: tuple[int, int] | None = None
-        for b in world.buildings.buildings:
-            if b.faction != "SURVIVOR":
-                continue
-            tname = b.type.name
-            if tname not in params.ENEMY_BUILDING_BLOCKERS:
-                continue
-            try:
-                pidx = priority.index(tname)
-            except ValueError:
-                pidx = len(priority)
+        for b in blockers:
+            pidx = priority_idx.get(b.type.name, fallback)
             d = origin.distance(b.coord)
             key = (d, pidx)
             if best_key is None or key < best_key:

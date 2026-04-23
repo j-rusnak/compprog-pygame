@@ -123,7 +123,16 @@ class TechTreeOverlay(Panel):
         )
 
         # Compute full graph size
-        nodes = list(TECH_NODES.values())
+        from compprog_pygame.games.hex_colony.settings import Difficulty
+        difficulty = getattr(world.settings, "difficulty", None)
+        # Hide combat-only tech nodes on Isolation (peaceful sandbox).
+        if difficulty == Difficulty.EASY:
+            nodes = [
+                n for n in TECH_NODES.values()
+                if n.key != "defense_basics"
+            ]
+        else:
+            nodes = list(TECH_NODES.values())
         if nodes:
             max_col = max(n.position[0] for n in nodes)
             max_row = max(n.position[1] for n in nodes)

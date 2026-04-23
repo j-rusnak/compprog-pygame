@@ -90,12 +90,7 @@ class AwakeningCutscene:
         """Return True if the event was consumed by the cutscene."""
         if not self.active:
             return False
-        if event.type == pygame.KEYDOWN and event.key in (
-            pygame.K_SPACE, pygame.K_ESCAPE, pygame.K_RETURN,
-        ):
-            self._skip_to_end()
-            return True
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
             self._skip_to_end()
             return True
         return True  # swallow everything else while playing

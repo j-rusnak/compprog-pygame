@@ -183,6 +183,11 @@ class Game:
         # tier. Used by the tutorial system for tier-timed hints.
         self._time_in_current_tier: float = 0.0
         self._drag_button: int = 0  # which mouse button started camera drag
+        # Real-time accumulator for sim updates skipped while the
+        # player was panning the camera.  Folded back into the next
+        # non-pan frame's dt so animation rates stay sensible after
+        # the pan ends. Capped to avoid huge catch-up spikes.
+        self._pan_skipped_dt: float = 0.0
 
         # Tech tree, tier tracker & notifications.  These are now
         # owned by the player's :class:`ColonyState` (so non-player
@@ -313,6 +318,9 @@ class Game:
         # and writes attributed spike records to a JSONL log from a
         # daemon thread.  Disabled by setting HEX_COLONY_PERF=0.
         self.perf = PerfMonitor(fps_target=self.settings.fps)
+        # Let world.update emit fine-grained subsection timings into
+        # the same perf log so spikes can be attributed precisely.
+        self.world.perf = self.perf
         # Background logistics monitor — periodically snapshots
         # per-network supply/demand, hauler tasks and starved
         # buildings to ``hex_colony_logistics.jsonl`` from a daemon
@@ -393,58 +401,90 @@ class Game:
                 self._update_keyboard_pan(dt)
                 self._update_alt_overlay()
                 self._update_ghost_building()
-            with self.perf.section("world_update"):
-                self.world.update(dt * self._sim_speed)
-                self.world.real_time_elapsed += dt
-            # Pending ancient-tech awakening — hand control to the cutscene.
-            if (self._awakening_cutscene is None
-                    and self.world.ancient.pending_awakening is not None):
-                self._start_awakening_cutscene()
-            with self.perf.section("logistics_mon"):
-                self.logistics_mon.maybe_sample(self.world)
-            with self.perf.section("stats_sample"):
-                # Sample stats every frame regardless of whether the
-                # Stats tab is currently visible — the user wants
-                # historical data from t=0, not just from when they
-                # first opened the tab.
-                self._stats_tab.history.sample(self.world)
-            with self.perf.section("research_tier"):
-                # Player research progress
-                completed = self.tech_tree.update(
-                    dt * self._sim_speed, self.world, "SURVIVOR",
+                # While the player is actively panning the camera
+                # (mouse drag or WASD/arrow keys held), pause the
+                # heavy world simulation so the renderer can hit
+                # vsync and the camera tracks the cursor smoothly.
+                # Sim time effectively stops for the brief duration
+                # of the pan — analogous to "looking around" in an
+                # RTS — and resumes the moment the pan ends.  Any
+                # accumulated real time is folded into the next
+                # update so animation rates stay sensible.
+                panning = self._is_panning_active()
+            if panning:
+                # Accumulate skipped real-time so the next non-pan
+                # frame can catch up gracefully (clamped to avoid a
+                # huge step after a long pan session).
+                self._pan_skipped_dt = min(
+                    self._pan_skipped_dt + dt, 0.25,
                 )
-                if completed:
-                    node = TECH_NODES[completed]
-                    self.notifications.push(
-                        NOTIF_RESEARCH_COMPLETE.format(name=node.name), (100, 255, 100),
+                # Notifications still tick so toasts don't freeze.
+                self.notifications.update(dt)
+                self._real_time_elapsed += dt
+            else:
+                catch_up_dt = self._pan_skipped_dt
+                self._pan_skipped_dt = 0.0
+                eff_dt = dt + catch_up_dt
+                with self.perf.section("world_update"):
+                    self.world.update(eff_dt * self._sim_speed)
+                    self.world.real_time_elapsed += eff_dt
+                # Pending ancient-tech awakening — hand control to the cutscene.
+                if (self._awakening_cutscene is None
+                        and self.world.ancient.pending_awakening is not None):
+                    self._start_awakening_cutscene()
+                with self.perf.section("logistics_mon"):
+                    self.logistics_mon.maybe_sample(self.world)
+                with self.perf.section("stats_sample"):
+                    # Sample stats every frame regardless of whether the
+                    # Stats tab is currently visible — the user wants
+                    # historical data from t=0, not just from when they
+                    # first opened the tab.
+                    self._stats_tab.history.sample(self.world)
+                with self.perf.section("research_tier"):
+                    # Player research progress
+                    completed = self.tech_tree.update(
+                        eff_dt * self._sim_speed, self.world, "SURVIVOR",
                     )
-                # Expose research count for tier checks.
-                self.world.player_colony.tech_research_count = self.tech_tree.researched_count
-                # Player tier advancement
-                if self.tier_tracker.try_advance(self.world, "SURVIVOR"):
-                    tier = TIERS[self.tier_tracker.current_tier]
-                    next_tier = (
-                        TIERS[self.tier_tracker.current_tier + 1]
-                        if self.tier_tracker.current_tier + 1 < len(TIERS)
-                        else None
-                    )
-                    self._tier_popup.show(tier, next_tier)
-                    self._time_in_current_tier = 0.0
-                else:
-                    self._time_in_current_tier += dt
-            self.notifications.update(dt)
-            self._real_time_elapsed += dt
-            with self.perf.section("tutorial"):
-                # Tutorial triggers
-                self._tutorial.check_triggers(self.world, {
-                    "time": self.world.time_elapsed,
-                    "real_time": self._real_time_elapsed,
-                    "dt": dt,
-                    "researched_count": self.tech_tree.researched_count,
-                    "current_tier_level": self.tier_tracker.current_tier,
-                    "time_in_tier": self._time_in_current_tier,
-                })
+                    if completed:
+                        node = TECH_NODES[completed]
+                        self.notifications.push(
+                            NOTIF_RESEARCH_COMPLETE.format(name=node.name), (100, 255, 100),
+                        )
+                    # Expose research count for tier checks.
+                    self.world.player_colony.tech_research_count = self.tech_tree.researched_count
+                    # Player tier advancement
+                    if self.tier_tracker.try_advance(self.world, "SURVIVOR"):
+                        tier = TIERS[self.tier_tracker.current_tier]
+                        next_tier = (
+                            TIERS[self.tier_tracker.current_tier + 1]
+                            if self.tier_tracker.current_tier + 1 < len(TIERS)
+                            else None
+                        )
+                        self._tier_popup.show(tier, next_tier)
+                        self._time_in_current_tier = 0.0
+                    else:
+                        self._time_in_current_tier += eff_dt
+                self.notifications.update(eff_dt)
+                self._real_time_elapsed += eff_dt
+                with self.perf.section("tutorial"):
+                    # Tutorial triggers
+                    self._tutorial.check_triggers(self.world, {
+                        "time": self.world.time_elapsed,
+                        "real_time": self._real_time_elapsed,
+                        "dt": eff_dt,
+                        "researched_count": self.tech_tree.researched_count,
+                        "current_tier_level": self.tier_tracker.current_tier,
+                        "time_in_tier": self._time_in_current_tier,
+                    })
         self.camera.update(dt)
+        # Re-sync mouse-drag camera to the latest cursor position
+        # right before render.  MOUSEMOTION events delivered earlier
+        # in this frame may have been generated mid-frame (and any
+        # pending events since then are stuck in the OS queue until
+        # next tick), so the cursor and camera can drift apart by
+        # one frame's worth of motion — visible as drag "lag".
+        if self._drag_button:
+            self.camera.drag(pygame.mouse.get_pos())
         self._resource_bar.delete_mode = self.delete_mode
         self._resource_bar.sim_speed = self._sim_speed
         self._resource_bar.tier_tracker = self.tier_tracker
@@ -459,6 +499,9 @@ class Game:
                 self.renderer.selected_hex, self.renderer._water_tick,
                 self.settings.hex_size,
             )
+        # Keep game-over overlay in sync every frame (not just on events)
+        self._game_over_overlay.active = self.world.game_over
+        self._game_over_overlay.visible = self.world.game_over
         with self.perf.section("ui_draw"):
             self.ui.draw(screen, self.world)
             self.notifications.draw(screen)
@@ -488,6 +531,7 @@ class Game:
         # Let UI consume events first
         # Sync game-over overlay before event dispatch to avoid 1-frame leak
         self._game_over_overlay.active = self.world.game_over
+        self._game_over_overlay.visible = self.world.game_over
         if self.ui.handle_event(event):
             return
 
@@ -599,18 +643,18 @@ class Game:
                 self._drag_button = 0
 
         elif event.type == pygame.MOUSEMOTION:
-            # If the user released the drag button while outside the
-            # window (or over a UI element that swallowed the event),
-            # pygame may never deliver MOUSEBUTTONUP — the camera
-            # would stay glued to the cursor.  Re-poll the actual
-            # button state and stop the drag if it's no longer held.
+            # Camera drag itself is re-synced once per frame after the
+            # event pump (see ``_tick``), so we deliberately skip the
+            # per-event ``camera.drag()`` call here — at high mouse
+            # polling rates Windows generates dozens of MOUSEMOTION
+            # events per frame and re-applying the drag every event
+            # was a measurable contributor to per-frame stutter
+            # without changing visible behaviour.
             if self._drag_button:
                 pressed = pygame.mouse.get_pressed(num_buttons=5)
                 if not pressed[self._drag_button - 1]:
                     self.camera.stop_drag()
                     self._drag_button = 0
-                else:
-                    self.camera.drag(event.pos)
             if self._build_dragging and self.build_mode is not None:
                 if not pygame.mouse.get_pressed(num_buttons=5)[0]:
                     self._build_dragging = False
@@ -661,10 +705,24 @@ class Game:
             dx -= 1
         if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
             dx += 1
+        # Cache whether a pan key is held this frame so
+        # _is_panning_active() doesn't need to re-poll the keyboard.
+        self._key_pan_active = bool(dx or dy)
         if dx or dy:
             speed = self._PAN_SPEED / self.camera.zoom * dt
             self.camera.x += dx * speed
             self.camera.y += dy * speed
+
+    def _is_panning_active(self) -> bool:
+        """True when the player is actively moving the camera.
+
+        While true, the heavy world simulation is paused so the
+        renderer can run at full frame rate and the camera tracks
+        the cursor / keys smoothly.
+        """
+        if self._drag_button:
+            return True
+        return getattr(self, "_key_pan_active", False)
 
     # ── Click actions ────────────────────────────────────────────
 

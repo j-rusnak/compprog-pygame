@@ -71,6 +71,8 @@ class GameOverOverlay(Panel):
 
     def __init__(self) -> None:
         super().__init__()
+        # Panel.visible gates UIManager draw/event dispatch; keep it
+        # in sync with .active (Game flips both when world.game_over).
         self.visible = False
         self.active = False
         self._hovered: int = -1

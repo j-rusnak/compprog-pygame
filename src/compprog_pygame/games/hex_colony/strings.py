@@ -184,6 +184,7 @@ NOTIF_NEW_COLONIST       = "A new colonist was born!"
 NOTIF_UNREACHABLE        = "No workers can reach {name}"
 NOTIF_WAVE_INCOMING      = "Enemy wave incoming!"
 NOTIF_BUILDING_DESTROYED = "{name} destroyed by ancient machines!"
+NOTIF_EMERGENCY_REFUND   = "Emergency relief: a {name} has been added to your build inventory."
 NOTIF_COLONIST_KILLED    = "A colonist was killed by ancient machines"
 NOTIF_DEFENSE_UNLOCKED   = "Defense buildings unlocked — build Turrets and Traps!"
 NOTIF_CAMP_DESTROYED     = "The Ship Wreckage has fallen. The colony is lost."
@@ -201,8 +202,10 @@ MENU_MAP_SIZE_LABEL  = "Map Size"
 MENU_DIFFICULTY_LABEL = "Difficulty"
 MENU_DIFFICULTY_EASY = "Isolation"
 MENU_DIFFICULTY_HARD = "Evolution"
+MENU_DIFFICULTY_DESOLATION = "Desolation"
 MENU_DIFFICULTY_EASY_DESC = "Rebuild humanity's old home"
 MENU_DIFFICULTY_HARD_DESC = "There's something out there..."
+MENU_DIFFICULTY_DESOLATION_DESC = "You will not escape."
 MENU_PLAY_BUTTON     = "Play"
 MENU_HINT            = "Enter seed  \u2022  ENTER or click Play  \u2022  ESC to go back"
 
@@ -793,6 +796,22 @@ TUTORIAL_STEPS: list[dict[str, object]] = [
             "These feed into Automation and Spacefarer tier",
             "goals \u2014 and the Rocket Silo itself now demands",
             "Reinforced Concrete and Robotic Arms.",
+        ],
+    },
+    {
+        "id": "first_raid",
+        "title": "Something Stirred",
+        "lines": [
+            "An ancient machine just struck your colony.",
+            "More waves will follow \u2014 and they grow stronger.",
+            "",
+            "Build defences before the next raid:",
+            "  \u2022 Turret \u2014 auto-fires on nearby enemies.",
+            "  \u2022 Trap \u2014 one-shot AoE; rebuild after use.",
+            "  \u2022 Wall \u2014 funnels enemies onto your turrets.",
+            "",
+            "Research Defense Basics to unlock the Trap, and",
+            "craft Turrets at the Workshop.",
         ],
     },
 ]

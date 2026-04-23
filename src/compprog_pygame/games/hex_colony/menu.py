@@ -25,8 +25,10 @@ from compprog_pygame.games.hex_colony.strings import (
     MENU_DIFFICULTY_LABEL,
     MENU_DIFFICULTY_EASY,
     MENU_DIFFICULTY_HARD,
+    MENU_DIFFICULTY_DESOLATION,
     MENU_DIFFICULTY_EASY_DESC,
     MENU_DIFFICULTY_HARD_DESC,
+    MENU_DIFFICULTY_DESOLATION_DESC,
     MENU_PLAY_BUTTON,
     MENU_HINT,
 )
@@ -172,7 +174,7 @@ class HexColonyMenu:
     # ── Layout helpers ───────────────────────────────────────────
 
     def _card_rect(self) -> pygame.Rect:
-        w = min(560, self.width - 80)
+        w = min(680, self.width - 80)
         h = 460
         x = (self.width - w) // 2
         # No logo above the card any more — center vertically with a
@@ -207,23 +209,26 @@ class HexColonyMenu:
         t = (self.world_radius - MIN_RADIUS) / max(1, MAX_RADIUS - MIN_RADIUS)
         return int(sr.x + t * sr.w)
 
-    def _difficulty_rects(self) -> tuple[pygame.Rect, pygame.Rect]:
-        """Easy / Hard segmented-button rects."""
+    def _difficulty_rects(self) -> tuple[pygame.Rect, pygame.Rect, pygame.Rect]:
+        """Easy / Hard / Desolation segmented-button rects."""
         c = self._card_rect()
         w = c.w - 80
         h = 46
         x = c.x + 40
         y = self._slider_rect().bottom + 60
         gap = 10
-        half = (w - gap) // 2
-        easy = pygame.Rect(x, y, half, h)
-        hard = pygame.Rect(x + half + gap, y, w - half - gap, h)
-        return easy, hard
+        third = (w - 2 * gap) // 3
+        easy = pygame.Rect(x, y, third, h)
+        hard = pygame.Rect(x + third + gap, y, third, h)
+        des = pygame.Rect(
+            x + 2 * (third + gap), y, w - 2 * (third + gap), h,
+        )
+        return easy, hard, des
 
     def _play_rect(self) -> pygame.Rect:
         w, h = 220, 56
         x = (self.width - w) // 2
-        easy_rect, _ = self._difficulty_rects()
+        easy_rect, _, _ = self._difficulty_rects()
         # Sit just below the card so the button visually anchors the form.
         y = easy_rect.bottom + 40
         return pygame.Rect(x, y, w, h)
@@ -321,12 +326,15 @@ class HexColonyMenu:
             return
 
         # Difficulty buttons
-        easy_rect, hard_rect = self._difficulty_rects()
+        easy_rect, hard_rect, des_rect = self._difficulty_rects()
         if easy_rect.collidepoint(pos):
             self.difficulty = Difficulty.EASY
             return
         if hard_rect.collidepoint(pos):
             self.difficulty = Difficulty.HARD
+            return
+        if des_rect.collidepoint(pos):
+            self.difficulty = Difficulty.DESOLATION
             return
 
         if self._play_rect().collidepoint(pos):
@@ -617,13 +625,14 @@ class HexColonyMenu:
         )
 
         # ── Difficulty buttons ──────────────────────────────────
-        easy_rect, hard_rect = self._difficulty_rects()
+        easy_rect, hard_rect, des_rect = self._difficulty_rects()
         diff_label = self.label_font.render(MENU_DIFFICULTY_LABEL.upper(), True, ACCENT)
         surface.blit(diff_label, (easy_rect.x, easy_rect.y - 26))
 
         for rect, diff, label, icon in (
             (easy_rect, Difficulty.EASY, MENU_DIFFICULTY_EASY, "leaf"),
             (hard_rect, Difficulty.HARD, MENU_DIFFICULTY_HARD, "skull"),
+            (des_rect, Difficulty.DESOLATION, MENU_DIFFICULTY_DESOLATION, "flame"),
         ):
             selected = self.difficulty == diff
             hovered = rect.collidepoint(mouse)
@@ -642,19 +651,30 @@ class HexColonyMenu:
             if selected:
                 pygame.draw.circle(surface, ACCENT_BRIGHT, (rect.x + 16, rect.centery), 5)
                 pygame.draw.circle(surface, (30, 50, 90), (rect.x + 16, rect.centery), 5, 1)
-            # Icon
-            _draw_diff_icon(surface, (rect.right - 22, rect.centery), icon,
+            # Icon (right-aligned)
+            icon_cx = rect.right - 22
+            _draw_diff_icon(surface, (icon_cx, rect.centery), icon,
                             color=ACCENT_BRIGHT if selected else MUTED_TEXT)
+            # Label centered in the zone between the selection dot
+            # and the icon so they never overlap when buttons are
+            # narrow (e.g. the 3-column difficulty row).
             txt = self.input_font.render(label, True, BUTTON_TEXT)
-            surface.blit(txt, (rect.x + (rect.w - txt.get_width()) // 2,
-                               rect.y + (rect.h - txt.get_height()) // 2))
+            text_left = rect.x + 28
+            text_right = icon_cx - 12
+            text_zone_w = max(1, text_right - text_left)
+            surface.blit(
+                txt,
+                (text_left + (text_zone_w - txt.get_width()) // 2,
+                 rect.y + (rect.h - txt.get_height()) // 2),
+            )
 
         # Difficulty description below the buttons
-        diff_desc = (
-            MENU_DIFFICULTY_EASY_DESC
-            if self.difficulty == Difficulty.EASY
-            else MENU_DIFFICULTY_HARD_DESC
-        )
+        if self.difficulty == Difficulty.EASY:
+            diff_desc = MENU_DIFFICULTY_EASY_DESC
+        elif self.difficulty == Difficulty.HARD:
+            diff_desc = MENU_DIFFICULTY_HARD_DESC
+        else:
+            diff_desc = MENU_DIFFICULTY_DESOLATION_DESC
         desc_surf = self.hint_font.render(diff_desc, True, MUTED_TEXT)
         card = self._card_rect()
         surface.blit(
@@ -814,3 +834,16 @@ def _draw_diff_icon(
         pygame.draw.circle(surface, color, (cx - 3, cy - 1), 1)
         pygame.draw.circle(surface, color, (cx + 3, cy - 1), 1)
         pygame.draw.line(surface, color, (cx - 3, cy + 5), (cx + 3, cy + 5), 2)
+    elif kind == "flame":
+        # Stylised flame: outer teardrop + inner highlight
+        outer = [
+            (cx, cy - 9),
+            (cx + 6, cy - 1),
+            (cx + 5, cy + 5),
+            (cx, cy + 8),
+            (cx - 5, cy + 5),
+            (cx - 6, cy - 1),
+            (cx - 2, cy - 4),
+        ]
+        pygame.draw.polygon(surface, color, outer, 2)
+        pygame.draw.line(surface, color, (cx, cy + 4), (cx, cy - 2), 2)

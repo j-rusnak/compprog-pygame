@@ -31,8 +31,12 @@ _BLEND_STRENGTH = 0.45
 # Bank colour tinted toward water-adjacent tiles
 _BANK_COLOR = (148, 138, 105)  # sandy/muddy
 
-# Tile-layer cache padding multiplier
-_TILE_LAYER_PAD = 2.0
+# Tile-layer cache padding multiplier.  Larger pad = the cached tile
+# layer covers more world around the screen so quick pans/zooms can
+# reuse the cache without triggering a full O(N) rebuild.  2.5 keeps
+# the cache surface at ~6.25x screen-area which is still well within
+# VRAM budgets while smoothing out short pan bursts.
+_TILE_LAYER_PAD = 2.5
 _SQRT3 = 1.7320508075688772
 
 # Intra-tile gradient: how much edge sub-triangles blend toward the neighbor

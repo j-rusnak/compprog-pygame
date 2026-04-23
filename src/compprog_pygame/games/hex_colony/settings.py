@@ -12,6 +12,7 @@ class Difficulty(Enum):
     """Per-run difficulty selection (chosen on the menu screen)."""
     EASY = "easy"   # peaceful sandbox — no enemies
     HARD = "hard"   # reserved for future enemies; currently same as EASY
+    DESOLATION = "desolation"  # extreme: gimped economy, deadlier enemies
 
 
 @dataclass(frozen=True, slots=True)

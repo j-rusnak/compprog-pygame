@@ -233,6 +233,13 @@ class World:
         # Optional NotificationManager plugged in by game.py for
         # one-time toasts like "No workers can reach X".
         self.notifications: object | None = None
+        # Optional PerfMonitor plugged in by game.py so the per-
+        # frame ``world.update`` pass can report finer-grained
+        # subsection timings into the existing perf log without
+        # threading the monitor through every helper signature.
+        # Defaults to a no-op stub so unit tests / headless callers
+        # don't need to wire it up.
+        self.perf: object | None = None
         # Tiles whose terrain just changed because their resource ran
         # out.  The renderer drains this set each frame to clear the
         # static overlay sprites (trees, stones, ore crystals) on top
@@ -482,6 +489,24 @@ class World:
     def update(self, dt: float) -> None:
         """Advance the simulation by *dt* seconds."""
         self.time_elapsed += dt
+        # Cheap perf-section helper: routes into the optional perf
+        # monitor when one is attached, otherwise a no-op contextmgr.
+        from contextlib import nullcontext
+        perf = self.perf
+        if perf is not None:
+            _section = perf.section  # type: ignore[attr-defined]
+        else:
+            def _section(_name: str) -> object:  # type: ignore[misc]
+                return nullcontext()
+
+        # Offline-trained perf auto-tuner: reclassifies the world
+        # every couple of seconds and applies the matching profile
+        # (knob nudges in :mod:`params`).  Pure dict lookup at
+        # runtime — no ML, no allocations on the hot path.
+        from compprog_pygame.games.hex_colony import perf_autotune
+        with _section("w.autotune"):
+            perf_autotune.maybe_retune(self, dt)
+
         # Clear the per-update BFS path cache.  Building topology
         # cannot change mid-update, so any path computed during this
         # tick can be safely shared between callers.
@@ -489,7 +514,8 @@ class World:
 
         # Recompute connected housing only when buildings/population changed
         if self._housing_dirty:
-            self._update_housing()
+            with _section("w.housing"):
+                self._update_housing()
             self._housing_dirty = False
 
         # Networks track the building-graph topology.  Only rebuild
@@ -497,13 +523,15 @@ class World:
         # full BFS+merge pass is expensive once there are many
         # buildings.
         if self._networks_dirty:
-            self._rebuild_networks()
-            self._rebuild_fluid_networks()
+            with _section("w.networks"):
+                self._rebuild_networks()
+                self._rebuild_fluid_networks()
             self._networks_dirty = False
         # ``_populated_net_ids`` depends on people's home assignments
         # (which can shift between rebuilds), so refresh it every
         # frame — this is a cheap O(people) pass.
-        self._refresh_populated_net_ids()
+        with _section("w.pop_nets"):
+            self._refresh_populated_net_ids()
 
         # ``_assign_workers`` is the heaviest per-frame pass.  Run it
         # only when something changed (housing rebuild, network
@@ -512,45 +540,69 @@ class World:
         # stockpile shifts.
         self._workers_refresh_accum += dt
         if self._workers_dirty or self._workers_refresh_accum >= 0.5:
-            self._assign_workers()
-            self._dispatch_commuters()
+            with _section("w.workers"):
+                self._assign_workers()
+                self._dispatch_commuters()
             self._workers_dirty = False
             self._workers_refresh_accum = 0.0
 
         # Farm & Refinery production
-        self._update_production(dt)
+        with _section("w.production"):
+            self._update_production(dt)
 
         # Workshop crafting
-        self._update_workshops(dt)
+        with _section("w.workshops"):
+            self._update_workshops(dt)
 
         # Fluid balancing through pipe networks (oil/petroleum/etc.).
-        self._update_fluids(dt)
+        with _section("w.fluids"):
+            self._update_fluids(dt)
 
         # Logistics dispatch (runs before population.update so newly
         # assigned paths are walked this same frame).
-        self._update_logistics(dt)
+        with _section("w.logistics"):
+            self._update_logistics(dt)
 
         # Move people
-        self.population.update(dt, self, self.settings.hex_size)
+        with _section("w.people"):
+            self.population.update(dt, self, self.settings.hex_size)
 
         # Natural population growth from well-fed, spacious dwellings.
-        self._update_population_growth(dt)
+        with _section("w.popgrow"):
+            self._update_population_growth(dt)
 
         # Finally, recount present workers (must be AFTER movement so
         # newly-arrived commuters are credited this frame).
-        self._recount_present_workers()
+        with _section("w.recount"):
+            self._recount_present_workers()
         # Unreachable / starved checks only need to run at human-
         # noticeable rates (~2 Hz).  The cached id-sets are reused by
-        # the renderer every frame.
+        # the renderer every frame.  The exact cadence is auto-tuned
+        # via params.UNREACHABLE_RECHECK_INTERVAL (offline ML loop).
         self._unreachable_accum += dt
-        if self._unreachable_accum >= 0.5:
+        recheck_interval = float(
+            getattr(params, "UNREACHABLE_RECHECK_INTERVAL", 0.5)
+        )
+        if self._unreachable_accum >= recheck_interval:
             self._unreachable_accum = 0.0
-            self._refresh_unreachable_caches()
+            with _section("w.unreachable"):
+                self._refresh_unreachable_caches()
 
-        # Ancient-tech threat: cheap escalation check.
-        self.ancient.tick(self)
-        # Combat: enemies, projectiles, defensive weapons.
-        self.combat.tick(self, dt)
+        # Ancient-tech threat: cheap escalation check.  Skipped on
+        # Isolation (peaceful sandbox — no awakenings, no enemies).
+        is_peaceful = (
+            getattr(self.settings, "difficulty", None) == Difficulty.EASY
+        )
+        if not is_peaceful:
+            with _section("w.ancient"):
+                self.ancient.tick(self)
+        # Combat: enemies, projectiles, defensive weapons.  Always
+        # ticked so god-mode-spawned enemies move on peaceful too;
+        # automatic wave spawning stays gated behind the ancient
+        # tick (which is the only thing that schedules waves).
+        if not is_peaceful or self.combat.enemies or self.combat.projectiles:
+            with _section("w.combat"):
+                self.combat.tick(self, dt)
         # Track high-water population for the end-of-game summary.
         pop = self.player_population_count
         if pop > self.peak_population:
@@ -1500,6 +1552,15 @@ class World:
                 cost = BUILDING_COSTS.get(b.recipe)
                 if cost is not None:
                     reserved.update(cost.costs.keys())
+        # Mining machines actively need their fuel resources to keep
+        # producing ore.  Without this reservation, once a mining
+        # machine's fuel buffer fills up, ``_building_demand`` stops
+        # asking for more fuel — and then the same fuel sitting in
+        # storage gets re-classified as supply and hauled back out,
+        # starving the machine the moment it burns through its buffer.
+        if b.type == BuildingType.MINING_MACHINE:
+            for fuel_name in params.MINING_MACHINE_FUELS:
+                reserved.add(Resource[fuel_name])
         # Research Centers reserve every resource the currently
         # active tech still needs.  Without this, once the RC's
         # storage exceeds the per-resource demand cap (2x remaining)
@@ -2094,7 +2155,15 @@ class World:
         for cand in net.buildings:
             if cand is p.logistics_src or cand is dst:
                 continue
-            avail = float(cand.storage.get(res, 0.0))
+            # Only consider resources the candidate is *willing* to
+            # supply.  ``_building_supply`` already excludes recipe
+            # inputs of crafting stations, mining-machine fuels, and
+            # outstanding research-center costs — without this check
+            # a chained pickup would happily strip a workshop's own
+            # ingredients out from under it on the way to another
+            # destination.
+            offered = self._building_supply(cand)
+            avail = float(offered.get(res, 0.0))
             if avail <= 1e-3:
                 continue
             d_to_cand = self._hex_distance(p.hex_pos, cand.coord)
@@ -2236,8 +2305,14 @@ class World:
         person is assigned this dwelling as their home (housing will
         rebalance on the next dirty flag)."""
         birth_interval = params.POPULATION_REPRO_INTERVAL
-        food_cost = params.POPULATION_FOOD_PER_BIRTH
-        food_min = params.POPULATION_MIN_FOOD_TO_BIRTH
+        from compprog_pygame.games.hex_colony.settings import Difficulty
+        if (getattr(self.settings, "difficulty", None)
+                == Difficulty.DESOLATION):
+            food_cost = params.DESOLATION_BIRTH_FOOD
+            food_min = params.DESOLATION_BIRTH_FOOD
+        else:
+            food_cost = params.POPULATION_FOOD_PER_BIRTH
+            food_min = params.POPULATION_MIN_FOOD_TO_BIRTH
         spawned_any = False
         for b in self.buildings.buildings:
             if b.housing_capacity <= 0:
@@ -3142,30 +3217,36 @@ class World:
         """Per-frame resource production.  All outputs go into the
         building's own ``storage`` (halting when full)."""
         s = self.settings
+        from compprog_pygame.games.hex_colony.settings import Difficulty
+        is_desolation = (
+            getattr(s, "difficulty", None) == Difficulty.DESOLATION
+        )
+        gm = params.DESOLATION_GATHER_RATE_MULT if is_desolation else 1.0
+        farm_m = params.DESOLATION_FARM_FOOD_MULT if is_desolation else 1.0
         # Woodcutter
         for b in self.buildings.by_type(BuildingType.WOODCUTTER):
             self._harvest_from_terrain(
-                b, {Resource.WOOD}, s.gather_wood, dt,
+                b, {Resource.WOOD}, s.gather_wood * gm, dt,
             )
         # Quarry: mines stone by default, or iron/copper ore if selected.
         for b in self.buildings.by_type(BuildingType.QUARRY):
             if b.quarry_output is None:
                 self._harvest_from_terrain(
-                    b, {Resource.STONE}, s.gather_stone, dt,
+                    b, {Resource.STONE}, s.gather_stone * gm, dt,
                 )
             else:
                 self._harvest_from_terrain(
-                    b, {b.quarry_output}, params.QUARRY_ORE_RATE, dt,
+                    b, {b.quarry_output}, params.QUARRY_ORE_RATE * gm, dt,
                 )
         # Gatherer: produce only the user-selected resource (default food)
         for b in self.buildings.by_type(BuildingType.GATHERER):
             if b.gatherer_output == Resource.FIBER:
                 self._harvest_from_terrain(
-                    b, {Resource.FIBER}, s.gather_fiber, dt,
+                    b, {Resource.FIBER}, s.gather_fiber * gm, dt,
                 )
             else:
                 self._harvest_from_terrain(
-                    b, {Resource.FOOD}, s.gather_food, dt,
+                    b, {Resource.FOOD}, s.gather_food * gm, dt,
                 )
 
         # Pre-compute well locations for farm bonus
@@ -3185,7 +3266,7 @@ class World:
                 if nb in well_coords:
                     bonus += params.WELL_FARM_BONUS
                     break
-            amount = params.FARM_FOOD_RATE * farm.workers * bonus * dt
+            amount = params.FARM_FOOD_RATE * farm.workers * bonus * farm_m * dt
             self._produce(farm, Resource.FOOD, amount)
             farm.active = True
 
