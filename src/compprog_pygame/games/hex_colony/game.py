@@ -11,19 +11,22 @@ from compprog_pygame.games.hex_colony.buildings import (
 )
 from compprog_pygame.games.hex_colony.camera import Camera
 from compprog_pygame.games.hex_colony.people import Task
-from compprog_pygame.games.hex_colony.hex_grid import pixel_to_hex, Terrain
+from compprog_pygame.games.hex_colony.hex_grid import pixel_to_hex, Terrain, HexCoord
 from compprog_pygame.games.hex_colony.renderer import Renderer
 from compprog_pygame.games.hex_colony.settings import HexColonySettings
 from compprog_pygame.games.hex_colony.ui import UIManager
 from compprog_pygame.games.hex_colony.ui_bottom_bar import BottomBar
 from compprog_pygame.games.hex_colony.ui_building_info import BuildingInfoPanel
 from compprog_pygame.games.hex_colony.ui_game_over import GameOverOverlay
-from compprog_pygame.games.hex_colony.ui_help import HelpOverlay
+from compprog_pygame.games.hex_colony.ui_help_overlay import HelpOverlay
 from compprog_pygame.games.hex_colony.ui_pause_menu import PauseOverlay
 from compprog_pygame.games.hex_colony.ui_resource_bar import ResourceBar
 from compprog_pygame.games.hex_colony.ui_tile_info import TileInfoPanel
 from compprog_pygame.games.hex_colony.world import World
 from compprog_pygame.games.hex_colony.notifications import NotificationManager
+from compprog_pygame.games.hex_colony.awakening_cutscene import AwakeningCutscene
+from compprog_pygame.games.hex_colony.rocket_launch_cutscene import RocketLaunchCutscene
+from compprog_pygame.games.hex_colony.settings import Difficulty
 from compprog_pygame.games.hex_colony.tech_tree import (
     TechTree, TierTracker, TECH_REQUIREMENTS, TECH_NODES,
     TIERS, TIER_BUILDING_REQUIREMENTS,
@@ -48,23 +51,26 @@ from compprog_pygame.games.hex_colony.ui_supply_priority import (
     SupplyPriorityTabContent,
 )
 from compprog_pygame.games.hex_colony.ui_tier_popup import TierPopup
-from compprog_pygame.games.hex_colony.ui_info_guide import InfoGuideOverlay
 from compprog_pygame.games.hex_colony.ui_tutorial import TutorialPanel
 from compprog_pygame.games.hex_colony import params
+from compprog_pygame.games.hex_colony.perf_monitor import PerfMonitor
+from compprog_pygame.games.hex_colony.logistics_monitor import LogisticsMonitor
 from compprog_pygame.games.hex_colony.strings import (
     building_label,
     NOTIF_RESEARCH_COMPLETE,
     NOTIF_GOD_MODE_ON,
     NOTIF_GOD_MODE_OFF,
+    NOTIF_GOD_SPAWN_ON,
+    NOTIF_GOD_SPAWN_OFF,
     NOTIF_REQUIRES_RESEARCH,
     NOTIF_REQUIRES_TIER,
     NOTIF_BUILT,
     NOTIF_BUILT_PATH,
+    NOTIF_AWAKENING_TRIGGERED,
     TAB_WORKERS,
     TAB_DEMAND,
     TAB_SUPPLY,
     TAB_STATS,
-    TAB_INFO,
 )
 
 # Build-mode palette order
@@ -90,7 +96,42 @@ BUILDABLE = [
     BuildingType.ROCKET_SILO,
     BuildingType.OIL_DRILL,
     BuildingType.OIL_REFINERY,
+    BuildingType.PIPE,
+    BuildingType.FLUID_TANK,
+    BuildingType.TURRET,
+    BuildingType.TRAP,
 ]
+
+
+def _hex_line(a: HexCoord, b: HexCoord) -> list[HexCoord]:
+    """Return a contiguous straight-ish hex chain from ``a`` to ``b``
+    (inclusive of both endpoints) using cube-coordinate interpolation.
+    """
+    n = a.distance(b)
+    if n == 0:
+        return [a]
+    out: list[HexCoord] = []
+    # Convert axial -> cube.
+    ax, az = a.q, a.r
+    ay = -ax - az
+    bx, bz = b.q, b.r
+    by = -bx - bz
+    for i in range(n + 1):
+        t = i / n
+        x = ax + (bx - ax) * t
+        y = ay + (by - ay) * t
+        z = az + (bz - az) * t
+        # cube round
+        rx, ry, rz = round(x), round(y), round(z)
+        dx, dy, dz = abs(rx - x), abs(ry - y), abs(rz - z)
+        if dx > dy and dx > dz:
+            rx = -ry - rz
+        elif dy > dz:
+            ry = -rx - rz
+        else:
+            rz = -rx - ry
+        out.append(HexCoord(rx, rz))
+    return out
 
 
 class Game:
@@ -120,6 +161,14 @@ class Game:
         # God mode: bypass tech/tier/inventory gates and reveal all
         # locked content in the UI.  Toggle at runtime with F1.
         self.god_mode: bool = self.settings.god_mode
+        # Mirror to the world so simulation code (crafting recipes,
+        # etc.) can grant cheats too.
+        self.world.god_mode = self.god_mode
+        # God-mode-only tool: when set to a key in
+        # ``params.ENEMY_TYPE_DATA``, left-clicking the world spawns
+        # one enemy of that type at the clicked hex.  F2 cycles
+        # through enemy types; right-click cancels.
+        self._spawn_enemy_mode: str | None = None
         self._build_dragging = False
         self._delete_dragging = False
         # Anchor for path chain placement: after first PATH click, the
@@ -132,16 +181,25 @@ class Game:
         self._path_preview_cache_key: tuple | None = None
         self._path_preview_cache_route: list = []
         self._hint_font = pygame.font.Font(None, 26)
-        self._sim_speed: float = 3.0  # 1x (=3), 2x (=6), 3x (=9)
+        self._sim_speed: float = 3.0  # 1x (=3), 2x (=6), 3x (=9), 10x (=30)
         self._real_time_elapsed: float = 0.0
         # Real-time seconds since the player most recently advanced a
         # tier. Used by the tutorial system for tier-timed hints.
         self._time_in_current_tier: float = 0.0
         self._drag_button: int = 0  # which mouse button started camera drag
+        # Real-time accumulator for sim updates skipped while the
+        # player was panning the camera.  Folded back into the next
+        # non-pan frame's dt so animation rates stay sensible after
+        # the pan ends. Capped to avoid huge catch-up spikes.
+        self._pan_skipped_dt: float = 0.0
 
-        # Tech tree, tier tracker & notifications
-        self.tech_tree = TechTree()
-        self.tier_tracker = TierTracker()
+        # Tech tree, tier tracker & notifications.  These are now
+        # owned by the player's :class:`ColonyState` (so non-player
+        # have their own independent copies); ``Game`` just keeps
+        # references for the UI panels that haven't been refactored
+        # to look them up via the world.
+        self.tech_tree = self.world.player_colony.tech_tree
+        self.tier_tracker = self.world.player_colony.tier_tracker
         self.notifications = NotificationManager()
         self.world.notifications = self.notifications
         self.blueprints = BlueprintManager()
@@ -162,7 +220,6 @@ class Game:
         self._demand_priority_overlay = DemandPriorityOverlay()
         self._supply_priority_overlay = SupplyPriorityOverlay()
         self._tier_popup = TierPopup()
-        self._info_guide = InfoGuideOverlay()
         self._tutorial = TutorialPanel()
         self.ui.add_panel(self._resource_bar)
         self.ui.add_panel(self._bottom_bar)
@@ -176,7 +233,6 @@ class Game:
         self.ui.add_panel(self._demand_priority_overlay)
         self.ui.add_panel(self._supply_priority_overlay)
         self.ui.add_panel(self._tier_popup)
-        self.ui.add_panel(self._info_guide)
         self.ui.add_panel(self._tutorial)
         self.ui.add_panel(self._pause_overlay)
         self.ui.add_panel(self._game_over_overlay)
@@ -185,6 +241,7 @@ class Game:
         self._worker_priority_tab = WorkerPriorityTabContent()
         self._worker_priority_tab.on_open_edit = self._on_open_worker_priority
         self._worker_priority_tab.on_toggle_auto = self._on_toggle_worker_auto
+        self._worker_priority_overlay.on_toggle_auto = self._on_toggle_worker_auto
         self._bottom_bar.add_tab(TAB_WORKERS, self._worker_priority_tab)
 
         # Demand-priority tab (opens its own drag-and-drop overlay).
@@ -203,9 +260,8 @@ class Game:
         self._stats_tab = StatsTabContent()
         self._bottom_bar.add_tab(TAB_STATS, self._stats_tab)
 
-        # Info tab goes last.
-        from compprog_pygame.games.hex_colony.ui_bottom_bar import InfoTabContent
-        self._bottom_bar.add_tab(TAB_INFO, InfoTabContent())
+        # Info tab retired; the top-right Help button now exposes a
+        # richer, tier-aware guide via ``HelpOverlay``.
 
         # Wire building tab -> build mode
         buildings_tab = self._bottom_bar.buildings_tab
@@ -232,6 +288,12 @@ class Game:
         self._advanced_stats_overlay.tier_tracker = self.tier_tracker
         self._advanced_stats_overlay.god_mode_getter = lambda: self.god_mode
 
+        # Help overlay: dynamic tier/tech-aware guide reached via the
+        # top-right Help button (or H / I keys).
+        self._help_overlay.set_state(self.tech_tree, self.tier_tracker)
+        self._resource_bar.set_on_help(self._help_overlay.toggle)
+        self._resource_bar.set_on_research(self._on_open_tech_tree)
+
         # Wire pause overlay callbacks
         self._pause_overlay.on_resume = self._on_pause_resume
         self._pause_overlay.on_return_to_menu = self._on_pause_return_to_menu
@@ -247,17 +309,47 @@ class Game:
         self._tech_tree_overlay.on_close = self._on_close_tech_tree
         self._tech_tree_overlay.tech_tree = self.tech_tree
 
-        # Let the world reach the tech tree (used by Research Center
-        # demand / supply logistics).
-        self.world.tech_tree = self.tech_tree
+        # ``world.tech_tree`` is now a property pointing at the
+        # player's colony; no assignment needed.
 
         # Wire game-over overlay callbacks
         self._game_over_overlay.on_return_to_menu = self._on_pause_return_to_menu
         self._game_over_overlay.on_quit = self._on_pause_quit
+        self._game_over_overlay.tier_tracker = self.tier_tracker
+        self._game_over_overlay.tech_tree = self.tech_tree
+
+        # Background performance monitor — instruments _tick phases
+        # and writes attributed spike records to a JSONL log from a
+        # daemon thread.  Disabled by setting HEX_COLONY_PERF=0.
+        self.perf = PerfMonitor(fps_target=self.settings.fps)
+        # Let world.update emit fine-grained subsection timings into
+        # the same perf log so spikes can be attributed precisely.
+        self.world.perf = self.perf
+        # Background logistics monitor — periodically snapshots
+        # per-network supply/demand, hauler tasks and starved
+        # buildings to ``hex_colony_logistics.jsonl`` from a daemon
+        # thread.  Disabled by setting HEX_COLONY_LOGISTICS=0.
+        self.logistics_mon = LogisticsMonitor()
+
+        # Active mid-game cutscene (currently only the ancient-tech
+        # awakening).  When set, the world simulation is paused and
+        # the cutscene drives the camera + tower-rise animation.
+        self._awakening_cutscene: AwakeningCutscene | None = None
+        # End-game cutscene triggered when a rocket silo fills with
+        # fuel.  Runs once, then flips ``world.game_won`` so the
+        # game-over overlay shows the victory screen.
+        self._rocket_launch_cutscene = None
+        self._rocket_launch_done: bool = False
 
     # ── Public entry point ───────────────────────────────────────
 
     def run(self, screen: pygame.Surface, clock: pygame.time.Clock) -> None:
+        # Switch from the cutscene/menu track to the gameplay track.
+        # Local import avoids a hard dependency from this heavyweight
+        # module on the audio framework.
+        from compprog_pygame.audio import music
+        music.play("gameplay")
+
         w, h = screen.get_size()
         self.camera = Camera(w, h)
         self._minimap.camera = self.camera
@@ -279,18 +371,27 @@ class Game:
         gc.freeze()
         gc.disable()
         gc_accum = 0.0
+        self.perf.start()
+        self.logistics_mon.start()
         try:
             while self.running:
                 dt = clock.tick(self.settings.fps) / 1000.0
                 dt = min(dt, 0.05)  # clamp large spikes
+                # Begin perf frame *after* clock.tick so the vsync /
+                # frame-cap wait isn't counted as a spike.
+                self.perf.frame_begin()
                 gc_accum += dt
                 if gc_accum >= 1.0:
                     # Cheap young-generation pass; older generations
                     # were frozen above so this stays tiny.
-                    gc.collect(0)
+                    with self.perf.section("gc"):
+                        gc.collect(0)
                     gc_accum = 0.0
                 self._tick(screen, clock, dt)
+                self.perf.frame_end()
         finally:
+            self.perf.stop()
+            self.logistics_mon.stop()
             gc.unfreeze()
             gc.set_threshold(*prev_gc_thresholds)
             if prev_gc_enabled:
@@ -301,69 +402,148 @@ class Game:
     ) -> None:
         assert self.camera is not None
 
-        for event in pygame.event.get():
-            self._handle_event(event)
+        # Advance the gameplay music playlist when the current track
+        # finishes.  Cheap no-op when no playlist is active.
+        from compprog_pygame.audio import music
+        music.tick()
 
-        if not self._pause_overlay.visible and not self.world.game_over:
-            self._update_keyboard_pan(dt)
-            self._update_alt_overlay()
-            self._update_ghost_building()
-            self.world.update(dt * self._sim_speed)
-            self.world.real_time_elapsed += dt
-            # Sample stats every frame regardless of whether the
-            # Stats tab is currently visible — the user wants
-            # historical data from t=0, not just from when they
-            # first opened the tab.
-            self._stats_tab.history.sample(self.world)
-            # Research progress
-            completed = self.tech_tree.update(dt * self._sim_speed, self.world)
-            if completed:
-                node = TECH_NODES[completed]
-                self.notifications.push(
-                    NOTIF_RESEARCH_COMPLETE.format(name=node.name), (100, 255, 100),
+        with self.perf.section("events"):
+            for event in pygame.event.get():
+                self._handle_event(event)
+
+        # Mid-game cutscene takes precedence over world updates.
+        if self._awakening_cutscene is not None and self._awakening_cutscene.active:
+            self._awakening_cutscene.tick(dt)
+            if not self._awakening_cutscene.active:
+                self._awakening_cutscene = None
+        elif self._rocket_launch_cutscene is not None and self._rocket_launch_cutscene.active:
+            self._rocket_launch_cutscene.tick(dt)
+            if not self._rocket_launch_cutscene.active:
+                # Clear reference; game_won flag was set in on_finish.
+                self._rocket_launch_cutscene = None
+        elif not self._pause_overlay.visible and not self.world.game_over:
+            with self.perf.section("input_camera"):
+                self._update_keyboard_pan(dt)
+                self._update_alt_overlay()
+                self._update_ghost_building()
+                # While the player is actively panning the camera
+                # (mouse drag or WASD/arrow keys held), pause the
+                # heavy world simulation so the renderer can hit
+                # vsync and the camera tracks the cursor smoothly.
+                # Sim time effectively stops for the brief duration
+                # of the pan — analogous to "looking around" in an
+                # RTS — and resumes the moment the pan ends.  Any
+                # accumulated real time is folded into the next
+                # update so animation rates stay sensible.
+                panning = self._is_panning_active()
+            if panning:
+                # Accumulate skipped real-time so the next non-pan
+                # frame can catch up gracefully (clamped to avoid a
+                # huge step after a long pan session).
+                self._pan_skipped_dt = min(
+                    self._pan_skipped_dt + dt, 0.25,
                 )
-            # Expose research count for tier checks
-            self.world._tech_research_count = self.tech_tree.researched_count
-            # Tier advancement
-            if self.tier_tracker.try_advance(self.world):
-                tier = TIERS[self.tier_tracker.current_tier]
-                next_tier = (
-                    TIERS[self.tier_tracker.current_tier + 1]
-                    if self.tier_tracker.current_tier + 1 < len(TIERS)
-                    else None
-                )
-                self._tier_popup.show(tier, next_tier)
-                self._time_in_current_tier = 0.0
+                # Notifications still tick so toasts don't freeze.
+                self.notifications.update(dt)
+                self._real_time_elapsed += dt
             else:
-                self._time_in_current_tier += dt
-            self.notifications.update(dt)
-            self._real_time_elapsed += dt
-            # Tutorial triggers
-            self._tutorial.check_triggers(self.world, {
-                "time": self.world.time_elapsed,
-                "real_time": self._real_time_elapsed,
-                "dt": dt,
-                "researched_count": self.tech_tree.researched_count,
-                "current_tier_level": self.tier_tracker.current_tier,
-                "time_in_tier": self._time_in_current_tier,
-            })
+                catch_up_dt = self._pan_skipped_dt
+                self._pan_skipped_dt = 0.0
+                eff_dt = dt + catch_up_dt
+                with self.perf.section("world_update"):
+                    self.world.update(eff_dt * self._sim_speed)
+                    self.world.real_time_elapsed += eff_dt
+                # Pending ancient-tech awakening — hand control to the cutscene.
+                if (self._awakening_cutscene is None
+                        and self.world.ancient.pending_awakening is not None):
+                    self._start_awakening_cutscene()
+                # Rocket silo filled with fuel — trigger the win cutscene.
+                if (self._rocket_launch_cutscene is None
+                        and not self._rocket_launch_done
+                        and not self.world.game_won):
+                    self._maybe_start_rocket_launch()
+                with self.perf.section("logistics_mon"):
+                    self.logistics_mon.maybe_sample(self.world)
+                with self.perf.section("stats_sample"):
+                    # Sample stats every frame regardless of whether the
+                    # Stats tab is currently visible — the user wants
+                    # historical data from t=0, not just from when they
+                    # first opened the tab.
+                    self._stats_tab.history.sample(self.world)
+                with self.perf.section("research_tier"):
+                    # Player research progress
+                    completed = self.tech_tree.update(
+                        eff_dt * self._sim_speed, self.world, "SURVIVOR",
+                    )
+                    if completed:
+                        node = TECH_NODES[completed]
+                        self.notifications.push(
+                            NOTIF_RESEARCH_COMPLETE.format(name=node.name), (100, 255, 100),
+                        )
+                    # Expose research count for tier checks.
+                    self.world.player_colony.tech_research_count = self.tech_tree.researched_count
+                    # Player tier advancement
+                    if self.tier_tracker.try_advance(self.world, "SURVIVOR"):
+                        tier = TIERS[self.tier_tracker.current_tier]
+                        next_tier = (
+                            TIERS[self.tier_tracker.current_tier + 1]
+                            if self.tier_tracker.current_tier + 1 < len(TIERS)
+                            else None
+                        )
+                        self._tier_popup.show(tier, next_tier)
+                        self._time_in_current_tier = 0.0
+                    else:
+                        self._time_in_current_tier += eff_dt
+                self.notifications.update(eff_dt)
+                self._real_time_elapsed += eff_dt
+                with self.perf.section("tutorial"):
+                    # Tutorial triggers
+                    self._tutorial.check_triggers(self.world, {
+                        "time": self.world.time_elapsed,
+                        "real_time": self._real_time_elapsed,
+                        "dt": eff_dt,
+                        "researched_count": self.tech_tree.researched_count,
+                        "current_tier_level": self.tier_tracker.current_tier,
+                        "time_in_tier": self._time_in_current_tier,
+                    })
         self.camera.update(dt)
+        # Re-sync mouse-drag camera to the latest cursor position
+        # right before render.  MOUSEMOTION events delivered earlier
+        # in this frame may have been generated mid-frame (and any
+        # pending events since then are stuck in the OS queue until
+        # next tick), so the cursor and camera can drift apart by
+        # one frame's worth of motion — visible as drag "lag".
+        if self._drag_button:
+            self.camera.drag(pygame.mouse.get_pos())
         self._resource_bar.delete_mode = self.delete_mode
         self._resource_bar.sim_speed = self._sim_speed
         self._resource_bar.tier_tracker = self.tier_tracker
         self._resource_bar.tech_tree = self.tech_tree
         self._resource_bar.world = self.world
-        self.renderer.draw(screen, self.world, self.camera, dt=dt)
-        # Supply chain lines for selected building
-        draw_supply_lines(
-            screen, self.world, self.camera,
-            self.renderer.selected_hex, self.renderer._water_tick,
-            self.settings.hex_size,
-        )
-        self.ui.draw(screen, self.world)
-        self.notifications.draw(screen)
+        with self.perf.section("render_world"):
+            self.renderer.draw(screen, self.world, self.camera, dt=dt)
+        with self.perf.section("supply_lines"):
+            # Supply chain lines for selected building
+            draw_supply_lines(
+                screen, self.world, self.camera,
+                self.renderer.selected_hex, self.renderer._water_tick,
+                self.settings.hex_size,
+            )
+        # Keep game-over overlay in sync every frame (not just on events)
+        self._game_over_overlay.active = self.world.game_over
+        self._game_over_overlay.visible = self.world.game_over
+        with self.perf.section("ui_draw"):
+            self.ui.draw(screen, self.world)
+            self.notifications.draw(screen)
+            if self.god_mode and self._spawn_enemy_mode is not None:
+                self._draw_spawn_tool_hud(screen)
+        if self._awakening_cutscene is not None:
+            self._awakening_cutscene.draw_overlay(screen)
+        if self._rocket_launch_cutscene is not None:
+            self._rocket_launch_cutscene.draw_overlay(screen)
 
-        pygame.display.flip()
+        with self.perf.section("flip"):
+            pygame.display.flip()
 
     # ── Event handling ───────────────────────────────────────────
 
@@ -375,9 +555,18 @@ class Game:
             self.quit_to_desktop = True
             return
 
+        # Cutscene swallows input first while playing.
+        if self._awakening_cutscene is not None and self._awakening_cutscene.active:
+            self._awakening_cutscene.handle_event(event)
+            return
+        if self._rocket_launch_cutscene is not None and self._rocket_launch_cutscene.active:
+            self._rocket_launch_cutscene.handle_event(event)
+            return
+
         # Let UI consume events first
         # Sync game-over overlay before event dispatch to avoid 1-frame leak
         self._game_over_overlay.active = self.world.game_over
+        self._game_over_overlay.visible = self.world.game_over
         if self.ui.handle_event(event):
             return
 
@@ -415,22 +604,30 @@ class Game:
                     btab = self._bottom_bar.buildings_tab
                     if btab:
                         btab.delete_active = False
-            elif event.key == pygame.K_h:
+            elif event.key in (pygame.K_h, pygame.K_i):
                 self._help_overlay.toggle()
-            elif event.key == pygame.K_i:
-                self._info_guide.toggle()
             elif event.key == pygame.K_1:
                 self._sim_speed = 3.0
             elif event.key == pygame.K_2:
                 self._sim_speed = 6.0
             elif event.key == pygame.K_3:
                 self._sim_speed = 9.0
+            elif event.key == pygame.K_5:
+                self._sim_speed = 30.0
             elif event.key == pygame.K_F1:
                 # Toggle god mode at runtime
                 self.god_mode = not self.god_mode
+                self.world.god_mode = self.god_mode
                 msg = NOTIF_GOD_MODE_ON if self.god_mode else NOTIF_GOD_MODE_OFF
                 col = (255, 215, 0) if self.god_mode else (200, 200, 200)
                 self.notifications.push(msg, col)
+                if not self.god_mode:
+                    # Disable any active god-only tools.
+                    self._spawn_enemy_mode = None
+            elif event.key == pygame.K_F2 and self.god_mode:
+                # Cycle the enemy-spawn tool: None -> SCOUT -> BRUTE
+                # -> COLOSSUS -> None.
+                self._cycle_spawn_enemy_mode()
 
         elif event.type == pygame.VIDEORESIZE:
             screen = pygame.display.get_surface()
@@ -441,9 +638,9 @@ class Game:
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1:  # left click
                 self._on_left_click(event.pos)
-                # PATH uses click-to-anchor chain placement; no drag.
+                # PATH/WALL use click-to-anchor chain placement; no drag.
                 if (self.build_mode is not None
-                        and self.build_mode != BuildingType.PATH):
+                        and self.build_mode not in (BuildingType.PATH, BuildingType.WALL)):
                     self._build_dragging = True
                 elif self.delete_mode:
                     self._delete_dragging = True
@@ -451,7 +648,10 @@ class Game:
                 self.camera.start_drag(event.pos)
                 self._drag_button = 2
             elif event.button == 3:  # right click
-                if self.build_mode is not None:
+                if self._spawn_enemy_mode is not None:
+                    self._spawn_enemy_mode = None
+                    self.notifications.push(NOTIF_GOD_SPAWN_OFF, (200, 200, 200))
+                elif self.build_mode is not None:
                     self.build_mode = None
                     self._build_dragging = False
                     btab = self._bottom_bar.buildings_tab
@@ -479,18 +679,18 @@ class Game:
                 self._drag_button = 0
 
         elif event.type == pygame.MOUSEMOTION:
-            # If the user released the drag button while outside the
-            # window (or over a UI element that swallowed the event),
-            # pygame may never deliver MOUSEBUTTONUP — the camera
-            # would stay glued to the cursor.  Re-poll the actual
-            # button state and stop the drag if it's no longer held.
+            # Camera drag itself is re-synced once per frame after the
+            # event pump (see ``_tick``), so we deliberately skip the
+            # per-event ``camera.drag()`` call here — at high mouse
+            # polling rates Windows generates dozens of MOUSEMOTION
+            # events per frame and re-applying the drag every event
+            # was a measurable contributor to per-frame stutter
+            # without changing visible behaviour.
             if self._drag_button:
                 pressed = pygame.mouse.get_pressed(num_buttons=5)
                 if not pressed[self._drag_button - 1]:
                     self.camera.stop_drag()
                     self._drag_button = 0
-                else:
-                    self.camera.drag(event.pos)
             if self._build_dragging and self.build_mode is not None:
                 if not pygame.mouse.get_pressed(num_buttons=5)[0]:
                     self._build_dragging = False
@@ -541,10 +741,24 @@ class Game:
             dx -= 1
         if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
             dx += 1
+        # Cache whether a pan key is held this frame so
+        # _is_panning_active() doesn't need to re-poll the keyboard.
+        self._key_pan_active = bool(dx or dy)
         if dx or dy:
             speed = self._PAN_SPEED / self.camera.zoom * dt
             self.camera.x += dx * speed
             self.camera.y += dy * speed
+
+    def _is_panning_active(self) -> bool:
+        """True when the player is actively moving the camera.
+
+        While true, the heavy world simulation is paused so the
+        renderer can run at full frame rate and the camera tracks
+        the cursor / keys smoothly.
+        """
+        if self._drag_button:
+            return True
+        return getattr(self, "_key_pan_active", False)
 
     # ── Click actions ────────────────────────────────────────────
 
@@ -556,10 +770,16 @@ class Game:
         if coord not in self.world.grid:
             return
 
+        # God-mode enemy spawn tool takes precedence over all other
+        # left-click actions (build/delete/select).
+        if self.god_mode and self._spawn_enemy_mode is not None:
+            self._spawn_enemy_at(coord)
+            return
+
         if self.delete_mode:
             self._try_delete_building(coord)
         elif self.build_mode is not None:
-            if self.build_mode == BuildingType.PATH:
+            if self.build_mode in (BuildingType.PATH, BuildingType.WALL, BuildingType.PIPE):
                 self._handle_path_click(coord)
             else:
                 self._try_place_building(coord)
@@ -568,16 +788,168 @@ class Game:
             self.renderer.selected_hex = coord
             # Show building info if there's a building, otherwise show tile info
             building = self.world.buildings.at(coord)
-            if building is not None:
+            if building is not None and building.faction == "SURVIVOR":
                 self._building_info.building = building
                 self._tile_info.tile = None
                 self._tile_info.has_ruin = False
             else:
+                # Empty tile or non-player building: show tile info.
+                # so the player still gets terrain context.
                 self._building_info.building = None
                 tile = self.world.grid.get(coord)
                 self._tile_info.tile = tile
                 self._tile_info.coord = coord
                 self._tile_info.has_ruin = self.renderer.has_ruin_at(coord)
+
+    # ── God-mode enemy spawn tool ────────────────────────────────
+
+    def _cycle_spawn_enemy_mode(self) -> None:
+        """F2 in god mode cycles through enemy types and OFF."""
+        from compprog_pygame.games.hex_colony import params
+        types = list(params.ENEMY_TYPE_DATA.keys())
+        if self._spawn_enemy_mode is None:
+            self._spawn_enemy_mode = types[0] if types else None
+        else:
+            try:
+                idx = types.index(self._spawn_enemy_mode)
+            except ValueError:
+                idx = -1
+            nxt = idx + 1
+            self._spawn_enemy_mode = types[nxt] if nxt < len(types) else None
+        if self._spawn_enemy_mode is None:
+            self.notifications.push(NOTIF_GOD_SPAWN_OFF, (200, 200, 200))
+        else:
+            # Disable conflicting build/delete modes while spawn tool is active.
+            self.build_mode = None
+            self._build_dragging = False
+            self.delete_mode = False
+            btab = self._bottom_bar.buildings_tab
+            if btab:
+                btab.selected_building = None
+                btab.delete_active = False
+            label = self._spawn_enemy_mode.title()
+            self.notifications.push(
+                NOTIF_GOD_SPAWN_ON.format(name=label), (255, 215, 0),
+            )
+
+    def _spawn_enemy_at(self, coord) -> None:
+        """Spawn one enemy of the active spawn-tool type at ``coord``."""
+        type_name = self._spawn_enemy_mode
+        if type_name is None:
+            return
+        combat = getattr(self.world, "combat", None)
+        if combat is None:
+            return
+        # Reuse the existing helper, but force the spawn point to the
+        # exact clicked tile (not a random nearby walkable hex) so the
+        # tool feels precise.
+        from compprog_pygame.games.hex_colony import params
+        from compprog_pygame.games.hex_colony.combat import Enemy
+        from compprog_pygame.games.hex_colony.hex_grid import hex_to_pixel
+        data = params.ENEMY_TYPE_DATA.get(type_name)
+        if data is None:
+            return
+        e = Enemy(
+            type_name=type_name,
+            coord=coord,
+            health=float(data["hp"]),
+            max_health=float(data["hp"]),
+            damage=float(data["damage"]),
+            bounty=int(data.get("bounty", 0)),
+        )
+        e.attack_timer = float(data["attack_cd"])
+        e.move_timer = float(data["move_period"])
+        wx, wy = hex_to_pixel(coord, self.settings.hex_size)
+        e.px, e.py = wx, wy
+        e.next_target_px, e.next_target_py = wx, wy
+        combat.enemies.append(e)
+
+    def _draw_spawn_tool_hud(self, surface) -> None:
+        """Small banner near the cursor showing the active enemy type."""
+        if self._spawn_enemy_mode is None:
+            return
+        from compprog_pygame.games.hex_colony import params
+        data = params.ENEMY_TYPE_DATA.get(self._spawn_enemy_mode)
+        if data is None:
+            return
+        mx, my = pygame.mouse.get_pos()
+        label = f"Spawn: {self._spawn_enemy_mode.title()}"
+        text = self._hint_font.render(label, True, (255, 230, 120))
+        pad = 6
+        bw, bh = text.get_width() + pad * 2, text.get_height() + pad * 2
+        bx, by = mx + 18, my + 18
+        sw, sh = surface.get_size()
+        if bx + bw > sw:
+            bx = sw - bw - 4
+        if by + bh > sh:
+            by = sh - bh - 4
+        bg = pygame.Surface((bw, bh), pygame.SRCALPHA)
+        bg.fill((20, 20, 30, 200))
+        surface.blit(bg, (bx, by))
+        pygame.draw.rect(surface, (255, 215, 0), (bx, by, bw, bh), 1)
+        # Color preview swatch
+        col = data.get("color", (200, 200, 200))
+        pygame.draw.circle(surface, col, (bx + pad + 4, by + bh // 2), 5)
+        surface.blit(text, (bx + pad + 14, by + pad))
+
+    # ── Mid-game cutscenes ───────────────────────────────────────
+
+    def _start_awakening_cutscene(self) -> None:
+        """Spin up the awakening cutscene for the pending event."""
+        assert self.camera is not None
+        event = self.world.ancient.pending_awakening
+        if event is None:
+            return
+
+        threat = self.world.ancient
+
+        def _apply(tower):
+            changed = threat.apply_tower(self.world, tower)
+            # Mark every changed coord dirty so the renderer redraws
+            # them with the wasteland palette.
+            for c in changed:
+                self.renderer.invalidate_tile(c)
+                self._minimap.invalidate(c)
+
+        def _commit(tower):
+            threat.commit_tower(tower)
+
+        def _finish():
+            threat.finalize_event()
+
+        self._awakening_cutscene = AwakeningCutscene(
+            event, self.world, self.camera,
+            on_apply_tower=_apply,
+            on_commit_tower=_commit,
+            on_finish=_finish,
+        )
+        # Push a one-shot toast so the player knows what just started.
+        self.notifications.push(
+            NOTIF_AWAKENING_TRIGGERED, (220, 130, 255),
+        )
+
+    def _maybe_start_rocket_launch(self) -> None:
+        """If any player-owned Rocket Silo has filled with fuel, kick
+        off the end-game launch cutscene.  Idempotent: only fires
+        once per world."""
+        assert self.camera is not None
+        from compprog_pygame.games.hex_colony.resources import Resource
+        silo_type = BuildingType.ROCKET_SILO
+        for b in self.world.buildings.by_type(silo_type):
+            if getattr(b, "faction", "SURVIVOR") != "SURVIVOR":
+                continue
+            fuel = b.storage.get(Resource.ROCKET_FUEL, 0.0)
+            if fuel + 1e-3 >= b.storage_capacity:
+                self._rocket_launch_done = True
+
+                def _finish() -> None:
+                    self.world.game_won = True
+
+                self._rocket_launch_cutscene = RocketLaunchCutscene(
+                    b.coord, self.world, self.camera,
+                    on_finish=_finish,
+                )
+                return
 
     def _try_place_building(self, coord, silent: bool = False) -> bool:
         tile = self.world.grid[coord]
@@ -616,6 +988,9 @@ class Game:
         existing = tile.building
         _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.CONVEYOR}
         if existing is not None:
+            # Cannot build on top of (or replace) an AI building.
+            if existing.faction != "SURVIVOR":
+                return False
             # Can only build on top of a path/bridge (not wall, camp, or other buildings)
             if existing.type not in _PATH_LIKE:
                 return False
@@ -634,15 +1009,74 @@ class Game:
                 self.world.building_inventory.add(existing.type)
             self.world.buildings.remove(existing)
             tile.building = None
+        # Multi-tile buildings (currently just the Research Center):
+        # compute the extra footprint coords and validate that each
+        # is in the grid, not on unbuildable terrain, and empty.  If
+        # any footprint tile fails we abort the placement.
+        from compprog_pygame.games.hex_colony.world import (
+            building_footprint as _footprint_for,
+        )
+        footprint = _footprint_for(self.build_mode, coord)
+        if footprint:
+            for fc in footprint:
+                ftile = self.world.grid.get(fc)
+                if ftile is None:
+                    if not silent:
+                        self.notifications.push(
+                            "Needs a 1-radius clear hex cluster",
+                            (255, 150, 80),
+                        )
+                    # Refund any resources we already spent above.
+                    if not free_build:
+                        self.world.building_inventory.add(self.build_mode)
+                    return False
+                if ftile.terrain in UNBUILDABLE:
+                    if not silent:
+                        self.notifications.push(
+                            "Needs a 1-radius clear hex cluster",
+                            (255, 150, 80),
+                        )
+                    if not free_build:
+                        self.world.building_inventory.add(self.build_mode)
+                    return False
+                if ftile.building is not None:
+                    if not silent:
+                        self.notifications.push(
+                            "Needs a 1-radius clear hex cluster",
+                            (255, 150, 80),
+                        )
+                    if not free_build:
+                        self.world.building_inventory.add(self.build_mode)
+                    return False
         # Place building
-        building = self.world.buildings.place(self.build_mode, coord)
+        building = self.world.buildings.place(
+            self.build_mode, coord, footprint=footprint,
+        )
         tile.building = building
+        # Register the building on every footprint tile so clicks /
+        # placement checks / renderer queries on those tiles all
+        # resolve to this same building.
+        for fc in footprint:
+            ftile = self.world.grid.get(fc)
+            if ftile is not None:
+                ftile.building = building
+        # Quarry QoL: when the only mineable resource in range is a
+        # single ore type (iron OR copper, but not both, and no
+        # stone/mountain), auto-select it so the player doesn't have
+        # to open the building panel and click.  Stone remains the
+        # default (quarry_output=None) whenever stone is available.
+        if self.build_mode == BuildingType.QUARRY:
+            self._auto_select_quarry_output(building)
         # Clear overlays on the tile so building is visible — but keep
         # them under paths/bridges so the player still sees the tree /
         # ore / fiber sprite under the path tile.
         if self.build_mode not in _PATH_LIKE:
             self.renderer.remove_overlays_at(coord, self.settings.hex_size)
+            for fc in footprint:
+                self.renderer.remove_overlays_at(fc, self.settings.hex_size)
         self._minimap.invalidate(coord)
+        for fc in footprint:
+            self._minimap.invalidate(fc)
         # Record to blueprint if recording
         if self.blueprints.is_recording:
             self.blueprints.record_building(coord, self.build_mode)
@@ -650,6 +1084,8 @@ class Game:
         if not silent:
             self.notifications.push(NOTIF_BUILT.format(name=building_label(self.build_mode.name)))
         self.world.mark_housing_dirty()
+        # Trigger 2: notify the ancient-tech threat about ruin disturbance.
+        self.world.ancient.notify_built(self.world, building)
         return True
 
     def _handle_path_click(self, coord) -> None:
@@ -676,6 +1112,98 @@ class Game:
             # Re-clicking the anchor cancels the chain.
             self._path_anchor = None
             self.renderer.path_preview = []
+            return
+
+        # PIPE chain placement: BFS route that avoids paths/bridges/
+        # water/other buildings so pipe networks stay independent.
+        if self.build_mode == BuildingType.PIPE:
+            route = self.world.find_pipe_route(self._path_anchor, coord)
+            if not route:
+                tile = self.world.grid.get(coord)
+                if tile is not None:
+                    self._path_anchor = coord
+                else:
+                    self._path_anchor = None
+                    self.renderer.path_preview = []
+                return
+            anchor_tile = self.world.grid.get(self._path_anchor)
+            full_route: list[HexCoord] = []
+            if anchor_tile is not None and anchor_tile.building is None:
+                full_route.append(self._path_anchor)
+            full_route.extend(route)
+            free_build = self.sandbox or self.god_mode
+            pipe_stock = (
+                10 ** 9 if free_build
+                else self.world.building_inventory[BuildingType.PIPE]
+            )
+            placed = 0
+            last_placed: HexCoord | None = None
+            original_mode = self.build_mode
+            try:
+                for step in full_route:
+                    tile = self.world.grid.get(step)
+                    if tile is None:
+                        break
+                    if tile.building is not None:
+                        last_placed = step
+                        continue
+                    if pipe_stock <= 0:
+                        break
+                    self.build_mode = BuildingType.PIPE
+                    if self._try_place_building(step, silent=True):
+                        placed += 1
+                        last_placed = step
+                        pipe_stock -= 1
+                    else:
+                        break
+            finally:
+                self.build_mode = original_mode
+            if placed > 0:
+                label = "tile" if placed == 1 else "tiles"
+                self.notifications.push(NOTIF_BUILT_PATH.format(count=placed, label=label))
+            self._path_anchor = None
+            self.renderer.path_preview = []
+            self.build_mode = None
+            btab = self._bottom_bar.buildings_tab
+            if btab:
+                btab.selected_building = None
+            return
+
+        # WALL chain placement: simple hex-line from anchor to clicked
+        # tile, place WALL on every empty land tile along the way
+        # (skipping existing buildings, water, mountains).
+        if self.build_mode == BuildingType.WALL:
+            line_coords = _hex_line(self._path_anchor, coord)
+            free_build = self.sandbox or self.god_mode
+            wall_stock = (
+                10 ** 9 if free_build
+                else self.world.building_inventory[BuildingType.WALL]
+            )
+            placed = 0
+            last_placed: HexCoord | None = None
+            original_mode = self.build_mode
+            try:
+                for step in line_coords:
+                    tile = self.world.grid.get(step)
+                    if tile is None:
+                        break
+                    if tile.building is not None:
+                        last_placed = step
+                        continue
+                    if wall_stock <= 0:
+                        break
+                    self.build_mode = BuildingType.WALL
+                    if self._try_place_building(step, silent=True):
+                        placed += 1
+                        last_placed = step
+                        wall_stock -= 1
+                    else:
+                        # Skip this hex but continue (e.g. water)
+                        continue
+            finally:
+                self.build_mode = original_mode
+            if last_placed is not None:
+                self._path_anchor = last_placed
             return
 
         bridges_unlocked = (
@@ -763,6 +1291,39 @@ class Game:
         if btab:
             btab.selected_building = None
 
+    def _auto_select_quarry_output(self, building) -> None:
+        """If a freshly-placed quarry has exactly one ore type in range
+        (and no stone source), default its output to that ore so the
+        player doesn't have to open the building panel."""
+        from compprog_pygame.games.hex_colony.supply_chain import _hex_range
+        from compprog_pygame.games.hex_colony.resources import Resource
+        grid = self.world.grid
+        has_stone = False
+        has_iron = False
+        has_copper = False
+        for nb in _hex_range(building.coord, params.COLLECTION_RADIUS):
+            if nb == building.coord:
+                continue
+            tile = grid.get(nb)
+            if tile is None:
+                continue
+            t = tile.terrain
+            if t in (Terrain.STONE_DEPOSIT, Terrain.MOUNTAIN):
+                has_stone = True
+            elif t == Terrain.IRON_VEIN:
+                has_iron = True
+            elif t == Terrain.COPPER_VEIN:
+                has_copper = True
+        # Stone is the default output (quarry_output=None).  Only
+        # auto-switch when stone isn't available AND exactly one ore
+        # type is present.
+        if has_stone:
+            return
+        if has_iron and not has_copper:
+            building.quarry_output = Resource.IRON
+        elif has_copper and not has_iron:
+            building.quarry_output = Resource.COPPER
+
     def _try_delete_building(self, coord) -> None:
         """Delete a building at the given coordinate, refunding half its cost."""
         tile = self.world.grid[coord]
@@ -771,6 +1332,9 @@ class Game:
             return
         # Can't delete the camp
         if building.type == BuildingType.CAMP:
+            return
+        # Player cannot demolish non-player faction buildings.
+        if building.faction != "SURVIVOR":
             return
         # Unassign workers and residents referencing this building
         for person in self.world.population.people:
@@ -786,12 +1350,26 @@ class Game:
         # Return building to inventory
         if not self.sandbox:
             self.world.building_inventory.add(building.type)
-        # Remove building
-        self.world.buildings.remove(building)
-        tile.building = None
+        # Remove building (and clear every grid tile it occupied —
+        # multi-tile buildings like the Research Center leave stale
+        # ``tile.building`` refs on their footprint otherwise).
+        footprint = tuple(building.footprint)
+        self.world.demolish(building)
+        # Restore the overlay pixel art (trees, ore crystals, fiber,
+        # etc.) that was NaN-marked when the building was originally
+        # placed on this tile.  Without this call, deleting a quarry
+        # from an iron vein leaves a bare tile even though the ore
+        # is still there.
+        self.renderer.regenerate_overlays_at(coord, self.world)
+        for fc in footprint:
+            self.renderer.regenerate_overlays_at(fc, self.world)
         # Targeted tile layer redraw so cleared tile shows terrain
         self.renderer.invalidate_tile(coord)
+        for fc in footprint:
+            self.renderer.invalidate_tile(fc)
         self._minimap.invalidate(coord)
+        for fc in footprint:
+            self._minimap.invalidate(fc)
         self.world.mark_housing_dirty()
 
     def _on_building_selected(self, btype: BuildingType | None) -> None:
@@ -918,7 +1496,7 @@ class Game:
             if target.workplace is not None:
                 target.workplace.workers = max(0, target.workplace.workers - 1)
             pop.people.remove(target)
-        self.world.mark_housing_dirty()
+        self.world.mark_population_changed()
 
     # ── Alt overlay toggle ───────────────────────────────────────
 
@@ -940,8 +1518,8 @@ class Game:
             self._path_anchor = None
             return
 
-        # Switching to a non-PATH build mode cancels any path chain.
-        if self.build_mode != BuildingType.PATH:
+        # Switching to a non-chain build mode cancels any chain anchor.
+        if self.build_mode not in (BuildingType.PATH, BuildingType.WALL, BuildingType.PIPE):
             self._path_anchor = None
 
         self.renderer.ghost_building = self.build_mode
@@ -956,6 +1534,16 @@ class Game:
         else:
             self.renderer.ghost_coord = None
             self.renderer.ghost_valid = False
+
+        # Wall chain preview (straight hex line).
+        if (self.build_mode == BuildingType.WALL
+                and self._path_anchor is not None
+                and self.renderer.ghost_coord is not None
+                and self.renderer.ghost_coord != self._path_anchor):
+            self.renderer.path_preview = _hex_line(
+                self._path_anchor, self.renderer.ghost_coord,
+            )
+            return
 
         # Path chain preview
         if (self.build_mode == BuildingType.PATH
@@ -1017,7 +1605,37 @@ class Game:
                     self.renderer.path_preview = preview
             else:
                 self.renderer.path_preview = []
-        elif (self.build_mode == BuildingType.PATH
+        elif (self.build_mode == BuildingType.PIPE
+                and self._path_anchor is not None
+                and self.renderer.ghost_coord is not None
+                and self.renderer.ghost_coord != self._path_anchor):
+            route = self.world.find_pipe_route(
+                self._path_anchor, self.renderer.ghost_coord,
+            )
+            if route:
+                free_build = self.sandbox or self.god_mode
+                pipe_stock = (
+                    10 ** 9 if free_build
+                    else self.world.building_inventory[BuildingType.PIPE]
+                )
+                full_route: list[HexCoord] = []
+                anchor_tile = self.world.grid.get(self._path_anchor)
+                if anchor_tile is not None and anchor_tile.building is None:
+                    full_route.append(self._path_anchor)
+                full_route.extend(route)
+                preview: list[HexCoord] = []
+                stock_left = pipe_stock
+                for step in full_route:
+                    tile = self.world.grid.get(step)
+                    if tile is not None and tile.building is None:
+                        if stock_left <= 0:
+                            break
+                        stock_left -= 1
+                    preview.append(step)
+                self.renderer.path_preview = preview
+            else:
+                self.renderer.path_preview = []
+        elif (self.build_mode in (BuildingType.PATH, BuildingType.WALL, BuildingType.PIPE)
               and self._path_anchor is not None):
             # Show anchor tile highlighted even before a second point
             # is chosen, so the player sees where the chain starts.
@@ -1032,8 +1650,22 @@ class Game:
         if tile is None:
             return False
         if tile.terrain in UNBUILDABLE:
-            if not (self.build_mode == BuildingType.BRIDGE and tile.terrain == Terrain.WATER):
+            # Allowed exceptions on otherwise-unbuildable terrain:
+            # bridges on water, oil drills on oil deposits.
+            allowed = (
+                (self.build_mode == BuildingType.BRIDGE
+                 and tile.terrain == Terrain.WATER)
+                or (self.build_mode == BuildingType.OIL_DRILL
+                    and tile.terrain == Terrain.OIL_DEPOSIT)
+            )
+            if not allowed:
                 return False
+        # Oil drills are *only* valid on oil deposits — keep the
+        # ghost red on every other terrain so the player can see
+        # they need to find a deposit before placing.
+        if (self.build_mode == BuildingType.OIL_DRILL
+                and tile.terrain != Terrain.OIL_DEPOSIT):
+            return False
         # Tech tree gate
         if not self.tech_tree.is_building_unlocked(self.build_mode):
             return False

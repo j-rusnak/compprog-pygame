@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from compprog_pygame.games.hex_colony.hex_grid import HexCoord, hex_to_pixel
 from compprog_pygame.games.hex_colony.buildings import BuildingType
+from compprog_pygame.games.hex_colony import params
 
 if TYPE_CHECKING:
     from compprog_pygame.games.hex_colony.world import World
@@ -67,6 +68,10 @@ class Person:
     logistics_dst: object | None = None
     logistics_res: object | None = None  # Resource being transported
     logistics_amount: float = 0.0        # units currently carried
+    # Combat health.
+    max_health: float = 0.0
+    health: float = 0.0
+    dead: bool = False
 
     def snap_to_hex(self, size: int) -> None:
         """Set pixel position to centre of current hex."""
@@ -82,6 +87,8 @@ class PopulationManager:
 
     def spawn(self, coord: HexCoord, hex_size: int) -> Person:
         p = Person(id=self._next_id, hex_pos=coord)
+        p.max_health = float(params.PERSON_MAX_HEALTH)
+        p.health = p.max_health
         p.snap_to_hex(hex_size)
         # Slight random offset so people don't stack perfectly
         p.px += random.uniform(-4, 4)

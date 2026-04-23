@@ -499,6 +499,103 @@ def draw_bridge(
                          (px, isy + max(2, int(r * 0.2))), max(1, int(z * 1.5)))
 
 
+def draw_pipe(
+    surface: pygame.Surface,
+    sx: float, sy: float,
+    r: int, z: float,
+    nb_positions: list[tuple[float, float]],
+    q: int, rr: int,
+) -> None:
+    """Steel pipe segment.  Renders as a metallic band that joins to
+    every adjacent pipe / fluid building given in ``nb_positions``,
+    matching the visual idiom of :func:`draw_path`."""
+    if _try_sprite(surface, "buildings/pipe", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    pipe_col = (155, 150, 145)
+    pipe_dark = _darken(pipe_col, 0.55)
+    pipe_light = _lighten(pipe_col, 1.15)
+    band_hw = max(2, int(r * 0.32))
+
+    for nsx, nsy in nb_positions:
+        dx = nsx - sx
+        dy = nsy - sy
+        length = math.hypot(dx, dy)
+        if length < 1:
+            continue
+        px = -dy / length * band_hw
+        py = dx / length * band_hw
+        mx = sx + dx * 0.5
+        my = sy + dy * 0.5
+        pts = [
+            (sx + px, sy + py), (sx - px, sy - py),
+            (mx - px, my - py), (mx + px, my + py),
+        ]
+        pygame.draw.polygon(surface, pipe_col, pts)
+        # Highlight strip down the centre of the pipe.
+        pygame.draw.line(
+            surface, pipe_light,
+            (int(sx), int(sy)), (int(mx), int(my)),
+            max(1, int(z)),
+        )
+        pygame.draw.line(
+            surface, pipe_dark,
+            (int(pts[0][0]), int(pts[0][1])),
+            (int(pts[3][0]), int(pts[3][1])), iz,
+        )
+        pygame.draw.line(
+            surface, pipe_dark,
+            (int(pts[1][0]), int(pts[1][1])),
+            (int(pts[2][0]), int(pts[2][1])), iz,
+        )
+
+    # Centre flange / hub.
+    hub_r = band_hw + max(1, int(r * 0.10))
+    pygame.draw.circle(surface, pipe_col, (isx, isy), hub_r)
+    pygame.draw.circle(surface, pipe_dark, (isx, isy), hub_r, iz)
+    pygame.draw.circle(
+        surface, pipe_light, (isx, isy),
+        max(1, hub_r // 2),
+    )
+
+
+def draw_fluid_tank(
+    surface: pygame.Surface, sx: float, sy: float, r: int, z: float,
+) -> None:
+    """Cylindrical fluid tank with riveted bands."""
+    if _try_sprite(surface, "buildings/fluid_tank", sx, sy, r, z):
+        return
+    iz = max(1, int(z))
+    tank_col = (110, 130, 150)
+    tank_light = _lighten(tank_col, 1.25)
+    tank_dark = _darken(tank_col, 0.55)
+    rim_col = (175, 180, 190)
+
+    rect = pygame.Rect(
+        int(sx - r * 0.55), int(sy - r * 0.55),
+        int(r * 1.10), int(r * 1.10),
+    )
+    pygame.draw.ellipse(surface, tank_col, rect)
+    hl = pygame.Rect(
+        rect.x + int(rect.w * 0.1), rect.y + int(rect.h * 0.1),
+        max(2, int(rect.w * 0.25)), int(rect.h * 0.8),
+    )
+    pygame.draw.ellipse(surface, tank_light, hl)
+    for frac in (0.30, 0.55, 0.80):
+        ly = rect.y + int(rect.h * frac)
+        pygame.draw.line(
+            surface, tank_dark,
+            (rect.x + iz, ly), (rect.right - iz, ly), iz,
+        )
+    cap = pygame.Rect(
+        rect.x + int(rect.w * 0.25), rect.y - max(1, int(z)),
+        int(rect.w * 0.5), max(2, int(z * 2)),
+    )
+    pygame.draw.rect(surface, rim_col, cap, border_radius=2)
+    pygame.draw.ellipse(surface, tank_dark, rect, iz)
+
+
 def draw_refinery(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
     if _try_sprite(surface, "buildings/refinery", sx, sy, r, z):
         return
@@ -1200,7 +1297,7 @@ def draw_solar_array(surface: pygame.Surface, sx: float, sy: float, r: int, z: f
     ]
     pygame.draw.polygon(surface, panel, poly)
     pygame.draw.polygon(surface, frame, poly, max(1, iz))
-    # Grid lines (3 cols × 2 rows)
+    # Grid lines (3 cols �— 2 rows)
     for col in range(1, 3):
         x_top = isx - top_w // 2 + (top_w * col) // 3
         x_bot = isx - pw // 2 + (pw * col) // 3
@@ -1219,9 +1316,17 @@ def draw_solar_array(surface: pygame.Surface, sx: float, sy: float, r: int, z: f
                      (isx, isy + max(2, int(r * 0.10))), max(2, iz * 2))
 
 
-def draw_rocket_silo(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
-    """Rocket Silo — tall white rocket with red fins on a launch pad."""
-    if _try_sprite(surface, "buildings/rocket_silo", sx, sy, r, z):
+def draw_rocket_silo(
+    surface: pygame.Surface, sx: float, sy: float, r: int, z: float,
+    pad_only: bool = False,
+) -> None:
+    """Rocket Silo — tall white rocket with red fins on a launch pad.
+
+    When ``pad_only`` is True the rocket itself is omitted (used while
+    the launch cutscene is animating the rocket flying off-screen, so
+    the silo on the map shows only the empty launch pad).
+    """
+    if not pad_only and _try_sprite(surface, "buildings/rocket_silo", sx, sy, r, z):
         return
     isx, isy = int(sx), int(sy)
     iz = max(1, int(z))
@@ -1237,6 +1342,13 @@ def draw_rocket_silo(surface: pygame.Surface, sx: float, sy: float, r: int, z: f
     pygame.draw.rect(surface, pad, pad_rect, border_radius=max(1, iz))
     pygame.draw.rect(surface, _darken(pad, 0.7), pad_rect, max(1, iz),
                      border_radius=max(1, iz))
+    if pad_only:
+        # Add a faint scorch mark in the centre of the pad to suggest
+        # the rocket just took off.
+        scorch_r = max(2, int(min(pad_w, pad_h * 4) * 0.18))
+        pygame.draw.circle(surface, _darken(pad, 0.45), (isx, isy),
+                           scorch_r)
+        return
     # Rocket body
     body_w = max(3, int(r * 0.55))
     body_h = max(5, int(r * 1.40))
@@ -1369,5 +1481,180 @@ def draw_oil_refinery(surface: pygame.Surface, sx: float, sy: float, r: int, z: 
         (left_col.centerx, flame_y - max(2, iz * 2)),
     ])
 
+# -----------------------------------------------------------------------
+#  ANCIENT TECH TOWER  (rises during awakening events)
+# -----------------------------------------------------------------------
+
+def draw_ancient_tower(surface, sx, sy, r, z, rise=1.0):
+    """Draw an ancient-tech obelisk tower.
+
+    ``rise`` 0..1 controls how far the tower has emerged from the
+    ground (used by the awakening cutscene).  At ``rise=0`` only a
+    glowing crack is visible; at ``rise=1`` the tower is fully out.
+    """
+    if _try_sprite(surface, "buildings/ancient_tower", sx, sy, r, z):
+        return
+    iz = max(1, int(z))
+    rise = max(0.0, min(1.0, rise))
+
+    # Base disc — cracked stone pad always visible.
+    base_col = (38, 30, 32)
+    crack_col = (180, 60, 200)
+    pad_r = max(3, int(r * 1.05))
+    pygame.draw.circle(surface, base_col, (int(sx), int(sy + r * 0.15)), pad_r)
+    # Cracks radiating out (always present).
+    for i in range(6):
+        ang = i * math.pi / 3.0 + 0.2
+        ex = sx + math.cos(ang) * pad_r * 0.95
+        ey = sy + r * 0.15 + math.sin(ang) * pad_r * 0.55
+        pygame.draw.line(surface, crack_col,
+                         (int(sx), int(sy + r * 0.15)),
+                         (int(ex), int(ey)), max(1, iz))
+
+    if rise <= 0.02:
+        return
+
+    # Tower body — tall hexagonal obelisk that scales from 0 to full
+    # height as ``rise`` grows.
+    full_h = r * 2.4
+    h = full_h * rise
+    half_w_top = r * 0.45
+    half_w_bot = r * 0.7
+    top_y = sy - h + r * 0.15
+
+    body_col = (52, 44, 70)
+    body_light = (110, 95, 160)
+    body_dark = (24, 18, 36)
+
+    pygame.draw.polygon(surface, body_col, [
+        (sx - half_w_bot, sy + r * 0.15),
+        (sx - half_w_top, top_y),
+        (sx + half_w_top, top_y),
+        (sx + half_w_bot, sy + r * 0.15),
+    ])
+    pygame.draw.line(surface, body_light,
+                     (sx, top_y + iz),
+                     (sx, sy + r * 0.05), max(1, iz))
+    pygame.draw.line(surface, body_dark,
+                     (sx + half_w_top, top_y),
+                     (sx + half_w_bot, sy + r * 0.15), max(1, iz))
+
+    # Glowing top eye / crystal — brightens with rise.
+    eye_y = top_y + r * 0.35
+    eye_r = max(2, int(r * 0.3))
+    eye_pulse = 0.6 + 0.4 * rise
+    eye_col = (
+        min(255, int(180 * eye_pulse)),
+        min(255, int(80 * eye_pulse)),
+        min(255, int(220 * eye_pulse)),
+    )
+    eye_glow = (220, 130, 255)
+    if eye_y < sy + r * 0.1:
+        pygame.draw.circle(surface, eye_col, (int(sx), int(eye_y)), eye_r)
+        pygame.draw.circle(surface, eye_glow, (int(sx), int(eye_y)), eye_r, max(1, iz))
+
+    # Soft floor glow ring during rise — sells the "emerging" feeling.
+    if rise < 1.0:
+        glow_a = int(160 * (1.0 - rise))
+        if pad_r > 4 and glow_a > 8:
+            ring_size = pad_r * 4
+            ring = pygame.Surface((ring_size, ring_size), pygame.SRCALPHA)
+            pygame.draw.circle(ring, (220, 110, 255, glow_a),
+                               (pad_r * 2, pad_r * 2), int(pad_r * 1.6))
+            pygame.draw.circle(ring, (0, 0, 0, 0),
+                               (pad_r * 2, pad_r * 2), int(pad_r * 0.9))
+            surface.blit(ring,
+                         (int(sx) - pad_r * 2,
+                          int(sy + r * 0.15) - pad_r * 2))
 
 
+# -- Defense buildings ---------------------------------------------
+
+
+def draw_turret(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Defensive auto-cannon. Stone base, swivel head, barrel."""
+    if _try_sprite(surface, "buildings/turret", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    base_col = (140, 135, 130)
+    metal = (90, 90, 105)
+    barrel = (60, 60, 70)
+    accent = (200, 80, 60)
+    # Stone base ring
+    base_r = max(4, int(r * 0.55))
+    pygame.draw.circle(surface, base_col, (isx, isy), base_r)
+    pygame.draw.circle(surface, _darken(base_col, 0.55), (isx, isy), base_r, max(1, iz))
+    # Swivel turret body
+    body_r = max(3, int(r * 0.32))
+    pygame.draw.circle(surface, metal, (isx, isy - max(2, int(r * 0.1))), body_r)
+    pygame.draw.circle(surface, _darken(metal, 0.6), (isx, isy - max(2, int(r * 0.1))), body_r, max(1, iz))
+    # Barrel
+    barrel_len = max(4, int(r * 0.7))
+    barrel_w = max(2, int(r * 0.16))
+    pygame.draw.rect(surface, barrel,
+                     pygame.Rect(isx, isy - max(2, int(r * 0.1)) - barrel_w // 2,
+                                 barrel_len, barrel_w))
+    # Red targeting tip
+    pygame.draw.circle(surface, accent,
+                       (isx + barrel_len, isy - max(2, int(r * 0.1))),
+                       max(1, int(r * 0.1)))
+
+
+def draw_trap(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Spike trap � wooden plate with iron spikes; one-shot."""
+    if _try_sprite(surface, "buildings/trap", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    plate = (110, 80, 50)
+    spike = (180, 180, 195)
+    spike_dark = (120, 120, 135)
+    # Wood plate
+    plate_r = max(3, int(r * 0.5))
+    pygame.draw.circle(surface, plate, (isx, isy), plate_r)
+    pygame.draw.circle(surface, _darken(plate, 0.6), (isx, isy), plate_r, max(1, iz))
+    # Spikes (8 around the rim, pointing outward)
+    import math as _m
+    sp_len = max(2, int(r * 0.28))
+    for i in range(8):
+        ang = i * (_m.pi / 4) + _m.pi / 8
+        bx = isx + int(_m.cos(ang) * plate_r * 0.55)
+        by = isy + int(_m.sin(ang) * plate_r * 0.55)
+        tx = isx + int(_m.cos(ang) * (plate_r + sp_len))
+        ty = isy + int(_m.sin(ang) * (plate_r + sp_len))
+        pygame.draw.line(surface, spike_dark, (bx, by), (tx, ty), max(2, iz + 1))
+        pygame.draw.line(surface, spike,
+                         (bx + iz, by - iz), (tx + iz, ty - iz), max(1, iz))
+
+
+def draw_enemy(
+    surface: pygame.Surface, sx: float, sy: float,
+    type_name: str, color: tuple, radius_px: int, z: float,
+) -> None:
+    """Procedural enemy fallback when no sprite exists.
+
+    Spider-like silhouette: dark body, glowing core, three pairs of
+    legs.  Larger `radius_px` for higher-tier enemies.
+    """
+    if _try_sprite(surface, f"enemies/{type_name.lower()}", sx, sy, max(4, int(radius_px * z)), z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    rr = max(3, int(radius_px * z))
+    # Body
+    body_col = _darken(color, 0.55)
+    pygame.draw.circle(surface, body_col, (isx, isy), rr)
+    # Core glow
+    pygame.draw.circle(surface, color, (isx, isy), max(2, rr // 2))
+    # Highlight
+    pygame.draw.circle(surface, _lighten(color, 1.4),
+                       (isx - rr // 4, isy - rr // 4), max(1, rr // 4))
+    # Legs
+    import math as _m
+    leg_len = int(rr * 1.4)
+    for i in range(6):
+        ang = i * (_m.pi / 3) + _m.pi / 6
+        tx = isx + int(_m.cos(ang) * leg_len)
+        ty = isy + int(_m.sin(ang) * leg_len)
+        pygame.draw.line(surface, body_col, (isx, isy), (tx, ty), max(1, iz))

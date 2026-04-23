@@ -93,6 +93,17 @@ RESOURCE_ICONS: dict[Resource, str] = {
     Resource.BATTERY: "\u26a1",
     Resource.ROCKET_FUEL: "\u2620",
     Resource.ROCKET_PART: "\u2b50",
+    # Petrochemical chain
+    Resource.OIL: "\u2b24",
+    Resource.PETROLEUM: "\u25c8",
+    Resource.LUBRICANT: "\u25cc",
+    Resource.RUBBER: "\u25cf",
+    # Late-game advanced materials
+    Resource.STEEL_PLATE: "\u25ad",
+    Resource.REINFORCED_CONCRETE: "\u2593",
+    Resource.ADVANCED_CIRCUIT: "\u25a6",
+    Resource.ROBOTIC_ARM: "\u2699",
+    Resource.PAPER: "\u25af",
 }
 
 RESOURCE_COLORS: dict[Resource, tuple[int, int, int]] = {
@@ -120,6 +131,17 @@ RESOURCE_COLORS: dict[Resource, tuple[int, int, int]] = {
     Resource.BATTERY: (240, 200, 60),
     Resource.ROCKET_FUEL: (200, 100, 60),
     Resource.ROCKET_PART: (200, 210, 230),
+    # Petrochemical chain
+    Resource.OIL: (40, 30, 45),
+    Resource.PETROLEUM: (200, 140, 70),
+    Resource.LUBRICANT: (225, 195, 110),
+    Resource.RUBBER: (60, 60, 65),
+    # Late-game advanced materials
+    Resource.STEEL_PLATE: (175, 190, 220),
+    Resource.REINFORCED_CONCRETE: (150, 160, 170),
+    Resource.ADVANCED_CIRCUIT: (100, 180, 140),
+    Resource.ROBOTIC_ARM: (200, 210, 230),
+    Resource.PAPER: (240, 235, 220),
 }
 
 
@@ -194,40 +216,99 @@ class UIManager:
 # ── Tooltip system (set by any panel during draw) ────────────────
 
 _pending_tooltip: str | None = None
+_pending_tooltip_title: str | None = None
 
 
-def set_tooltip(text: str) -> None:
-    """Schedule a tooltip to be drawn at end-of-frame at the cursor."""
-    global _pending_tooltip
+def set_tooltip(text: str, title: str | None = None) -> None:
+    """Schedule a tooltip to be drawn at end-of-frame at the cursor.
+
+    *text* may include ``\\n`` newlines; the renderer word-wraps each
+    paragraph to a comfortable maximum width.  When *title* is given
+    it is rendered on the first line in accent colour above the body
+    so callers can show ``"Build Cost"`` / etc. headers.
+    """
+    global _pending_tooltip, _pending_tooltip_title
     _pending_tooltip = text
+    _pending_tooltip_title = title
+
+
+def _wrap_text(font: pygame.font.Font, text: str, max_w: int) -> list[str]:
+    """Greedy word-wrap *text* to *max_w* pixels."""
+    out: list[str] = []
+    for paragraph in text.split("\n"):
+        if not paragraph:
+            out.append("")
+            continue
+        words = paragraph.split(" ")
+        cur = ""
+        for w in words:
+            cand = w if not cur else cur + " " + w
+            if font.size(cand)[0] <= max_w:
+                cur = cand
+            else:
+                if cur:
+                    out.append(cur)
+                cur = w
+        if cur:
+            out.append(cur)
+    return out
 
 
 def _draw_pending_tooltip(surface: pygame.Surface) -> None:
-    global _pending_tooltip
+    global _pending_tooltip, _pending_tooltip_title
     text = _pending_tooltip
+    title = _pending_tooltip_title
     _pending_tooltip = None
+    _pending_tooltip_title = None
     if not text:
         return
     font = Fonts.small()
-    pad_x, pad_y = 6, 3
-    text_surf = font.render(text, True, UI_TEXT)
-    box_w = text_surf.get_width() + pad_x * 2
-    box_h = text_surf.get_height() + pad_y * 2
-    mx, my = pygame.mouse.get_pos()
+    title_font = Fonts.label()
+    pad_x, pad_y = 8, 6
+    line_gap = 2
+
+    # Cap width so prose tooltips wrap nicely instead of stretching
+    # across the whole screen.
     sw, sh = surface.get_size()
-    # Place above the cursor with a small gap; flip below if it would
-    # clip off the top of the screen.
+    max_text_w = min(360, sw - 40)
+
+    body_lines = _wrap_text(font, text, max_text_w)
+    title_surf = title_font.render(title, True, UI_ACCENT) if title else None
+
+    body_surfs = [font.render(ln, True, UI_TEXT) for ln in body_lines]
+
+    box_w = max(
+        (s.get_width() for s in body_surfs),
+        default=0,
+    )
+    if title_surf is not None:
+        box_w = max(box_w, title_surf.get_width())
+    box_w += pad_x * 2
+
+    box_h = pad_y * 2 + sum(s.get_height() + line_gap for s in body_surfs) - line_gap
+    if title_surf is not None:
+        box_h += title_surf.get_height() + line_gap
+
+    mx, my = pygame.mouse.get_pos()
     bx = mx + 14
     by = my - box_h - 8
     if by < 2:
         by = my + 18
     bx = max(2, min(bx, sw - box_w - 2))
+    by = max(2, min(by, sh - box_h - 2))
     box = pygame.Rect(bx, by, box_w, box_h)
     bg = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
     bg.fill((20, 24, 28, 235))
     surface.blit(bg, box.topleft)
     pygame.draw.rect(surface, UI_BORDER, box, width=1, border_radius=3)
-    surface.blit(text_surf, (bx + pad_x, by + pad_y))
+
+    cy = by + pad_y
+    if title_surf is not None:
+        surface.blit(title_surf, (bx + pad_x, cy))
+        cy += title_surf.get_height() + line_gap
+    for s in body_surfs:
+        surface.blit(s, (bx + pad_x, cy))
+        cy += s.get_height() + line_gap
 
 
 class TabContent(ABC):

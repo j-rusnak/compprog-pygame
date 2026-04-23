@@ -33,7 +33,11 @@ def _launch(screen: pygame.Surface, clock: pygame.time.Clock) -> None:
             return  # player pressed Escape → back to game-select
 
         from dataclasses import replace
-        settings = replace(HexColonySettings(), world_radius=result.world_radius)
+        settings = replace(
+            HexColonySettings(),
+            world_radius=result.world_radius,
+            difficulty=result.difficulty,
+        )
 
         # Generate the world on a background thread while the intro
         # cutscene plays, so the player never sits on a black screen.
@@ -109,9 +113,9 @@ def _launch(screen: pygame.Surface, clock: pygame.time.Clock) -> None:
 
 register(
     GameInfo(
-        name="Hex Colony",
-        description="Survive on a re-evolved Earth after your spaceship crash-lands",
-        color=(120, 140, 170),
+        name="RePioneer",
+        description="Survive, reclaim, and rebuild on a re-evolved Earth",
+        color=(220, 176, 70),
         launch=_launch,
     )
 )

@@ -67,6 +67,7 @@ class OverlayRuin:
     color: tuple[int, int, int]
     highlight_color: tuple[int, int, int]
     coord: tuple[int, int]  # (q, r) for the hex this ruin sits on
+    cluster_id: int = -1  # which generated ruin cluster this piece belongs to
 
 OverlayItem = (
     OverlayTree | OverlayRock
@@ -538,8 +539,10 @@ def _gen_oil_tile(
                 color=rng.choice([(75, 140, 55), (65, 125, 48)]),
             )))
 
-    # Big central pool plus 1-2 satellite blobs.
-    big_w = s * rng.uniform(0.85, 1.05)
+    # Big central pool plus 1-2 satellite blobs.  Oil pools render
+    # at 1.5x their base size for greater visibility.
+    _OIL_SCALE = 1.5
+    big_w = s * rng.uniform(0.85, 1.05) * _OIL_SCALE
     big_h = big_w * rng.uniform(0.55, 0.75)
     items.append((wy, OverlayRock(
         wx=wx, wy=wy, w=big_w, h=big_h,
@@ -549,7 +552,7 @@ def _gen_oil_tile(
     for _ in range(rng.randint(1, 2)):
         ox = rng.uniform(-s * 0.3, s * 0.3)
         oy = rng.uniform(-s * 0.25, s * 0.25)
-        w = s * rng.uniform(0.20, 0.40)
+        w = s * rng.uniform(0.20, 0.40) * _OIL_SCALE
         h = w * rng.uniform(0.55, 0.85)
         items.append((wy + oy, OverlayRock(
             wx=wx + ox, wy=wy + oy, w=w, h=h,
@@ -622,7 +625,7 @@ def _gen_ruins(
     ruins: list[OverlayRuin] = []
     used: set[HexCoord] = set()
 
-    for centre in centres:
+    for cluster_idx, centre in enumerate(centres):
         # Gather candidate tiles within the cluster radius via BFS.
         frontier: list[HexCoord] = [centre]
         ring: list[HexCoord] = []
@@ -662,6 +665,7 @@ def _gen_ruins(
                 variant=variant,
                 color=color, highlight_color=highlight,
                 coord=(coord.q, coord.r),
+                cluster_id=cluster_idx,
             ))
 
     return ruins

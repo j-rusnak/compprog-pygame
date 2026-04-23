@@ -39,8 +39,12 @@ class BuildingType(Enum):
     SOLAR_ARRAY = auto()     # solar array — boosts adjacent crafting stations
     ROCKET_SILO = auto()     # rocket silo — assemble & launch the colony rocket
     OIL_DRILL = auto()       # oil drill — placed on OIL_DEPOSIT, auto-extracts OIL
-    OIL_REFINERY = auto()    # refines OIL into PETROLEUM and LUBRICANT
-
+    OIL_REFINERY = auto()    # refines OIL into PETROLEUM and LUBRICANT    # ── Fluid handling (pipe network, parallel to worker logistics) ──
+    PIPE = auto()            # connects fluid producers/consumers/tanks
+    FLUID_TANK = auto()      # buffers a single fluid resource
+    # ── Defensive structures (unlocked after the first awakening wave) ──
+    TURRET = auto()          # auto-targets nearest enemy in range and fires
+    TRAP = auto()            # one-shot trap detonates when an enemy steps on it
 
 @dataclass(slots=True)
 class BuildingCost:
@@ -80,6 +84,10 @@ BUILDING_COSTS: dict[BuildingType, BuildingCost] = {
     BuildingType.ROCKET_SILO: BuildingCost(_costs_from_dict(params.BUILDING_COST_ROCKET_SILO)),
     BuildingType.OIL_DRILL: BuildingCost(_costs_from_dict(params.BUILDING_COST_OIL_DRILL)),
     BuildingType.OIL_REFINERY: BuildingCost(_costs_from_dict(params.BUILDING_COST_OIL_REFINERY)),
+    BuildingType.PIPE: BuildingCost(_costs_from_dict(params.BUILDING_COST_PIPE)),
+    BuildingType.FLUID_TANK: BuildingCost(_costs_from_dict(params.BUILDING_COST_FLUID_TANK)),
+    BuildingType.TURRET: BuildingCost(_costs_from_dict(params.BUILDING_COST_TURRET)),
+    BuildingType.TRAP: BuildingCost(_costs_from_dict(params.BUILDING_COST_TRAP)),
 }
 
 # Max workers each building supports
@@ -109,6 +117,10 @@ BUILDING_MAX_WORKERS: dict[BuildingType, int] = {
     BuildingType.ROCKET_SILO: params.BUILDING_MAX_WORKERS_ROCKET_SILO,
     BuildingType.OIL_DRILL: params.BUILDING_MAX_WORKERS_OIL_DRILL,
     BuildingType.OIL_REFINERY: params.BUILDING_MAX_WORKERS_OIL_REFINERY,
+    BuildingType.PIPE: params.BUILDING_MAX_WORKERS_PIPE,
+    BuildingType.FLUID_TANK: params.BUILDING_MAX_WORKERS_FLUID_TANK,
+    BuildingType.TURRET: params.BUILDING_MAX_WORKERS_TURRET,
+    BuildingType.TRAP: params.BUILDING_MAX_WORKERS_TRAP,
 }
 
 # Housing capacity per building type (0 = not a dwelling)
@@ -138,6 +150,10 @@ BUILDING_HOUSING: dict[BuildingType, int] = {
     BuildingType.ROCKET_SILO: params.BUILDING_HOUSING_ROCKET_SILO,
     BuildingType.OIL_DRILL: params.BUILDING_HOUSING_OIL_DRILL,
     BuildingType.OIL_REFINERY: params.BUILDING_HOUSING_OIL_REFINERY,
+    BuildingType.PIPE: params.BUILDING_HOUSING_PIPE,
+    BuildingType.FLUID_TANK: params.BUILDING_HOUSING_FLUID_TANK,
+    BuildingType.TURRET: params.BUILDING_HOUSING_TURRET,
+    BuildingType.TRAP: params.BUILDING_HOUSING_TRAP,
 }
 
 # Storage capacity per building type.
@@ -170,6 +186,20 @@ BUILDING_STORAGE_CAPACITY: dict[BuildingType, int] = {
     BuildingType.ROCKET_SILO: params.BUILDING_STORAGE_ROCKET_SILO,
     BuildingType.OIL_DRILL: params.BUILDING_STORAGE_OIL_DRILL,
     BuildingType.OIL_REFINERY: params.BUILDING_STORAGE_OIL_REFINERY,
+    BuildingType.PIPE: params.BUILDING_STORAGE_PIPE,
+    BuildingType.FLUID_TANK: params.BUILDING_STORAGE_FLUID_TANK,
+    BuildingType.TURRET: params.BUILDING_STORAGE_TURRET,
+    BuildingType.TRAP: params.BUILDING_STORAGE_TRAP,
+}
+
+
+# Per-building max-health lookup.  Buildings not explicitly listed in
+# ``params.BUILDING_MAX_HEALTH`` fall back to the default.
+BUILDING_MAX_HEALTH: dict[BuildingType, float] = {
+    bt: float(params.BUILDING_MAX_HEALTH.get(
+        bt.name, params.BUILDING_DEFAULT_MAX_HEALTH,
+    ))
+    for bt in BuildingType
 }
 
 
@@ -207,6 +237,19 @@ class Building:
     quarry_output: "Resource | None" = None
     # Dwellings only: seconds accumulated toward the next birth.
     reproduction_timer: float = 0.0
+    # Combat health.  ``max_health`` is set at placement time from
+    # ``BUILDING_MAX_HEALTH``; ``health`` decreases when enemies
+    # attack and the building is removed when it hits 0.
+    max_health: float = 0.0
+    health: float = 0.0
+    # Turrets only: seconds remaining until the next shot may fire.
+    weapon_cooldown: float = 0.0
+    # Extra hex coords this building occupies beyond ``coord`` (its
+    # anchor).  Most buildings are single-tile and leave this empty;
+    # the Research Center occupies its anchor plus all 6 neighbours
+    # (a 1-radius hex cluster, 7 tiles total) so clicks on any of
+    # those tiles resolve to the same building.
+    footprint: tuple = ()
 
     @property
     def max_workers(self) -> int:
@@ -230,14 +273,25 @@ class BuildingManager:
         self._by_coord: dict[HexCoord, Building] = {}
         self._by_type: dict[BuildingType, list[Building]] = {}
 
-    def place(self, btype: BuildingType, coord: HexCoord) -> Building:
+    def place(
+        self, btype: BuildingType, coord: HexCoord,
+        footprint: tuple = (),
+    ) -> Building:
         b = Building(
             type=btype,
             coord=coord,
             storage_capacity=BUILDING_STORAGE_CAPACITY.get(btype, 0),
+            footprint=tuple(footprint),
         )
+        b.max_health = BUILDING_MAX_HEALTH.get(btype, params.BUILDING_DEFAULT_MAX_HEALTH)
+        b.health = b.max_health
         self.buildings.append(b)
         self._by_coord[coord] = b
+        # Register each extra footprint coord so .at() resolves
+        # clicks anywhere inside the building's footprint back to
+        # the same anchor Building instance.
+        for fc in b.footprint:
+            self._by_coord[fc] = b
         self._by_type.setdefault(btype, []).append(b)
         return b
 
@@ -248,6 +302,12 @@ class BuildingManager:
         """Remove a building from the manager."""
         self.buildings.remove(building)
         self._by_coord.pop(building.coord, None)
+        for fc in building.footprint:
+            # Only clear the footprint slot if it still points at
+            # this building (defensive in case a newer building was
+            # placed there).
+            if self._by_coord.get(fc) is building:
+                self._by_coord.pop(fc, None)
         type_list = self._by_type.get(building.type)
         if type_list is not None:
             try:

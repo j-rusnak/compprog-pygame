@@ -13,21 +13,91 @@ from compprog_pygame.games.hex_colony.buildings import (
     Building, BuildingManager, BuildingType,
     BUILDING_COSTS, BUILDING_HARVEST_RESOURCES, BUILDING_MAX_WORKERS,
 )
+from compprog_pygame.games.hex_colony.colony import ColonyState
 from compprog_pygame.games.hex_colony.hex_grid import HexCoord, HexGrid, Terrain
 from compprog_pygame.games.hex_colony.people import PopulationManager, Task
 from compprog_pygame.games.hex_colony.procgen import generate_terrain, UNBUILDABLE
 from compprog_pygame.games.hex_colony.resources import (
-    BuildingInventory, Inventory, MATERIAL_RECIPES, Resource, TERRAIN_RESOURCE,
+    BuildingInventory, FLUID_RESOURCES, Inventory, MATERIAL_RECIPES,
+    Resource, TERRAIN_RESOURCE,
 )
 from compprog_pygame.games.hex_colony.settings import HexColonySettings
+from compprog_pygame.games.hex_colony.settings import Difficulty
 from compprog_pygame.games.hex_colony.supply_chain import _hex_range
-from compprog_pygame.games.hex_colony.tech_tree import TECH_NODES
+from compprog_pygame.games.hex_colony.tech_tree import TECH_NODES, TechTree, TierTracker
+from compprog_pygame.games.hex_colony.ancient_threat import AncientThreat
+from compprog_pygame.games.hex_colony.combat import CombatManager
 from compprog_pygame.games.hex_colony import params
 from compprog_pygame.games.hex_colony.strings import (
     building_label,
     NOTIF_NEW_COLONIST,
     NOTIF_UNREACHABLE,
 )
+
+
+# Buildings that can produce, consume, or buffer a fluid resource.
+# Fluid networks are formed by BFS over PIPE tiles and these buildings;
+# a building only counts as "fluid-capable" if it appears in this set
+# (so e.g. Habitats don't accidentally join a pipe network).
+FLUID_CAPABLE_BUILDINGS: frozenset[BuildingType] = frozenset({
+    BuildingType.OIL_DRILL,        # produces OIL
+    BuildingType.OIL_REFINERY,     # consumes OIL, produces PETROLEUM/LUBRICANT
+    BuildingType.CHEMICAL_PLANT,   # consumes PETROLEUM, produces ROCKET_FUEL/RUBBER
+    BuildingType.FLUID_TANK,       # buffers a single fluid
+    BuildingType.ROCKET_SILO,      # consumes ROCKET_FUEL
+    BuildingType.MINING_MACHINE,   # can run on PETROLEUM
+    BuildingType.RESEARCH_CENTER,  # consumes ROCKET_FUEL for late research
+})
+
+
+# Buildings that occupy more than their anchor tile.  The value is the
+# list of *extra* axial offsets (dq, dr) added to the anchor coord to
+# produce the footprint coords.  The Research Center takes up a
+# full 1-radius hex cluster: its anchor + all 6 direct neighbours.
+_MULTI_TILE_OFFSETS: dict[BuildingType, tuple[tuple[int, int], ...]] = {
+    BuildingType.RESEARCH_CENTER: (
+        (1, 0), (-1, 0), (0, 1), (0, -1), (1, -1), (-1, 1),
+    ),
+}
+
+
+def building_footprint(btype: BuildingType, coord: "HexCoord") -> tuple:
+    """Return the extra hex coords a *btype* building anchored at
+    *coord* occupies beyond the anchor itself.  Empty tuple for
+    normal single-tile buildings.
+    """
+    offsets = _MULTI_TILE_OFFSETS.get(btype)
+    if not offsets:
+        return ()
+    return tuple(
+        HexCoord(coord.q + dq, coord.r + dr) for dq, dr in offsets
+    )
+
+
+# Per-building map of which fluids each producer NATIVELY OUTPUTS.
+# Drives :func:`_is_fluid_producer` so the fluid balancer can drain
+# producers into sinks first instead of distributing evenly across the
+# whole network (which would silently destroy mass when a producer's
+# slot is smaller than the actual storage it drew from).
+_FLUID_PRODUCER_OUTPUTS: dict[BuildingType, frozenset] = {}
+
+
+def _is_fluid_producer(b: "Building", fluid) -> bool:
+    """Return True if *b* natively produces *fluid* as an output."""
+    # Lazy import-time wiring of the producer map (avoids forward refs).
+    if not _FLUID_PRODUCER_OUTPUTS:
+        from compprog_pygame.games.hex_colony.resources import Resource as _R
+        _FLUID_PRODUCER_OUTPUTS[BuildingType.OIL_DRILL] = frozenset({_R.OIL})
+        _FLUID_PRODUCER_OUTPUTS[BuildingType.OIL_REFINERY] = frozenset({
+            _R.PETROLEUM,
+        })
+        _FLUID_PRODUCER_OUTPUTS[BuildingType.CHEMICAL_PLANT] = frozenset({
+            _R.ROCKET_FUEL,
+        })
+    outs = _FLUID_PRODUCER_OUTPUTS.get(b.type)
+    if outs is None:
+        return False
+    return fluid in outs
 
 
 @dataclass
@@ -71,6 +141,11 @@ class Network:
     # placed in a single tier and ``logistics_target`` is automatically
     # computed as ``floor(building_count / 3)``.
     worker_auto: bool = True
+    # Faction tag derived from member buildings.  Networks are pure
+    # connected components, so geographically separated colonies
+    # never share a network — every Network has a single faction.
+    # The UI only displays ``"SURVIVOR"`` networks.
+    faction: str = "SURVIVOR"
 
     @property
     def name(self) -> str:
@@ -80,23 +155,62 @@ class Network:
         return id(b) in self._bids
 
 
+@dataclass
+class FluidNetwork:
+    """A pipe-connected group of fluid-capable buildings.
+
+    Built by BFS over PIPE tiles plus any
+    :data:`FLUID_CAPABLE_BUILDINGS` adjacent to them.  Each tick the
+    world balances every fluid type within the network: the total
+    surplus held by producers (above their internal recipe needs) is
+    redistributed to demanders (consumers + tanks) up to their free
+    capacity.  Pipes themselves hold no resources — they're pure
+    connectors.
+    """
+    id: int
+    buildings: list[Building] = field(default_factory=list)
+    pipes: list[Building] = field(default_factory=list)
+
+
 class World:
     """Top-level game-state container."""
 
     def __init__(self, settings: HexColonySettings) -> None:
         self.settings = settings
         self.seed: str = "default"
+        # Mirror of Game.god_mode so simulation code (crafting, etc.)
+        # can grant cheats.  Game keeps this in sync on toggle.
+        self.god_mode: bool = False
+        # Coord of the rocket silo currently launching its rocket
+        # (set by RocketLaunchCutscene so the renderer can suppress
+        # the silo's rocket art and show an empty pad while the
+        # cutscene's rocket sprite is climbing skyward).
+        self.launching_silo_coord: "HexCoord | None" = None
         self.grid = HexGrid()
         self.buildings = BuildingManager()
         self.population = PopulationManager()
-        self.inventory = Inventory()
-        self.building_inventory = BuildingInventory()
+        # Per-faction colony state.  The player's "SURVIVOR" colony is
+        # always present; rival factions (future enemies) will add their
+        # own ColonyState entries here.  Convenience properties below
+        # alias the player's colony so legacy UI / Game code can keep
+        # using ``world.inventory`` etc. unchanged.
+        self.player_colony: ColonyState = ColonyState(
+            faction_id="SURVIVOR",
+            camp_coord=HexCoord(0, 0),
+            is_player=True,
+        )
+        self.colonies: dict[str, ColonyState] = {
+            self.player_colony.faction_id: self.player_colony,
+        }
         self.time_elapsed: float = 0.0
         self.real_time_elapsed: float = 0.0
-        # Cumulative resources produced by buildings (harvested/crafted).
-        # Separate from ``Inventory.total_produced`` which only counts
-        # resources that pass through the global pool.
-        self._total_produced: dict[Resource, float] = {r: 0.0 for r in Resource}
+        # Victory flag — set True by Game when the rocket-launch
+        # cutscene completes.  Treated as a game-over state with a
+        # positive "victory" reason by ``game_over`` / ``game_over_reason``.
+        self.game_won: bool = False
+        # Highest player-faction population observed during the
+        # session.  Surfaced on the game-over screen.
+        self.peak_population: int = 0
         self._housing_dirty: bool = True  # needs recalc on first frame
         # Networks only need rebuilding when buildings are added,
         # removed, or destroyed — population shifts alone don't change
@@ -131,6 +245,11 @@ class World:
         # independently in the UI.
         self.networks: list[Network] = []
         self._next_network_id: int = 1
+        # Pipe-based fluid networks (parallel to self.networks).
+        # Rebuilt whenever the topology changes.  Fluids never travel
+        # through worker logistics — only through these networks.
+        self.fluid_networks: list[FluidNetwork] = []
+        self._next_fluid_network_id: int = 1
         # Per-frame caches rebuilt by ``_rebuild_networks``.  Used by
         # the hot logistics / housing / unreachable-check loops to
         # avoid repeatedly scanning ``self.buildings.buildings`` (a
@@ -140,7 +259,7 @@ class World:
         self._valid_bids: set[int] = set()
         # Set of network ids that contain at least one populated
         # dwelling.  Recomputed each frame in ``update`` so the two
-        # callers (``_check_unreachable_buildings`` and
+        # callers (``_refresh_unreachable_caches`` and
         # ``unreachable_buildings``) don't each scan the population.
         self._populated_net_ids: set[int] = set()
         # Buildings we've already notified the player are unreachable
@@ -150,16 +269,93 @@ class World:
         # Optional NotificationManager plugged in by game.py for
         # one-time toasts like "No workers can reach X".
         self.notifications: object | None = None
-        # Optional TechTree reference plugged in by game.py so the
-        # research center can post per-resource demand for whatever
-        # research is currently active.
-        self.tech_tree: object | None = None
+        # Optional PerfMonitor plugged in by game.py so the per-
+        # frame ``world.update`` pass can report finer-grained
+        # subsection timings into the existing perf log without
+        # threading the monitor through every helper signature.
+        # Defaults to a no-op stub so unit tests / headless callers
+        # don't need to wire it up.
+        self.perf: object | None = None
         # Tiles whose terrain just changed because their resource ran
         # out.  The renderer drains this set each frame to clear the
         # static overlay sprites (trees, stones, ore crystals) on top
         # of the depleted hex and refresh the blended-colour cache so
         # the tile blends with neighbouring grass.
         self.pending_depleted_tiles: set[HexCoord] = set()
+        # Worker-assignment is one of the heaviest per-frame passes
+        # (O(B*P) per network).  We only need to redo it when the
+        # population set changes, networks are rebuilt, or the player
+        # edits priorities.  Otherwise a low-frequency refresh keeps
+        # production targets responsive without paying the cost every
+        # frame.
+        self._workers_dirty: bool = True
+        self._workers_refresh_accum: float = 0.0
+        # Throttle for ``_refresh_unreachable_caches`` and the
+        # cached ``unreachable_buildings`` / ``starved_producers``
+        # queries the renderer asks for every frame.
+        self._unreachable_accum: float = 0.0
+        self._unreachable_cache: set[int] = set()
+        self._starved_cache: set[int] = set()
+        # Ancient-tech threat — tracks awakening triggers and active towers.
+        self.ancient: AncientThreat = AncientThreat()
+        # Combat — ancient mechanical invaders that spawn after each
+        # awakening and (post-final-awakening) periodically.
+        self.combat: CombatManager = CombatManager()
+
+    # ── Player-colony aliases ────────────────────────────────────
+    # These properties exist so the rest of the game (UI panels,
+    # renderer, tutorial, save/load, tests) can keep reading
+    # ``world.inventory`` etc. as if there was a single global pool.
+    # Internally every gameplay system that *writes* to inventory /
+    # building_inventory / total_produced now goes through
+    # :meth:`colony_for` so AI factions get their own isolated state.
+
+    @property
+    def inventory(self) -> Inventory:
+        return self.player_colony.inventory
+
+    @property
+    def building_inventory(self) -> BuildingInventory:
+        return self.player_colony.building_inventory
+
+    @property
+    def tech_tree(self) -> TechTree:
+        return self.player_colony.tech_tree
+
+    @property
+    def tier_tracker(self) -> TierTracker:
+        return self.player_colony.tier_tracker
+
+    @property
+    def _total_produced(self) -> dict[Resource, float]:
+        return self.player_colony.total_produced
+
+    @property
+    def _tech_research_count(self) -> int:
+        return self.player_colony.tech_research_count
+
+    @_tech_research_count.setter
+    def _tech_research_count(self, value: int) -> None:
+        self.player_colony.tech_research_count = value
+
+    def colony_for(self, building_or_faction) -> ColonyState:
+        """Resolve a building (or bare faction-id string) to its
+        :class:`ColonyState`.  Falls back to the player colony for
+        unknown ids — defensive guard for legacy buildings that
+        somehow got placed without a faction tag."""
+        if isinstance(building_or_faction, str):
+            return self.colonies.get(building_or_faction, self.player_colony)
+        faction = getattr(building_or_faction, "faction", "SURVIVOR")
+        return self.colonies.get(faction, self.player_colony)
+
+    def colony_of_person(self, person) -> ColonyState:
+        """Each colonist's faction is determined by where they live.
+        Homeless people default to the player colony so the worker
+        scheduler doesn't drop them on the floor mid-game."""
+        home = getattr(person, "home", None)
+        if home is None:
+            return self.player_colony
+        return self.colony_for(home)
 
     @property
     def worker_priority(self) -> list[list[Building]]:
@@ -173,13 +369,85 @@ class World:
         return flat
 
     @property
-    def game_over(self) -> bool:
-        """The mission is lost when all survivors are dead."""
-        return self.population.count == 0 and self.time_elapsed > 0
+    def player_networks(self) -> list["Network"]:
+        """Subset of :attr:`networks` belonging to the player's faction.
 
-    def total_produced(self, res: Resource) -> float:
-        """Cumulative resources produced by all buildings (harvested/crafted)."""
-        return self._total_produced.get(res, 0.0)
+        AI rival networks (when added) are simulated separately and
+        must not appear in the player's worker / demand / supply UI panels.
+        """
+        return [n for n in self.networks if n.faction == "SURVIVOR"]
+
+    @property
+    def game_over(self) -> bool:
+        """The mission is lost when all *player* survivors are dead
+        OR the crashed spaceship (CAMP) is destroyed.  Winning
+        (``game_won``) also counts as "over" so the end-screen
+        overlay activates."""
+        if self.game_won:
+            return True
+        if self.time_elapsed <= 0:
+            return False
+        if self.player_population_count == 0:
+            return True
+        # Camp destruction = instant loss.
+        camp = self.buildings.at(self.player_colony.camp_coord)
+        if camp is None or getattr(camp, "type", None) != BuildingType.CAMP:
+            return True
+        return False
+
+    @property
+    def game_over_reason(self) -> str | None:
+        """Why the game ended, or ``None`` if it hasn't.
+
+        Returns one of:
+            ``"victory"``        — the player launched the rocket
+            ``"camp_destroyed"`` — the crashed ship was destroyed
+            ``"no_survivors"``   — every colonist died
+            ``None``             — the game is still running
+        """
+        if self.game_won:
+            return "victory"
+        if self.time_elapsed <= 0:
+            return None
+        camp = self.buildings.at(self.player_colony.camp_coord)
+        if camp is None or getattr(camp, "type", None) != BuildingType.CAMP:
+            return "camp_destroyed"
+        if self.player_population_count == 0:
+            return "no_survivors"
+        return None
+
+    def faction_population_count(self, faction: str) -> int:
+        """Number of colonists currently homed to *faction*.
+
+        People with no home default to the player faction so brand-new
+        spawns don't drop off the count between housing reassignments.
+        """
+        n = 0
+        for p in self.population.people:
+            home = getattr(p, "home", None)
+            if home is None:
+                if faction == self.player_colony.faction_id:
+                    n += 1
+                continue
+            if getattr(home, "faction", "SURVIVOR") == faction:
+                n += 1
+        return n
+
+    @property
+    def player_population_count(self) -> int:
+        """Convenience wrapper — count of player-faction colonists only.
+
+        UI panels showing the player's stats should use this instead of
+        ``world.population.count`` so AI rival colonies don't pollute
+        the displayed numbers.
+        """
+        return self.faction_population_count(self.player_colony.faction_id)
+
+    def total_produced(self, res: Resource, faction: str = "SURVIVOR") -> float:
+        """Cumulative resources produced by *faction*'s buildings."""
+        return self.colonies.get(
+            faction, self.player_colony,
+        ).total_produced.get(res, 0.0)
 
     # ── Generation ───────────────────────────────────────────────
 
@@ -197,14 +465,16 @@ class World:
         """
         world = cls(settings)
         world.seed = seed
-        world.grid, ai_camp_coords = generate_terrain(
+        world.combat.configure_seed(seed)
+        world.grid, _ai_camp_coords = generate_terrain(
             seed, settings, progress_callback=progress_callback,
         )
         world._place_starting_camp()
-        world._place_ai_tribal_camps(ai_camp_coords)
-        world._init_resources()
-        world._init_building_inventory()
-        world._spawn_people()
+        # Bootstrap the player's colony state with starting buildings,
+        # resources, and people.
+        world._init_colony_resources(world.player_colony)
+        world._init_colony_building_inventory(world.player_colony)
+        world._spawn_colony_people(world.player_colony)
         return world
 
     def _place_starting_camp(self) -> None:
@@ -230,64 +500,29 @@ class World:
             + params.START_IRON + params.START_COPPER,
         )
 
-    def _place_ai_tribal_camps(self, coords: list[HexCoord]) -> None:
-        """Place a primitive AI tribe camp at each given coordinate.
-
-        Each camp belongs to its own ``"PRIMITIVE_<i>"`` tribe so future
-        AI logic can treat them as independent factions.  If the target
-        tile is unbuildable (water/mountain), the nearest passable hex
-        within a small radius is used as a fallback.
-        """
-        for i, coord in enumerate(coords):
-            target = coord
-            tile = self.grid.get(target)
-            # Slide off impassable tiles to the nearest valid hex.
-            if tile is None or tile.terrain in UNBUILDABLE or tile.building is not None:
-                for radius in range(1, 6):
-                    found = False
-                    for q in range(-radius, radius + 1):
-                        for r in range(max(-radius, -q - radius),
-                                       min(radius, -q + radius) + 1):
-                            cand = HexCoord(coord.q + q, coord.r + r)
-                            ct = self.grid.get(cand)
-                            if (ct is not None
-                                    and ct.terrain not in UNBUILDABLE
-                                    and ct.building is None):
-                                target = cand
-                                tile = ct
-                                found = True
-                                break
-                        if found:
-                            break
-                    if found:
-                        break
-            if tile is None:
-                continue
-            camp = self.buildings.place(BuildingType.TRIBAL_CAMP, target)
-            camp.faction = f"PRIMITIVE_{i}"
-            tile.building = camp
-
-    def _init_resources(self) -> None:
+    def _init_colony_resources(self, colony: ColonyState) -> None:
         s = self.settings
-        self.inventory[Resource.WOOD] = s.start_wood
-        self.inventory[Resource.FIBER] = s.start_fiber
-        self.inventory[Resource.STONE] = s.start_stone
-        self.inventory[Resource.FOOD] = s.start_food
-        self.inventory[Resource.IRON] = params.START_IRON
-        self.inventory[Resource.COPPER] = params.START_COPPER
+        inv = colony.inventory
+        inv[Resource.WOOD] = s.start_wood
+        inv[Resource.FIBER] = s.start_fiber
+        inv[Resource.STONE] = s.start_stone
+        inv[Resource.FOOD] = s.start_food
+        inv[Resource.IRON] = params.START_IRON
+        inv[Resource.COPPER] = params.START_COPPER
 
-    def _init_building_inventory(self) -> None:
-        """Give the player their starting buildings."""
+    def _init_colony_building_inventory(self, colony: ColonyState) -> None:
+        """Give *colony* the standard starting kit of placeable buildings."""
         for name, count in params.START_BUILDINGS.items():
             btype = BuildingType[name]
-            self.building_inventory.add(btype, count)
+            colony.building_inventory.add(btype, count)
 
-    def _spawn_people(self) -> None:
-        origin = HexCoord(0, 0)
-        camp = self.buildings.at(origin)
+    def _spawn_colony_people(self, colony: ColonyState) -> None:
+        """Spawn the starting population at *colony*'s camp.  Each
+        person's home is set to that camp so the worker / housing
+        systems associate them with the right faction."""
+        camp = self.buildings.at(colony.camp_coord)
         for _ in range(self.settings.start_population):
-            p = self.population.spawn(origin, self.settings.hex_size)
-            # Initial assignment handled by _update_housing in first update
+            p = self.population.spawn(colony.camp_coord, self.settings.hex_size)
             if camp is not None:
                 p.home = camp
                 camp.residents += 1
@@ -297,6 +532,24 @@ class World:
     def update(self, dt: float) -> None:
         """Advance the simulation by *dt* seconds."""
         self.time_elapsed += dt
+        # Cheap perf-section helper: routes into the optional perf
+        # monitor when one is attached, otherwise a no-op contextmgr.
+        from contextlib import nullcontext
+        perf = self.perf
+        if perf is not None:
+            _section = perf.section  # type: ignore[attr-defined]
+        else:
+            def _section(_name: str) -> object:  # type: ignore[misc]
+                return nullcontext()
+
+        # Offline-trained perf auto-tuner: reclassifies the world
+        # every couple of seconds and applies the matching profile
+        # (knob nudges in :mod:`params`).  Pure dict lookup at
+        # runtime — no ML, no allocations on the hot path.
+        from compprog_pygame.games.hex_colony import perf_autotune
+        with _section("w.autotune"):
+            perf_autotune.maybe_retune(self, dt)
+
         # Clear the per-update BFS path cache.  Building topology
         # cannot change mid-update, so any path computed during this
         # tick can be safely shared between callers.
@@ -304,7 +557,8 @@ class World:
 
         # Recompute connected housing only when buildings/population changed
         if self._housing_dirty:
-            self._update_housing()
+            with _section("w.housing"):
+                self._update_housing()
             self._housing_dirty = False
 
         # Networks track the building-graph topology.  Only rebuild
@@ -312,36 +566,90 @@ class World:
         # full BFS+merge pass is expensive once there are many
         # buildings.
         if self._networks_dirty:
-            self._rebuild_networks()
+            with _section("w.networks"):
+                self._rebuild_networks()
+                self._rebuild_fluid_networks()
             self._networks_dirty = False
         # ``_populated_net_ids`` depends on people's home assignments
         # (which can shift between rebuilds), so refresh it every
         # frame — this is a cheap O(people) pass.
-        self._refresh_populated_net_ids()
+        with _section("w.pop_nets"):
+            self._refresh_populated_net_ids()
 
-        self._assign_workers()
-        self._dispatch_commuters()
+        # ``_assign_workers`` is the heaviest per-frame pass.  Run it
+        # only when something changed (housing rebuild, network
+        # rebuild, player priority edit, population change) or once
+        # per ~500 ms to keep effective_worker_demand responsive to
+        # stockpile shifts.
+        self._workers_refresh_accum += dt
+        if self._workers_dirty or self._workers_refresh_accum >= 0.5:
+            with _section("w.workers"):
+                self._assign_workers()
+                self._dispatch_commuters()
+            self._workers_dirty = False
+            self._workers_refresh_accum = 0.0
 
         # Farm & Refinery production
-        self._update_production(dt)
+        with _section("w.production"):
+            self._update_production(dt)
 
         # Workshop crafting
-        self._update_workshops(dt)
+        with _section("w.workshops"):
+            self._update_workshops(dt)
+
+        # Fluid balancing through pipe networks (oil/petroleum/etc.).
+        with _section("w.fluids"):
+            self._update_fluids(dt)
 
         # Logistics dispatch (runs before population.update so newly
         # assigned paths are walked this same frame).
-        self._update_logistics(dt)
+        with _section("w.logistics"):
+            self._update_logistics(dt)
 
         # Move people
-        self.population.update(dt, self, self.settings.hex_size)
+        with _section("w.people"):
+            self.population.update(dt, self, self.settings.hex_size)
 
         # Natural population growth from well-fed, spacious dwellings.
-        self._update_population_growth(dt)
+        with _section("w.popgrow"):
+            self._update_population_growth(dt)
 
         # Finally, recount present workers (must be AFTER movement so
         # newly-arrived commuters are credited this frame).
-        self._recount_present_workers()
-        self._check_unreachable_buildings()
+        with _section("w.recount"):
+            self._recount_present_workers()
+        # Unreachable / starved checks only need to run at human-
+        # noticeable rates (~2 Hz).  The cached id-sets are reused by
+        # the renderer every frame.  The exact cadence is auto-tuned
+        # via params.UNREACHABLE_RECHECK_INTERVAL (offline ML loop).
+        self._unreachable_accum += dt
+        recheck_interval = float(
+            getattr(params, "UNREACHABLE_RECHECK_INTERVAL", 0.5)
+        )
+        if self._unreachable_accum >= recheck_interval:
+            self._unreachable_accum = 0.0
+            with _section("w.unreachable"):
+                self._refresh_unreachable_caches()
+
+        # Ancient-tech threat: cheap escalation check.  Skipped on
+        # Isolation (peaceful sandbox — no awakenings, no enemies).
+        is_peaceful = (
+            getattr(self.settings, "difficulty", None) == Difficulty.EASY
+        )
+        if not is_peaceful:
+            with _section("w.ancient"):
+                self.ancient.tick(self)
+        # Combat: enemies, projectiles, defensive weapons.  Always
+        # ticked so god-mode-spawned enemies move on peaceful too;
+        # automatic wave spawning stays gated behind the ancient
+        # tick (which is the only thing that schedules waves).
+        if not is_peaceful or self.combat.enemies or self.combat.projectiles:
+            with _section("w.combat"):
+                self.combat.tick(self, dt)
+        # Track high-water population for the end-of-game summary.
+        pop = self.player_population_count
+        if pop > self.peak_population:
+            self.peak_population = pop
 
     def mark_housing_dirty(self) -> None:
         """Flag that housing assignments need recalculation.
@@ -352,12 +660,38 @@ class World:
         """
         self._housing_dirty = True
         self._networks_dirty = True
+        self._workers_dirty = True
         self._topology_version += 1
+
+    def demolish(self, b: "Building") -> None:
+        """Remove a building from the manager AND clear every grid
+        tile it occupied (anchor + footprint).  Use this in place of
+        ``buildings.remove`` + ``tile.building = None`` so multi-tile
+        buildings (e.g. Research Center) don't leave stale footprint
+        tiles pointing at a deleted building.
+        """
+        for c in (b.coord, *b.footprint):
+            tile = self.grid.get(c)
+            if tile is not None and tile.building is b:
+                tile.building = None
+        try:
+            self.buildings.remove(b)
+        except Exception:
+            pass
 
     def mark_networks_dirty(self) -> None:
         """Flag that the network/component graph needs rebuilding."""
         self._networks_dirty = True
+        self._workers_dirty = True
         self._topology_version += 1
+
+    def mark_population_changed(self) -> None:
+        """Flag that people were added or removed.  Triggers a housing
+        reassignment and a worker re-allocation but *not* a network
+        rebuild — births / deaths don't change the building topology.
+        """
+        self._housing_dirty = True
+        self._workers_dirty = True
 
     def _refresh_populated_net_ids(self) -> None:
         """Recompute the set of network ids that house at least one
@@ -539,6 +873,7 @@ class World:
                     if parent_ids and parent_ids[0] in old_nets
                     else True
                 ),
+                faction=(comp[0].faction if comp else "SURVIVOR"),
             ))
 
         # Stable display order: by id ascending.
@@ -565,6 +900,183 @@ class World:
             if p.home is not None
             and (net := self._bid_to_network.get(id(p.home))) is not None
         }
+        # Topology-change implies worker assignments need a refresh.
+        self._workers_dirty = True
+
+    # ── Fluid networks (parallel to building networks) ───────────
+
+    def _rebuild_fluid_networks(self) -> None:
+        """Recompute :attr:`fluid_networks` from current PIPE tiles
+        and adjacent fluid-capable buildings.
+
+        BFS connectors are PIPE tiles AND FLUID_TANK tiles — placing
+        two tanks side-by-side forms an implicit pipe link between
+        them, so players don't need to slot a one-tile pipe to fuse
+        adjacent storage.  Other fluid-capable buildings (drill,
+        refinery, chemical plant, silo, etc.) join the network of any
+        connector that touches them, but do not themselves bridge.
+        """
+        # Collect all pipes/tanks and a coord→building lookup.
+        all_buildings = self.buildings.buildings
+        by_coord: dict[HexCoord, Building] = {b.coord: b for b in all_buildings}
+        connector_types = (BuildingType.PIPE, BuildingType.FLUID_TANK)
+        connectors = [b for b in all_buildings if b.type in connector_types]
+
+        visited_conn: set[int] = set()
+        new_networks: list[FluidNetwork] = []
+        for seed in connectors:
+            if id(seed) in visited_conn:
+                continue
+            comp_pipes: list[Building] = []
+            comp_buildings_set: dict[int, Building] = {}
+            queue: deque[Building] = deque([seed])
+            visited_conn.add(id(seed))
+            # Tanks are both connectors AND members of the network
+            # (they hold fluid).  Pipes are pure connectors.
+            if seed.type != BuildingType.PIPE:
+                comp_buildings_set.setdefault(id(seed), seed)
+            while queue:
+                node = queue.popleft()
+                if node.type == BuildingType.PIPE:
+                    comp_pipes.append(node)
+                for nb_coord in node.coord.neighbors():
+                    nb = by_coord.get(nb_coord)
+                    if nb is None:
+                        continue
+                    if nb.type in connector_types:
+                        if id(nb) not in visited_conn:
+                            visited_conn.add(id(nb))
+                            if nb.type != BuildingType.PIPE:
+                                comp_buildings_set.setdefault(id(nb), nb)
+                            queue.append(nb)
+                    elif nb.type in FLUID_CAPABLE_BUILDINGS:
+                        # Join, but do not BFS through buildings.
+                        comp_buildings_set.setdefault(id(nb), nb)
+            net_id = self._next_fluid_network_id
+            self._next_fluid_network_id += 1
+            new_networks.append(FluidNetwork(
+                id=net_id,
+                buildings=list(comp_buildings_set.values()),
+                pipes=comp_pipes,
+            ))
+
+        self.fluid_networks = new_networks
+
+    def _update_fluids(self, dt: float) -> None:
+        """Push fluid from producers toward sinks (consumers + tanks)
+        within each pipe network.
+
+        For each (network, fluid):
+          1. Identify producers (the building natively *outputs* this
+             fluid) and sinks (consumers and tanks).
+          2. Drain all producer storage into a shared pool, then fill
+             sinks evenly (proportional to their per-fluid capacity).
+          3. Any pool remainder flows back into producers, also
+             proportionally.  Producer per-fluid capacity is the full
+             ``storage_capacity`` so no fluid is destroyed.
+
+        This preserves total mass while giving consumers/tanks
+        priority over the producer's own buffer — a drill piped to a
+        tank empties into the tank rather than oscillating, and
+        oil produced when the tank is full simply backs up in the
+        drill (which then halts production via ``_storage_free``).
+        """
+        if not self.fluid_networks:
+            return
+        for net in self.fluid_networks:
+            if not net.buildings:
+                continue
+            for fluid in FLUID_RESOURCES:
+                producers: list[tuple[Building, float]] = []
+                sinks: list[tuple[Building, float]] = []
+                pool = 0.0
+                for b in net.buildings:
+                    cap = self._fluid_capacity_for(b, fluid)
+                    if cap <= 0:
+                        continue
+                    cur = b.storage.get(fluid, 0.0)
+                    if cur > cap:
+                        cur = cap  # safety clamp
+                    if _is_fluid_producer(b, fluid):
+                        producers.append((b, cap))
+                        pool += cur
+                    else:
+                        sinks.append((b, cap))
+                        pool += cur
+                if not producers and not sinks:
+                    continue
+                # Fill sinks first (proportional to capacity).
+                sink_cap = sum(c for _, c in sinks)
+                if sinks and sink_cap > 0:
+                    take_for_sinks = min(pool, sink_cap)
+                    ratio = take_for_sinks / sink_cap
+                    for b, cap in sinks:
+                        b.storage[fluid] = cap * ratio
+                    pool -= take_for_sinks
+                else:
+                    # No sinks — clear any stale value just in case.
+                    for b, _ in sinks:
+                        b.storage[fluid] = 0.0
+                # Any leftover stays in producers (proportionally).
+                prod_cap = sum(c for _, c in producers)
+                if producers:
+                    if prod_cap > 0 and pool > 0:
+                        ratio = min(1.0, pool / prod_cap)
+                        for b, cap in producers:
+                            b.storage[fluid] = cap * ratio
+                    else:
+                        for b, _ in producers:
+                            b.storage[fluid] = 0.0
+
+    def _fluid_capacity_for(
+        self, b: Building, fluid: Resource,
+    ) -> float:
+        """Per-fluid capacity of *b* (0 if it doesn't handle that fluid).
+
+        Used by :meth:`_update_fluids` to decide which network members
+        can receive a given fluid.  Capacity is dedicated per-fluid
+        within the building's own ``storage_capacity``: a refinery can
+        hold up to ~half its capacity in OIL plus half in PETROLEUM,
+        for instance.  Producers get the *full* capacity for their
+        output fluid so that drained-into-network values are never
+        truncated, which would silently destroy fluid mass.  Pipes
+        have no capacity.
+        """
+        if b.type == BuildingType.PIPE:
+            return 0.0
+        # Fluid tank: only the player-selected fluid, full capacity.
+        if b.type == BuildingType.FLUID_TANK:
+            if b.stored_resource == fluid:
+                return float(b.storage_capacity)
+            return 0.0
+        # Storage building: only if configured for this fluid (rare;
+        # normally players use FLUID_TANK).
+        if b.type == BuildingType.STORAGE:
+            if b.stored_resource == fluid:
+                return float(b.storage_capacity)
+            return 0.0
+        # Producer's own output fluid: full capacity (so the drill
+        # can buffer crude when the network is full instead of having
+        # it silently clipped away).
+        if _is_fluid_producer(b, fluid):
+            return float(b.storage_capacity)
+        # Consumers: each fluid they natively use gets a half-
+        # capacity slot.  Numbers chosen to be generous so a refinery
+        # can buffer some OIL while still holding its solid output.
+        slot = b.storage_capacity * 0.5
+        if b.type == BuildingType.OIL_REFINERY and fluid == Resource.OIL:
+            return slot
+        if b.type == BuildingType.CHEMICAL_PLANT and fluid == Resource.PETROLEUM:
+            return slot
+        if b.type == BuildingType.MINING_MACHINE and fluid == Resource.PETROLEUM:
+            return slot
+        if b.type == BuildingType.ROCKET_SILO and fluid == Resource.ROCKET_FUEL:
+            # Full capacity so the silo can hold enough fuel to launch
+            # (the win condition checks storage == storage_capacity).
+            return float(b.storage_capacity)
+        if b.type == BuildingType.RESEARCH_CENTER and fluid == Resource.ROCKET_FUEL:
+            return slot
+        return 0.0
 
     # ── Worker assignment & dispatch ─────────────────────────────
 
@@ -720,12 +1232,14 @@ class World:
             net.priority = [flat] if flat else []
             # Auto logistics: 1 worker per 4 buildings (rounded down,
             # always at least 1 if the network has any countable
-            # buildings).  Excludes paths, bridges and walls.
+            # buildings).  Excludes paths, bridges, walls and housing
+            # (housing has no inputs/outputs to haul).
             countable = [
                 b for b in net.buildings
                 if b.type not in (
                     BuildingType.PATH, BuildingType.BRIDGE,
-                    BuildingType.WALL,
+                    BuildingType.WALL, BuildingType.HOUSE,
+                    BuildingType.HABITAT,
                 )
             ]
             if countable:
@@ -774,14 +1288,20 @@ class World:
                 continue
             by_network.setdefault(net.id, []).append(p)
 
-        camp_coord = HexCoord(0, 0)
-        camp = self.buildings.at(camp_coord)
+        # Pre-compute per-network demand caches so the per-building
+        # _effective_worker_demand calls are O(1) instead of O(B).
+        for net in self.networks:
+            self._precompute_network_demand_caches(net)
 
         for net in self.networks:
             people = by_network.get(net.id, [])
+            # Look up the owning faction's camp so homeless overflow at
+            # *that* camp is excluded from the available worker pool.
+            net_colony = self.colonies.get(net.faction, self.player_colony)
+            camp = self.buildings.at(net_colony.camp_coord)
             # Available = people in this network who aren't "homeless
             # overflow" at the camp.  Homeless people still belong to
-            # network 1 (where the camp is) and can be assigned.
+            # the network containing the camp and can be assigned.
             available = len(people)
             if camp is not None and net.contains(camp):
                 homeless = max(0, camp.residents - camp.housing_capacity)
@@ -893,9 +1413,24 @@ class World:
                 if want_workplace is not None:
                     # Production worker.
                     if p.is_logistics:
+                        # Stash any in-flight cargo back into faction
+                        # storage instead of silently destroying it —
+                        # the previous code zeroed the carrier without
+                        # depositing, leaking IRON_BAR/etc. and
+                        # leaving stale ``logistics_res``/``amount``
+                        # fields that confused the logistics monitor.
+                        if (p.logistics_res is not None
+                                and (p.logistics_amount or 0.0) > 0):
+                            self._stash_orphan_cargo(
+                                self.colony_of_person(p),
+                                p.logistics_res,
+                                p.logistics_amount,
+                            )
                         p.is_logistics = False
                         p.logistics_src = None
                         p.logistics_dst = None
+                        p.logistics_res = None
+                        p.logistics_amount = 0.0
                         p.carry_resource = None
                         p.path = []
                         p.task = Task.IDLE
@@ -915,9 +1450,18 @@ class World:
                     # No slot at all — go idle (rare; only if camp is
                     # over capacity and we deliberately excluded them).
                     if p.is_logistics:
+                        if (p.logistics_res is not None
+                                and (p.logistics_amount or 0.0) > 0):
+                            self._stash_orphan_cargo(
+                                self.colony_of_person(p),
+                                p.logistics_res,
+                                p.logistics_amount,
+                            )
                         p.is_logistics = False
                         p.logistics_src = None
                         p.logistics_dst = None
+                        p.logistics_res = None
+                        p.logistics_amount = 0.0
                         p.carry_resource = None
                     p.workplace_target = None
                     p.workplace = None
@@ -955,7 +1499,10 @@ class World:
                 or (p.path and p.path[-1] != tgt.coord)
             )
             if needs_path:
-                path = self._find_building_path(p.hex_pos, tgt.coord)
+                path = self._find_building_path(
+                    p.hex_pos, tgt.coord,
+                    faction=self.colony_of_person(p).faction_id,
+                )
                 if path:
                     p.path = path
                     p.task = Task.COMMUTE
@@ -1024,14 +1571,23 @@ class World:
         other building offers any resource it currently holds *except*
         ones it is itself demanding (so logistics workers don't shuttle
         recipe inputs out of a workshop they were just delivered to).
+
+        Fluid resources (oil, petroleum, lubricant, rocket fuel) are
+        deliberately excluded — they only move through the parallel
+        pipe network and are never carried by workers.
         """
         out: dict[Resource, float] = {}
-        # STORAGE: supplies its configured resource.
+        # STORAGE: supplies its configured resource (unless it's a
+        # fluid; fluids belong to FLUID_TANK + the pipe network).
         if b.type == BuildingType.STORAGE:
-            if b.stored_resource is not None:
+            if (b.stored_resource is not None
+                    and b.stored_resource not in FLUID_RESOURCES):
                 amt = b.storage.get(b.stored_resource, 0.0)
                 if amt > 0:
                     out[b.stored_resource] = amt
+            return out
+        # Fluid tanks never offer their contents to worker logistics.
+        if b.type == BuildingType.FLUID_TANK:
             return out
         # Dwellings only consume FOOD — they never supply.  Treating
         # dwellings as suppliers caused workers to ping-pong food
@@ -1040,23 +1596,79 @@ class World:
         if b.housing_capacity > 0:
             return out
         # All other buildings: anything in storage that isn't on their
-        # own demand list is fair game as supply.
+        # own demand list is fair game as supply, except fluids.
+        # Crafting stations additionally never supply any ingredient
+        # of their currently selected recipe — even when their input
+        # buffer is full — so logistics workers can't shuttle a
+        # workshop's own recipe inputs back out of it.
+        reserved: set[Resource] = set()
+        if b.type in (
+            BuildingType.WORKSHOP, BuildingType.FORGE,
+            BuildingType.REFINERY, BuildingType.ASSEMBLER,
+            BuildingType.CHEMICAL_PLANT, BuildingType.OIL_REFINERY,
+        ):
+            if isinstance(b.recipe, Resource):
+                mrec = MATERIAL_RECIPES.get(b.recipe)
+                if mrec is not None:
+                    reserved.update(mrec.inputs.keys())
+            elif isinstance(b.recipe, BuildingType):
+                cost = BUILDING_COSTS.get(b.recipe)
+                if cost is not None:
+                    reserved.update(cost.costs.keys())
+        # Mining machines actively need their fuel resources to keep
+        # producing ore.  Without this reservation, once a mining
+        # machine's fuel buffer fills up, ``_building_demand`` stops
+        # asking for more fuel — and then the same fuel sitting in
+        # storage gets re-classified as supply and hauled back out,
+        # starving the machine the moment it burns through its buffer.
+        if b.type == BuildingType.MINING_MACHINE:
+            for fuel_name in params.MINING_MACHINE_FUELS:
+                reserved.add(Resource[fuel_name])
+        # Research Centers reserve every resource the currently
+        # active tech still needs.  Without this, once the RC's
+        # storage exceeds the per-resource demand cap (2x remaining)
+        # the resource is no longer demanded and is then offered as
+        # supply — workers haul it out faster than the research can
+        # consume it, the resource is sent elsewhere, and the
+        # research stalls a few percent short of completion.
+        if b.type == BuildingType.RESEARCH_CENTER:
+            tt = self.colony_for(b).tech_tree
+            if tt is not None and getattr(tt, "current_research", None):
+                node = TECH_NODES.get(tt.current_research)
+                if node is not None:
+                    consumed_now = getattr(tt, "_consumed", {}) or {}
+                    for res, total_amt in node.cost.items():
+                        if total_amt - consumed_now.get(res, 0.0) > 0:
+                            reserved.add(res)
         demanded = set(self._building_demand(b).keys())
         for r, amt in b.storage.items():
-            if amt > 0 and r not in demanded:
+            if r in FLUID_RESOURCES:
+                continue
+            if r in reserved or r in demanded:
+                continue
+            if amt > 0:
                 out[r] = amt
         return out
 
     def _building_demand(self, b: "Building") -> dict[Resource, float]:
         """Resources *b* wants delivered, with the free space/amount
-        it can still accept."""
+        it can still accept.
+
+        Fluids are deliberately excluded from the result — they only
+        flow through the pipe network and are never carried by
+        workers.
+        """
         out: dict[Resource, float] = {}
         free = self._storage_free(b)
         if free <= 0:
             return out
+        # Fluid tanks never demand from the worker logistics.
+        if b.type == BuildingType.FLUID_TANK:
+            return out
         # STORAGE: demands its configured resource up to free space.
         if b.type == BuildingType.STORAGE:
-            if b.stored_resource is not None:
+            if (b.stored_resource is not None
+                    and b.stored_resource not in FLUID_RESOURCES):
                 out[b.stored_resource] = free
             return out
         # Dwellings: demand FOOD (capped at 50 worth of food on-site,
@@ -1090,9 +1702,23 @@ class World:
         ) and isinstance(b.recipe, Resource):
             mrec = MATERIAL_RECIPES.get(b.recipe)
             if mrec is not None:
+                # Reserve ~80% of storage for inputs so the output
+                # has room to accumulate between worker pickups.
+                budget = b.storage_capacity * 0.8
+                # Ignore fluid inputs when sizing the per-input cap —
+                # they don't occupy worker-deliverable storage.
+                solid = {r: a for r, a in mrec.inputs.items()
+                         if r not in FLUID_RESOURCES}
+                total = sum(solid.values()) or 1.0
+                # Default desired buffer is 2x the recipe amount, but
+                # scale every input down proportionally if 2x for all
+                # inputs would exceed the budget.
+                scale = min(2.0, budget / total)
                 for res, amt in mrec.inputs.items():
+                    if res in FLUID_RESOURCES:
+                        continue
                     have = b.storage.get(res, 0.0)
-                    target = amt * 2
+                    target = amt * scale
                     need = max(0.0, target - have)
                     if need > 0.5:
                         out[res] = need
@@ -1104,9 +1730,18 @@ class World:
         if isinstance(b.recipe, BuildingType):
             cost = BUILDING_COSTS.get(b.recipe)
             if cost is not None:
+                # Building recipes don't store an output, so the full
+                # storage capacity is available for inputs.
+                budget = b.storage_capacity
+                solid = {r: a for r, a in cost.costs.items()
+                         if r not in FLUID_RESOURCES}
+                total = sum(solid.values()) or 1.0
+                scale = min(2.0, budget / total)
                 for res, amt in cost.costs.items():
+                    if res in FLUID_RESOURCES:
+                        continue
                     have = b.storage.get(res, 0.0)
-                    target = amt * 2
+                    target = amt * scale
                     need = max(0.0, target - have)
                     if need > 0.5:
                         out[res] = need
@@ -1118,7 +1753,7 @@ class World:
         # TechTree.tick() naturally distribute the load across
         # multiple research centers.
         if b.type == BuildingType.RESEARCH_CENTER:
-            tt = self.tech_tree
+            tt = self.colony_for(b).tech_tree
             if tt is not None and getattr(tt, "current_research", None):
                 node = TECH_NODES.get(tt.current_research)
                 if node is not None:
@@ -1133,6 +1768,12 @@ class World:
                         need = max(0.0, target - have)
                         if need > 0.5:
                             out[res] = need
+        # Fluids are never carried by workers — drop any that slipped
+        # through (e.g. PETROLEUM as mining-machine fuel, OIL into the
+        # refinery, ROCKET_FUEL into the silo / research center).
+        for fr in list(out):
+            if fr in FLUID_RESOURCES:
+                del out[fr]
         return out
 
     def _is_producer(self, b: "Building") -> bool:
@@ -1156,7 +1797,7 @@ class World:
         ) and isinstance(b.recipe, Resource):
             return True
         if b.type == BuildingType.RESEARCH_CENTER:
-            tt = self.tech_tree
+            tt = self.colony_for(b).tech_tree
             if tt is not None and getattr(tt, "current_research", None):
                 return True
         if b.housing_capacity > 0:
@@ -1193,7 +1834,14 @@ class World:
     ) -> tuple[float, float]:
         """Return (total_stock, total_capacity) for ``res`` across all
         buildings in ``net`` plus the global inventory."""
-        stock = float(self.inventory[res])
+        cached = getattr(net, "_buffer_cache", None)
+        if cached is not None:
+            entry = cached.get(res)
+            if entry is not None:
+                return entry
+        # Use the inventory of the faction owning this network.
+        inv = self.colonies.get(net.faction, self.player_colony).inventory
+        stock = float(inv[res])
         cap = 0.0
         for b in net.buildings:
             stock += float(b.storage.get(res, 0.0))
@@ -1202,6 +1850,44 @@ class World:
         # so brand-new networks still register pressure correctly.
         cap = max(cap, 1.0)
         return stock, cap
+
+    def _precompute_network_demand_caches(self, net: "Network") -> None:
+        """Populate per-network caches used by :meth:`_effective_worker_demand`
+        so the inner loop is O(1) per building instead of O(B).  Called
+        once at the top of :meth:`_assign_workers` for each network.
+        """
+        # Sum stock/cap per resource across the network (+ global inv
+        # for stock).  Capacity is the same for every resource (each
+        # building's full storage), so we sum it once.
+        total_cap = 0.0
+        per_res_stock: dict[Resource, float] = {}
+        consumers_per_res: dict[Resource, int] = {}
+        food_consumers = 0
+        for b in net.buildings:
+            total_cap += float(b.storage_capacity)
+            for r, amt in b.storage.items():
+                if amt:
+                    per_res_stock[r] = per_res_stock.get(r, 0.0) + float(amt)
+            recipe = getattr(b, "recipe", None)
+            if isinstance(recipe, Resource) and self._is_consumer(b):
+                consumers_per_res[recipe] = consumers_per_res.get(recipe, 0) + 1
+            if b.housing_capacity > 0:
+                food_consumers += 1
+        if food_consumers:
+            consumers_per_res[Resource.FOOD] = (
+                consumers_per_res.get(Resource.FOOD, 0) + food_consumers
+            )
+        total_cap = max(total_cap, 1.0)
+        buffer_cache: dict[Resource, tuple[float, float]] = {}
+        # Lazy-fill via _network_resource_buffer fallback for resources
+        # not present in storage; pre-seed the common ones from the
+        # accumulated stock map.  Uses the owning faction's inventory.
+        inv = self.colonies.get(net.faction, self.player_colony).inventory
+        for r in per_res_stock:
+            buffer_cache[r] = (per_res_stock[r] + float(inv[r]), total_cap)
+        net._buffer_cache = buffer_cache  # type: ignore[attr-defined]
+        net._buffer_cap = total_cap  # type: ignore[attr-defined]
+        net._consumers_per_res = consumers_per_res  # type: ignore[attr-defined]
 
     def _effective_worker_demand(
         self, b: "Building", net: "Network",
@@ -1223,22 +1909,36 @@ class World:
         out = self._building_output(b)
         if out is None or self._is_consumer(b):
             return max_w
+        # Per-network caches populated by
+        # :meth:`_precompute_network_demand_caches` collapse this from
+        # O(B) per call to O(1).  Fall back to the on-demand path when
+        # the cache hasn't been populated yet (edge cases / tests).
+        consumers_map = getattr(net, "_consumers_per_res", None)
+        if consumers_map is not None and out in consumers_map:
+            consumers_here = consumers_map[out]
+            # ``b`` itself counts in that map only if it's also a
+            # consumer of its own output — in practice that doesn't
+            # happen, but stay defensive.
+            recipe = getattr(b, "recipe", None)
+            if isinstance(recipe, Resource) and recipe == out and self._is_consumer(b):
+                consumers_here -= 1
+            if consumers_here > 0:
+                return max_w
+        else:
+            # Fallback path: original O(B) scan.
+            consumers_here = 0
+            for other in net.buildings:
+                if other is b or not self._is_consumer(other):
+                    continue
+                recipe = getattr(other, "recipe", None)
+                if isinstance(recipe, Resource) and recipe == out:
+                    consumers_here += 1
+                    continue
+                if other.housing_capacity > 0 and out == Resource.FOOD:
+                    consumers_here += 1
+            if consumers_here > 0:
+                return max_w
         stock, cap = self._network_resource_buffer(net, out)
-        # How many other buildings in this network consume ``out``?
-        consumers_here = 0
-        for other in net.buildings:
-            if other is b or not self._is_consumer(other):
-                continue
-            recipe = getattr(other, "recipe", None)
-            if isinstance(recipe, Resource) and recipe == out:
-                consumers_here += 1
-                continue
-            # Housing consumes food.
-            if other.housing_capacity > 0 and out == Resource.FOOD:
-                consumers_here += 1
-        # Active consumers ⇒ keep the producer fully staffed.
-        if consumers_here > 0:
-            return max_w
         # No internal consumer: scale by stockpile pressure.
         # 0 stock → full crew; ≥cap → single worker.
         ratio = min(1.0, stock / cap) if cap > 0 else 0.0
@@ -1262,11 +1962,13 @@ class World:
             LOGISTICS_DELIVER → on arrival at dst, deposit cargo, then
                                 return to LOGISTICS_IDLE.
 
-        Job-finding (the expensive O(buildings²) scan) is throttled to
-        ``params.LOGISTICS_JOBS_PER_FRAME`` idle workers per frame in
-        round-robin order — when 50+ haulers all go idle on the same
-        tick this prevents a multi-second stall.  Active workers
-        (PICKUP / DELIVER) are still ticked unconditionally.
+        Job-finding (the expensive O(buildings²) scan) is throttled
+        to ``params.LOGISTICS_JOBS_PER_FRAME`` idle workers per frame
+        AND a hard wall-clock budget of
+        ``params.LOGISTICS_FIND_JOB_BUDGET_MS`` milliseconds — when
+        50+ haulers all go idle on the same tick this prevents a
+        multi-second stall.  Active workers (PICKUP / DELIVER) are
+        still ticked unconditionally.
         """
         idle_indices: list[int] = []
         for i, p in enumerate(self.population.people):
@@ -1281,8 +1983,24 @@ class World:
             self._logistics_search_cursor = 0
             return
 
-        budget = max(1, params.LOGISTICS_JOBS_PER_FRAME)
         n = len(idle_indices)
+        # Scan as many idle workers as the wall-clock budget allows —
+        # capping at a small fixed count (``LOGISTICS_JOBS_PER_FRAME``)
+        # used to leave dozens of haulers sitting at home waiting for
+        # their round-robin turn while supply/demand pairs went
+        # unserved.  ``LOGISTICS_JOBS_PER_FRAME`` is now the *minimum*
+        # we always try (so a single slow scan can't lock everyone
+        # out), and the wall-clock fence below is the real cap.
+        floor_budget = max(1, params.LOGISTICS_JOBS_PER_FRAME)
+        budget = max(floor_budget, n)
+        # Wall-clock fence so a single frame's job-finding can never
+        # blow out the frame budget regardless of how many idle
+        # workers happen to be in scope.  ``perf_counter`` is the
+        # cheapest monotonic high-resolution timer on Windows.
+        from time import perf_counter
+        deadline = perf_counter() + (
+            max(0, params.LOGISTICS_FIND_JOB_BUDGET_MS) / 1000.0
+        )
         # Process up to `budget` idle workers starting from the
         # round-robin cursor so every worker eventually gets a turn.
         start = self._logistics_search_cursor % n
@@ -1293,6 +2011,10 @@ class World:
             self._logistics_tick(p)
             processed += 1
             i = (i + 1) % n
+            # Always honour the floor before checking the deadline so
+            # a slow-frame outlier can't lock out every hauler.
+            if processed >= floor_budget and perf_counter() >= deadline:
+                break
         self._logistics_search_cursor = (start + processed) % n
 
     def _logistics_tick(self, p) -> None:
@@ -1300,6 +2022,24 @@ class World:
         # hex_pos matches the expected coord".  Movement is handled
         # later by population.update() — we just set up the next step.
         if p.task == Task.LOGISTICS_IDLE or p.task == Task.IDLE:
+            # Defensive: an idle hauler must never be holding cargo or
+            # carrying stale src/dst/res fields from a previous job.
+            # When this happens (e.g. mid-delivery worker reassigned
+            # by ``_assign_workers``) the logistics monitor reports
+            # the stale job as a permanently-stuck IDLE delivery and
+            # the cargo never actually reaches its destination.
+            if (p.logistics_res is not None
+                    and (p.logistics_amount or 0.0) > 0):
+                self._stash_orphan_cargo(
+                    self.colony_of_person(p),
+                    p.logistics_res,
+                    p.logistics_amount,
+                )
+            p.logistics_src = None
+            p.logistics_dst = None
+            p.logistics_res = None
+            p.logistics_amount = 0.0
+            p.carry_resource = None
             self._logistics_find_job(p)
             return
 
@@ -1312,7 +2052,10 @@ class World:
                 return  # still walking
             if p.hex_pos != src.coord:
                 # Path broke — try to replan once.
-                path = self._find_building_path(p.hex_pos, src.coord)
+                path = self._find_building_path(
+                    p.hex_pos, src.coord,
+                    faction=self.colony_of_person(p).faction_id,
+                )
                 if path:
                     p.path = path
                     return
@@ -1331,7 +2074,10 @@ class World:
                     # Already carrying something — head to destination.
                     dst = p.logistics_dst
                     if dst is not None:
-                        path = self._find_building_path(p.hex_pos, dst.coord)
+                        path = self._find_building_path(
+                            p.hex_pos, dst.coord,
+                            faction=self.colony_of_person(p).faction_id,
+                        )
                         if path:
                             p.path = path
                             p.task = Task.LOGISTICS_DELIVER
@@ -1363,13 +2109,17 @@ class World:
                 if next_src is not None and next_src is not src:
                     detour_path = self._find_building_path(
                         p.hex_pos, next_src.coord,
+                        faction=self.colony_of_person(p).faction_id,
                     )
                     if detour_path:
                         p.logistics_src = next_src
                         p.path = detour_path
                         # Stay in PICKUP state — we'll loop back here.
                         return
-            path = self._find_building_path(p.hex_pos, dst.coord)
+            path = self._find_building_path(
+                p.hex_pos, dst.coord,
+                faction=self.colony_of_person(p).faction_id,
+            )
             if not path:
                 # Lost path — drop cargo back (best effort).
                 self._deposit(src, res, take)
@@ -1384,10 +2134,15 @@ class World:
         if p.task == Task.LOGISTICS_DELIVER:
             dst = p.logistics_dst
             if dst is None or id(dst) not in self._valid_bids:
-                # Destination gone.  Drop cargo at any storage we're
-                # on (best effort) or just discard to global inventory.
+                # Destination gone.  Try to dump cargo back into the
+                # carrier's faction storage network rather than the
+                # flat inventory pool, so it stays where the AI/player
+                # can actually see and reuse it.
                 if p.logistics_res is not None and p.logistics_amount > 0:
-                    self.inventory.add(p.logistics_res, p.logistics_amount)
+                    self._stash_orphan_cargo(
+                        self.colony_of_person(p),
+                        p.logistics_res, p.logistics_amount,
+                    )
                 p.carry_resource = None
                 p.logistics_amount = 0.0
                 self._logistics_reset(p)
@@ -1395,13 +2150,19 @@ class World:
             if p.path:
                 return
             if p.hex_pos != dst.coord:
-                path = self._find_building_path(p.hex_pos, dst.coord)
+                path = self._find_building_path(
+                    p.hex_pos, dst.coord,
+                    faction=self.colony_of_person(p).faction_id,
+                )
                 if path:
                     p.path = path
                     return
-                # Drop to inventory as fallback.
+                # Drop into faction storage as fallback.
                 if p.logistics_res is not None and p.logistics_amount > 0:
-                    self.inventory.add(p.logistics_res, p.logistics_amount)
+                    self._stash_orphan_cargo(
+                        self.colony_of_person(p),
+                        p.logistics_res, p.logistics_amount,
+                    )
                 p.carry_resource = None
                 p.logistics_amount = 0.0
                 self._logistics_reset(p)
@@ -1412,14 +2173,29 @@ class World:
                 deposited = self._deposit(dst, res, p.logistics_amount)
                 leftover = p.logistics_amount - deposited
                 if leftover > 0:
-                    # Dest full; push leftover to global inventory.
-                    self.inventory.add(res, leftover)
+                    # Dest full; spill leftover into another faction
+                    # storage building rather than the flat inventory.
+                    self._stash_orphan_cargo(
+                        self.colony_for(dst), res, leftover,
+                    )
             p.carry_resource = None
             p.logistics_amount = 0.0
             self._logistics_reset(p)
             return
 
     def _logistics_reset(self, p) -> None:
+        # If the hauler is still holding cargo (e.g. supplier ran dry
+        # mid-route or the destination became unreachable), stash it
+        # back into faction storage instead of silently destroying it.
+        # Without this the simulation leaks resources every time a
+        # logistics route fails partway through.
+        if (p.logistics_res is not None
+                and (p.logistics_amount or 0.0) > 0):
+            self._stash_orphan_cargo(
+                self.colony_of_person(p),
+                p.logistics_res,
+                p.logistics_amount,
+            )
         p.task = Task.LOGISTICS_IDLE
         p.logistics_src = None
         p.logistics_dst = None
@@ -1452,7 +2228,15 @@ class World:
         for cand in net.buildings:
             if cand is p.logistics_src or cand is dst:
                 continue
-            avail = float(cand.storage.get(res, 0.0))
+            # Only consider resources the candidate is *willing* to
+            # supply.  ``_building_supply`` already excludes recipe
+            # inputs of crafting stations, mining-machine fuels, and
+            # outstanding research-center costs — without this check
+            # a chained pickup would happily strip a workshop's own
+            # ingredients out from under it on the way to another
+            # destination.
+            offered = self._building_supply(cand)
+            avail = float(offered.get(res, 0.0))
             if avail <= 1e-3:
                 continue
             d_to_cand = self._hex_distance(p.hex_pos, cand.coord)
@@ -1478,48 +2262,111 @@ class World:
         demands: list[tuple],
         supplies: list[tuple],
     ) -> list[tuple]:
-        """Restrict the demand pool to the highest-priority tier that
-        has at least one buyer matching an available supplier.
+        """Restrict the demand pool to the highest-priority tier *per
+        resource* that has at least one buyer matching an available
+        supplier — but *fall through* to lower tiers as soon as the
+        top tier's open need has already been claimed by in-flight
+        hauls.  This guarantees every demanding building eventually
+        gets served instead of being permanently shadowed by a higher
+        tier with permanent overdraw.
 
         Each entry in ``demands`` is ``(building, resource, need,
         empty_frac)``.  When the network's demand_priority list is
-        empty (e.g. brand-new colony) we return the input unchanged.
+        empty (e.g. a brand-new colony) we return the input unchanged.
         """
         tiers = net.demand_priority
         if not tiers:
             return demands
         supply_res = {s[1] for s in supplies}
-        # Group demand entries by tier index.
-        by_tier: dict[int, list[tuple]] = {}
+        # by_res_tier[resource][tier_index] -> list of demand entries.
+        by_res_tier: dict[object, dict[int, list[tuple]]] = {}
         for d in demands:
+            if d[1] not in supply_res:
+                continue
             ti = self._demand_tier_of(d[0], net)
-            by_tier.setdefault(ti, []).append(d)
-        for ti in sorted(by_tier):
-            bucket = by_tier[ti]
-            if any(d[1] in supply_res for d in bucket):
-                return bucket
-        return demands
+            by_res_tier.setdefault(d[1], {}).setdefault(ti, []).append(d)
+        out: list[tuple] = []
+        for r, by_tier in by_res_tier.items():
+            sorted_tiers = sorted(by_tier)
+            top_ti = sorted_tiers[0]
+            top_demands = by_tier[top_ti]
+            # Net unmet need in the top tier (after subtracting
+            # already-en-route deliveries).  When the top tier's
+            # remaining need is zero, lower tiers may participate.
+            top_remaining = 0.0
+            for db, _r, dneed, _e in top_demands:
+                claimed = self._claimed_demand_for(db, r)
+                top_remaining += max(0.0, dneed - claimed)
+            out.extend(top_demands)
+            if top_remaining <= 1e-3:
+                # Top tier is fully claimed — let the next tiers join.
+                for ti in sorted_tiers[1:]:
+                    out.extend(by_tier[ti])
+        return out if out else demands
+
+    def _claimed_demand_for(self, b: "Building", res) -> float:
+        """Total quantity of *res* already promised to building *b*
+        by in-flight hauls.  Mirrors the per-pickup ``claimed_demand``
+        accounting in :meth:`_logistics_find_job`."""
+        from compprog_pygame.games.hex_colony.people import Task as _T
+        carry_cap = params.LOGISTICS_CARRY_CAPACITY
+        total = 0.0
+        for p in self.population.people:
+            if not getattr(p, "is_logistics", False):
+                continue
+            if p.logistics_dst is not b or p.logistics_res != res:
+                continue
+            if p.task == _T.LOGISTICS_PICKUP:
+                total += carry_cap
+            elif p.task == _T.LOGISTICS_DELIVER:
+                amt = float(getattr(p, "logistics_amount", 0.0) or 0.0)
+                total += amt or carry_cap
+        return total
 
     def _filter_supplies_by_tier(
         self, net: "Network",
         supplies: list[tuple],
         demands: list[tuple],
     ) -> list[tuple]:
-        """Restrict the supply pool to the highest-priority tier whose
-        offerings can satisfy at least one outstanding demand."""
+        """Restrict the supply pool to the highest-priority tier *per
+        resource* whose offerings can satisfy an outstanding demand.
+
+        Per-resource filtering avoids the failure mode where the top
+        tier holds a useful resource A but suppresses lower-tier
+        suppliers of resource B that consumers also need.  When
+        outstanding demand for a resource exceeds what the top tier
+        alone can fulfil (after accounting for in-flight hauls),
+        lower tiers are folded back in so spare supply is not stranded.
+        """
         tiers = net.supply_priority
         if not tiers:
             return supplies
-        demand_res = {d[1] for d in demands}
-        by_tier: dict[int, list[tuple]] = {}
+        # Aggregate outstanding demand per-resource (after claims).
+        demand_remaining: dict[object, float] = {}
+        for db, dres, dneed, _de in demands:
+            claimed = self._claimed_demand_for(db, dres)
+            demand_remaining[dres] = (
+                demand_remaining.get(dres, 0.0) + max(0.0, dneed - claimed)
+            )
+        by_res_tier: dict[object, dict[int, list[tuple]]] = {}
         for s in supplies:
+            if s[1] not in demand_remaining:
+                continue
             ti = self._supply_tier_of(s[0], net)
-            by_tier.setdefault(ti, []).append(s)
-        for ti in sorted(by_tier):
-            bucket = by_tier[ti]
-            if any(s[1] in demand_res for s in bucket):
-                return bucket
-        return supplies
+            by_res_tier.setdefault(s[1], {}).setdefault(ti, []).append(s)
+        out: list[tuple] = []
+        for r, by_tier in by_res_tier.items():
+            need = demand_remaining.get(r, 0.0)
+            for ti in sorted(by_tier):
+                tier_supply = by_tier[ti]
+                out.extend(tier_supply)
+                # Subtract this tier's offered amount; if demand is
+                # met, lower tiers stay out.
+                offered = sum(s[2] for s in tier_supply)
+                need -= offered
+                if need <= 1e-3:
+                    break
+        return out if out else supplies
 
     # ── Population growth ────────────────────────────────────────
 
@@ -1531,15 +2378,24 @@ class World:
         person is assigned this dwelling as their home (housing will
         rebalance on the next dirty flag)."""
         birth_interval = params.POPULATION_REPRO_INTERVAL
-        food_cost = params.POPULATION_FOOD_PER_BIRTH
-        food_min = params.POPULATION_MIN_FOOD_TO_BIRTH
+        from compprog_pygame.games.hex_colony.settings import Difficulty
+        if (getattr(self.settings, "difficulty", None)
+                == Difficulty.DESOLATION):
+            food_cost = params.DESOLATION_BIRTH_FOOD
+            food_min = params.DESOLATION_BIRTH_FOOD
+        else:
+            food_cost = params.POPULATION_FOOD_PER_BIRTH
+            food_min = params.POPULATION_MIN_FOOD_TO_BIRTH
         spawned_any = False
         for b in self.buildings.buildings:
             if b.housing_capacity <= 0:
                 continue
-            # Skip non-player (AI tribe) dwellings — they reproduce on
-            # their own AI logic, not the player's population system.
-            if b.faction != "SURVIVOR":
+            # Tribal camps don't reproduce — they're a faction's
+            # founding building, not a true dwelling.  Every other
+            # housing-capable building (HOUSE, HABITAT, the player's
+            # CAMP) reproduces from on-site food, regardless of
+            # faction.
+            if b.type == BuildingType.TRIBAL_CAMP:
                 continue
             # Only tick timer when there's room to grow.
             if b.residents >= b.housing_capacity:
@@ -1565,12 +2421,18 @@ class World:
                 new_person.home = b
                 b.residents += 1
                 spawned_any = True
-                if self.notifications is not None:
+                # Only the player should see "new colonist" toasts —
+                # AI rival colonies grow silently in the background.
+                if (self.notifications is not None
+                        and getattr(b, "faction", "SURVIVOR")
+                        == self.player_colony.faction_id):
                     self.notifications.push(
                         NOTIF_NEW_COLONIST, (180, 255, 180),
                     )
         if spawned_any:
-            self.mark_housing_dirty()
+            # Births don't change building topology — skip the costly
+            # network rebuild and only flag housing + worker reassign.
+            self.mark_population_changed()
 
     def _logistics_find_job(self, p) -> None:
         """Score every (supplier, consumer, resource) pair in *p*'s
@@ -1629,32 +2491,69 @@ class World:
         # ── Reservation: subtract capacity already claimed by other
         # logistics workers so new workers spread to uncovered needs
         # instead of all piling onto the same highest-scoring route.
+        # Workers in PICKUP haven't deducted ``src.storage`` yet, so
+        # their pending pickup reserves the supply.  Workers in
+        # DELIVER have already physically removed the resource from
+        # ``src``; reserving it again would double-count and starve
+        # otherwise-viable matches at that supplier.  Destination
+        # demand is reserved in BOTH states (the cargo is en-route
+        # either way).
         claimed_supply: dict[tuple[int, object], float] = {}  # (id(b), res) → qty
         claimed_demand: dict[tuple[int, object], float] = {}
         carry_cap = params.LOGISTICS_CARRY_CAPACITY
         for other in self.population.people:
             if other is p or not other.is_logistics:
                 continue
-            if other.logistics_src is None or other.logistics_dst is None:
-                continue
-            if other.task not in (Task.LOGISTICS_PICKUP, Task.LOGISTICS_DELIVER):
+            if other.logistics_dst is None:
                 continue
             res_key = other.logistics_res
-            sk = (id(other.logistics_src), res_key)
-            dk = (id(other.logistics_dst), res_key)
-            claimed_supply[sk] = claimed_supply.get(sk, 0.0) + carry_cap
-            claimed_demand[dk] = claimed_demand.get(dk, 0.0) + carry_cap
+            if other.task == Task.LOGISTICS_PICKUP and other.logistics_src is not None:
+                sk = (id(other.logistics_src), res_key)
+                claimed_supply[sk] = claimed_supply.get(sk, 0.0) + carry_cap
+                dk = (id(other.logistics_dst), res_key)
+                claimed_demand[dk] = claimed_demand.get(dk, 0.0) + carry_cap
+            elif other.task == Task.LOGISTICS_DELIVER:
+                # Reserve only the destination — the supply has
+                # already been physically consumed at pickup.  Use the
+                # carrying amount (more accurate than carry_cap when
+                # the worker is hauling a partial load).
+                amt = float(other.logistics_amount or 0.0) or float(carry_cap)
+                dk = (id(other.logistics_dst), res_key)
+                claimed_demand[dk] = claimed_demand.get(dk, 0.0) + amt
 
-        best_score = -1e9
-        best_src = best_dst = None
-        best_res = None
-        # Fairness term: a consumer that hasn't received a delivery
-        # for ``FAIR_FULL_BONUS_AFTER`` seconds gets the full bonus,
-        # ramping up linearly from zero.  This breaks ties between
-        # equally-attractive demands and prevents one building in a
-        # demand tier from monopolising the haulers.
-        FAIR_FULL_BONUS_AFTER = 30.0
-        FAIR_BONUS_WEIGHT = 0.6
+        # Collect every viable (sb, db, res) candidate with its score
+        # so that if the absolute-best pair turns out to be unreachable
+        # from the worker's current hex, we can fall back to the next
+        # best instead of giving up for the frame (which used to leave
+        # supply/demand pairs unserved indefinitely whenever the top
+        # pair had a transient pathing issue).
+        candidates: list[tuple[float, "Building", "Building", "Resource"]] = []
+        # Equitable within-tier dispatch:
+        #
+        # The user-visible problem this guards against is "distant
+        # industry never gets serviced".  Distance never appears in
+        # the math — but a purely-additive score (urgency + magnitude
+        # + small fairness term) effectively picks whichever
+        # destination is most empty *right now*, and nearby buildings
+        # are emptied + refilled more often, so they keep winning the
+        # urgency contest while distant ones starve.
+        #
+        # Fix: sort candidates by a 3-key tuple
+        #     (cooled_off, -wait, -score)
+        # where ``cooled_off`` is False (sorts first) once a demand has
+        # been waiting at least FAIR_COOLDOWN seconds since its last
+        # dispatch.  Result:
+        #
+        #   1. Any demand that has *ever* been served and is now in
+        #      its short cooldown window loses to any demand that has
+        #      cooled off (or has never been served).
+        #   2. Among cooled-off demands, the one waiting longest wins
+        #      — strict round-robin over the tier.
+        #   3. Score is only a final tiebreaker (relevant when many
+        #      demands have wait == ∞ on the very first frame).
+        #
+        # Distance is invisible to all three keys.
+        FAIR_COOLDOWN = 4.0
         now = self.time_elapsed
         for sb, sres, samt, sfill in supplies:
             # Effective supply after subtracting claimed reservations.
@@ -1662,99 +2561,131 @@ class World:
             for db, dres, dneed, dempty in demands:
                 if sres != dres or sb is db:
                     continue
-                eff_dneed = dneed - claimed_demand.get((id(db), dres), 0.0)
-                # Bonus for storage→consumer (feeding stockpiles back
-                # into the production chain).  We deliberately do NOT
-                # bonus producer→storage anymore — non-storage demands
-                # are filtered above so storage is a true fallback.
-                storage_to_consumer = (
-                    sb.type == BuildingType.STORAGE and self._is_consumer(db)
-                )
-                link_bonus = 0.0
-                if storage_to_consumer:
-                    link_bonus += 0.8
-                # Urgency from fill ratios.  Empty demand buildings
-                # edge out full supply buildings by a small margin so
-                # that consumers are kept fed before producers unclog.
-                urgency = sfill * 0.55 + dempty * 0.65
+                # Effective need after pending deliveries — a building
+                # with cargo en route stops out-scoring siblings.
+                claimed = claimed_demand.get((id(db), dres), 0.0)
+                eff_dneed = dneed - claimed
+                if dneed > 0:
+                    eff_dempty = max(0.0, eff_dneed) / dneed * dempty
+                else:
+                    eff_dempty = 0.0
                 # Magnitude: what we can actually transport (effective).
-                qty = min(
-                    carry_cap, eff_samt, eff_dneed,
-                )
+                qty = min(carry_cap, eff_samt, eff_dneed)
                 if qty <= 0:
                     continue
+                # Storage→consumer link bonus (small, used as a
+                # tiebreaker for the residual score only).
+                storage_to_consumer = (
+                    sb.type == BuildingType.STORAGE
+                    and self._is_consumer(db)
+                )
+                link_bonus = 0.8 if storage_to_consumer else 0.0
+                urgency = sfill * 0.55 + eff_dempty * 0.65
                 magnitude = min(1.0, qty / carry_cap)
+                # Residual score for tiebreaking only — no fairness
+                # term needed because wait dominates the primary sort.
+                score = urgency + link_bonus + magnitude * 0.3
                 last_served = self._demand_last_served.get(
                     (id(db), dres), -1e9,
                 )
                 wait = now - last_served
-                if wait <= 0:
-                    fairness = 0.0
-                elif wait >= FAIR_FULL_BONUS_AFTER:
-                    fairness = FAIR_BONUS_WEIGHT
-                else:
-                    fairness = (wait / FAIR_FULL_BONUS_AFTER) * FAIR_BONUS_WEIGHT
-                score = (
-                    urgency * 1.0
-                    + link_bonus
-                    + magnitude * 0.3
-                    + fairness
+                # ``cooled_off`` sorts False (=0) before True (=1),
+                # i.e. demands that have waited long enough win.
+                cooled_off = wait < FAIR_COOLDOWN
+                # ``id(...)`` tiebreakers keep the sort total-ordered
+                # without falling through to comparing Building
+                # instances (which don't define ``__lt__``).
+                candidates.append(
+                    (cooled_off, -wait, -score,
+                     id(sb), id(db), sb, db, sres),
                 )
-                if score > best_score:
-                    best_score = score
-                    best_src = sb
-                    best_dst = db
-                    best_res = sres
 
-        if best_src is None or best_dst is None or best_res is None:
+        if not candidates:
             return
-        path = self._find_building_path(p.hex_pos, best_src.coord)
-        if not path and p.hex_pos != best_src.coord:
-            return
-        p.logistics_src = best_src
-        p.logistics_dst = best_dst
-        p.logistics_res = best_res
-        p.path = path
-        p.task = Task.LOGISTICS_PICKUP
-        # Record the assignment so siblings in the same demand tier
-        # are preferred next time a hauler is dispatched.
-        self._demand_last_served[(id(best_dst), best_res)] = now
-
-    def _check_unreachable_buildings(self) -> None:
-        """Push a one-time notification for every worker-building that
-        is in a network with no housed population."""
-        if self.notifications is None:
-            return
-        populated_net_ids = self._populated_net_ids
-
-        current_unreachable: set[int] = set()
-        for net in self.networks:
-            if net.id in populated_net_ids:
+        # Primary sort key already encodes the equitable order — no
+        # ``reverse=True`` needed.  The top entry is the longest-
+        # waiting cooled-off demand; if its source is unreachable we
+        # fall back to the next-best so the worker doesn't idle a
+        # whole frame on a transient pathing miss.
+        candidates.sort()
+        # Try each candidate in equitable order, but limit per-
+        # destination retries: if the first 2 suppliers for a given
+        # destination are unreachable, move on to the next destination
+        # rather than burning the whole frame on one starved building's
+        # unreachable supplier list.  ``tried_dst`` counts attempts.
+        tried_dst: dict[int, int] = {}
+        MAX_PER_DST = 2
+        for _co, _negw, _negs, _sid, _did, best_src, best_dst, best_res in candidates:
+            dst_key = id(best_dst)
+            if tried_dst.get(dst_key, 0) >= MAX_PER_DST:
                 continue
-            for b in net.buildings:
-                if BUILDING_MAX_WORKERS.get(b.type, 0) <= 0:
-                    continue
-                bid = id(b)
-                current_unreachable.add(bid)
-                if bid in self._unreachable_notified:
-                    continue
-                label = building_label(b.type.name)
-                self.notifications.push(
-                    NOTIF_UNREACHABLE.format(name=label), (230, 100, 100),
-                )
-                self._unreachable_notified.add(bid)
-        # Forget buildings that became reachable again (or were deleted)
-        # so a future disconnection re-notifies.
-        self._unreachable_notified &= current_unreachable
+            if best_src.coord == p.hex_pos:
+                p.logistics_src = best_src
+                p.logistics_dst = best_dst
+                p.logistics_res = best_res
+                p.path = []
+                p.task = Task.LOGISTICS_PICKUP
+                self._demand_last_served[(id(best_dst), best_res)] = now
+                return
+            path = self._find_building_path(
+                p.hex_pos, best_src.coord,
+                faction=self.colony_of_person(p).faction_id,
+            )
+            if not path:
+                tried_dst[dst_key] = tried_dst.get(dst_key, 0) + 1
+                continue
+            p.logistics_src = best_src
+            p.logistics_dst = best_dst
+            p.logistics_res = best_res
+            p.path = path
+            p.task = Task.LOGISTICS_PICKUP
+            # Record the assignment so siblings in the same demand tier
+            # are preferred next time a hauler is dispatched.
+            self._demand_last_served[(id(best_dst), best_res)] = now
+            return
+
+    def _refresh_unreachable_caches(self) -> None:
+        """Recompute the unreachable / starved id-sets and push any
+        new \"unreachable\" notifications.  Cheap enough to run every
+        ~500 ms; the renderer reads the cached sets every frame."""
+        unreachable = self._compute_unreachable_buildings()
+        self._unreachable_cache = unreachable
+        self._starved_cache = self._compute_starved_producers()
+        if self.notifications is not None:
+            for bid in unreachable - self._unreachable_notified:
+                # Look up the building object for the toast label.
+                # The set is small in the common case.
+                for net in self.networks:
+                    found = False
+                    for b in net.buildings:
+                        if id(b) == bid:
+                            label = building_label(b.type.name)
+                            self.notifications.push(
+                                NOTIF_UNREACHABLE.format(name=label),
+                                (230, 100, 100),
+                            )
+                            found = True
+                            break
+                    if found:
+                        break
+            self._unreachable_notified = (
+                self._unreachable_notified | unreachable
+            ) & unreachable
 
     def unreachable_buildings(self) -> set[int]:
         """Return ``id(b)`` for every worker-building in a network with
-        no populated house.  Used by the renderer to draw a red "!"
-        marker above the affected buildings."""
+        no populated house.  Cached — refreshed every ~500 ms."""
+        return self._unreachable_cache
+
+    def _compute_unreachable_buildings(self) -> set[int]:
         populated_net_ids = self._populated_net_ids
         result: set[int] = set()
         for net in self.networks:
             if net.id in populated_net_ids:
+                continue
+            # AI rival networks are simulated separately and have
+            # no player workers to be 'unreachable' from.
+            if net.faction != "SURVIVOR":
                 continue
             for b in net.buildings:
                 if BUILDING_MAX_WORKERS.get(b.type, 0) <= 0:
@@ -1763,12 +2694,11 @@ class World:
         return result
 
     def starved_producers(self) -> set[int]:
-        """Return ``id(b)`` for every harvest building that has at
-        least one worker assigned but no harvestable tile in range —
-        i.e. its resource patch ran dry and there is nothing else
-        nearby to switch to.  Used by the renderer to flag the
-        building with the same red "!" marker as unreachable ones.
-        """
+        """Return ``id(b)`` for every harvester whose resource patch
+        ran dry.  Cached — refreshed every ~500 ms."""
+        return self._starved_cache
+
+    def _compute_starved_producers(self) -> set[int]:
         result: set[int] = set()
         for b in self.buildings.buildings:
             if b.workers <= 0:
@@ -1821,9 +2751,12 @@ class World:
 
     # ── Housing connectivity ─────────────────────────────────────
 
-    def _connected_houses(self) -> list[Building]:
-        """BFS from camp through all buildings; return non-camp houses."""
-        camp = self.buildings.at(HexCoord(0, 0))
+    _CAMP_TYPES = (BuildingType.CAMP, BuildingType.TRIBAL_CAMP)
+
+    def _connected_houses_for(self, colony: ColonyState) -> list[Building]:
+        """BFS from *colony*'s camp through adjacent buildings; return
+        the dwellings (non-camp, housing_capacity > 0) reachable."""
+        camp = self.buildings.at(colony.camp_coord)
         if camp is None:
             return []
         houses: list[Building] = []
@@ -1838,67 +2771,83 @@ class World:
                 nb_building = self.buildings.at(nb)
                 if nb_building is None:
                     continue
+                if nb_building.faction != colony.faction_id:
+                    # Don't BFS through another faction's territory.
+                    continue
                 if (nb_building.housing_capacity > 0
-                        and nb_building.type != BuildingType.CAMP):
+                        and nb_building.type not in self._CAMP_TYPES):
                     houses.append(nb_building)
                 queue.append(nb)
         return houses
 
+    def _connected_houses(self) -> list[Building]:
+        """Backwards-compatible wrapper — player-only houses."""
+        return self._connected_houses_for(self.player_colony)
+
     def connected_housing(self) -> int:
-        """Total housing = camp capacity + capacity of houses reachable
-        from the camp via adjacent buildings/paths."""
-        camp = self.buildings.at(HexCoord(0, 0))
+        """Total player housing = camp capacity + capacity of houses
+        reachable from the player camp via adjacent buildings/paths."""
+        camp = self.buildings.at(self.player_colony.camp_coord)
         cap = camp.housing_capacity if camp else 0
-        return cap + sum(h.housing_capacity for h in self._connected_houses())
+        return cap + sum(
+            h.housing_capacity for h in self._connected_houses_for(self.player_colony)
+        )
 
     def _update_housing(self) -> None:
-        """Assign every person a home.  Homeless overflow goes to camp.
+        """Assign every person a home within their own faction.
 
-        People whose home changes get a RELOCATE task with a BFS path
-        through connected buildings so they visually walk to their new home.
+        Each colony runs the same BFS-from-camp + balanced-fill
+        algorithm independently.  People without a faction-matching
+        dwelling overflow onto their home faction's camp.
         """
-        camp = self.buildings.at(HexCoord(0, 0))
-        if camp is None:
-            return
+        # Pre-compute per-colony dwelling lists & reset resident counts.
+        per_colony_dwellings: dict[str, list[Building]] = {}
+        for colony in self.colonies.values():
+            camp = self.buildings.at(colony.camp_coord)
+            if camp is None:
+                per_colony_dwellings[colony.faction_id] = []
+                continue
+            camp.residents = 0
+            houses = self._connected_houses_for(colony)
+            for house in houses:
+                house.residents = 0
+            per_colony_dwellings[colony.faction_id] = [camp, *houses]
 
-        # Reset camp residents count; we'll recount below
-        camp.residents = 0
-
-        # Connected houses via shared BFS
-        connected_houses = self._connected_houses()
-
-        # Reset all house resident counts
-        for house in connected_houses:
-            house.residents = 0
-
-        # People currently relocating: keep their assignment if still valid
+        # Snapshot current relocations: keep them if the home is still valid.
         for person in self.population.people:
             if person.task != Task.RELOCATE or not person.path:
                 continue
             home = person.home
             if home is None:
                 continue
-            if home == camp:
-                camp.residents += 1
-            elif home in connected_houses and home.residents < home.housing_capacity:
+            faction = getattr(home, "faction", "SURVIVOR")
+            dwellings = per_colony_dwellings.get(faction, [])
+            camp = dwellings[0] if dwellings else None
+            if home is camp:
+                if camp is not None:
+                    camp.residents += 1
+            elif home in dwellings and home.residents < home.housing_capacity:
                 home.residents += 1
             else:
-                # Home is no longer valid — cancel relocation
+                # Old home no longer a valid dwelling for this faction.
                 person.task = Task.IDLE
                 person.path = []
 
-        # Assign non-relocating people.  Distribute as evenly as
-        # possible across every connected dwelling (camp + houses) by
-        # always picking the dwelling with the fewest current residents
-        # that still has capacity.  Fall back to keeping the person's
-        # existing home only if it's already the most-empty option.
-        dwellings: list[Building] = [camp] + list(connected_houses)
+        # Assign non-relocating people to a dwelling within their own
+        # faction.  Person.faction follows from home; pick the same
+        # faction as their *current* home (or default to SURVIVOR for
+        # any newly-spawned person without a home yet).
         for person in self.population.people:
             if person.task == Task.RELOCATE and person.path:
-                continue  # already counted above
-
+                continue
             old_home = person.home
-            # Pick dwelling with capacity and the fewest residents.
+            faction = (
+                getattr(old_home, "faction", None)
+                if old_home is not None else self.player_colony.faction_id
+            ) or self.player_colony.faction_id
+            dwellings = per_colony_dwellings.get(faction, [])
+            camp = dwellings[0] if dwellings else None
+
             best: Building | None = None
             best_ratio = 2.0
             for d in dwellings:
@@ -1909,14 +2858,13 @@ class World:
                     best_ratio = ratio
                     best = d
             if best is None:
-                # No connected dwelling has space — overflow to camp
-                # (camp is also allowed to be over its cap = homeless).
+                # No dwelling with space \u2014 overflow to the colony's camp.
+                if camp is None:
+                    continue
                 person.home = camp
                 camp.residents += 1
                 placed_home = camp
             else:
-                # If the old home is as empty as the best option, keep
-                # them there to avoid churn.
                 if (old_home is not None and old_home in dwellings
                         and old_home.residents < old_home.housing_capacity
                         and old_home.residents / max(1, old_home.housing_capacity) <= best_ratio):
@@ -1925,21 +2873,21 @@ class World:
                 best.residents += 1
                 placed_home = best
 
-            # Trigger relocation animation if home changed
             if placed_home != old_home and old_home is not None:
                 path = self._find_building_path(
                     person.hex_pos, placed_home.coord,
+                    faction=self.colony_of_person(person).faction_id,
                 )
                 if path:
                     person.task = Task.RELOCATE
                     person.path = path
                 else:
-                    # No building path — snap to new home
                     person.hex_pos = placed_home.coord
                     person.snap_to_hex(self.settings.hex_size)
 
     def _find_building_path(
         self, start: HexCoord, end: HexCoord,
+        *, faction: str | None = None,
     ) -> list[HexCoord]:
         """BFS shortest path from *start* to *end* through building hexes.
 
@@ -1947,13 +2895,19 @@ class World:
         cleared tile).  All intermediate and destination hexes must have
         a building.
 
+        When *faction* is supplied, the search refuses to BFS through
+        any building belonging to a different faction \u2014 player
+        commuters and haulers therefore can't tunnel through a rival
+        colony's settlement (and vice versa).  ``None`` keeps the
+        legacy any-faction behaviour for callers that don't care.
+
         Results are memoised in ``_path_cache`` for the duration of the
         current ``update()`` call so multiple commuters / logistics
         workers requesting the same route only pay one BFS.
         """
         if start == end:
             return []
-        cache_key = (start, end)
+        cache_key = (start, end, faction)
         cached = self._path_cache.get(cache_key)
         if cached is not None:
             # Return a copy so the caller can mutate it freely.
@@ -1974,7 +2928,13 @@ class World:
                 if nb in visited:
                     continue
                 visited.add(nb)
-                if buildings_at(nb) is None:
+                nb_b = buildings_at(nb)
+                if nb_b is None:
+                    continue
+                if (faction is not None
+                        and getattr(nb_b, "faction", "SURVIVOR")
+                        != faction):
+                    # Don't BFS through a rival colony's tiles.
                     continue
                 parent[nb] = current
                 if nb == end:
@@ -2111,6 +3071,68 @@ class World:
             return []
         return [(c, BuildingType.PATH) for c in land_route]
 
+    def find_pipe_route(
+        self, start: HexCoord, end: HexCoord,
+    ) -> list[HexCoord]:
+        """BFS shortest PIPE chain from *start* to *end*.
+
+        Uses the same flood-fill algorithm as :meth:`find_path_route`
+        but with a PIPE-specific passability predicate: a tile is
+        passable if empty land or already a PIPE.  Pipes cannot cross
+        PATH/BRIDGE/CONVEYOR, WALL, water, or any other building — so
+        pipe and path networks remain strictly separate.
+
+        Returns the list of coords from just after *start* through
+        *end* (inclusive).  Empty list if unreachable.
+        """
+        if start == end:
+            return []
+        if end not in self.grid:
+            return []
+
+        def passable(coord: HexCoord) -> bool:
+            tile = self.grid.get(coord)
+            if tile is None:
+                return False
+            if tile.terrain in UNBUILDABLE:
+                return False
+            if tile.terrain == Terrain.WATER:
+                return False
+            b = tile.building
+            if b is not None and b.type != BuildingType.PIPE:
+                return False
+            return True
+
+        if not passable(end):
+            return []
+
+        visited: set[HexCoord] = {start}
+        parent: dict[HexCoord, HexCoord] = {}
+        queue: deque[HexCoord] = deque([start])
+        found = False
+        while queue:
+            cur = queue.popleft()
+            if cur == end:
+                found = True
+                break
+            for nb in cur.neighbors():
+                if nb in visited:
+                    continue
+                if not passable(nb):
+                    continue
+                visited.add(nb)
+                parent[nb] = cur
+                queue.append(nb)
+        if not found:
+            return []
+        route: list[HexCoord] = []
+        cur = end
+        while cur != start:
+            route.append(cur)
+            cur = parent[cur]
+        route.reverse()
+        return route
+
     # ── Production update (Farms, Refineries, Wells) ─────────────
 
     def _storage_free(self, b: "Building") -> float:
@@ -2138,6 +3160,14 @@ class World:
         caps (and so use the regular total ``storage_capacity``).
         Research Centers also use per-input caps for their active
         research's cost (treated as recipe inputs).
+
+        Building recipes (a Workshop crafting a placeable building
+        like ``Habitat``) get per-input caps too — without them the
+        first-arriving ingredient fills the whole 60-slot Workshop
+        and starves the others (e.g. Habitat needing 2 Iron Bar
+        never gets its iron because Wood + Stone + Fiber already
+        filled storage).  The cap scales each ingredient down
+        proportionally if 2x for all of them would exceed capacity.
         """
         if b.type in (
             BuildingType.WORKSHOP, BuildingType.FORGE,
@@ -2147,8 +3177,22 @@ class World:
             mrec = MATERIAL_RECIPES.get(b.recipe)
             if mrec is not None:
                 return {r: float(amt * 2) for r, amt in mrec.inputs.items()}
+        if isinstance(b.recipe, BuildingType):
+            cost = BUILDING_COSTS.get(b.recipe)
+            if cost is not None:
+                # Building recipes have no output stored on-site, so
+                # the full capacity is available for inputs.  Scale
+                # each ingredient's cap down proportionally if 2x
+                # for every input would exceed capacity.
+                solid = {r: a for r, a in cost.costs.items()
+                         if r not in FLUID_RESOURCES}
+                total = sum(solid.values()) or 1.0
+                scale = min(2.0, b.storage_capacity / total)
+                return {
+                    r: float(a * scale) for r, a in solid.items()
+                }
         if b.type == BuildingType.RESEARCH_CENTER:
-            tt = self.tech_tree
+            tt = self.colony_for(b).tech_tree
             if tt is not None and getattr(tt, "current_research", None):
                 node = TECH_NODES.get(tt.current_research)
                 if node is not None:
@@ -2162,6 +3206,54 @@ class World:
                         for r, amt in node.cost.items()
                     }
         return {}
+
+    def _stash_orphan_cargo(
+        self, colony: "ColonyState", res: Resource, amount: float,
+    ) -> None:
+        """Best-effort dump of orphaned logistics cargo back into the
+        colony's network rather than the flat inventory pool.
+
+        When a hauler can't deposit (destination demolished, path
+        broken, destination full), prefer dumping into a faction-
+        owned STORAGE / CAMP / TRIBAL_CAMP building with free space,
+        so the resource stays where the AI (and the player) can
+        actually see and re-use it.
+
+        For the **player** colony, falls back to the flat inventory
+        when no building has room — matches the legacy behaviour
+        the UI / tier tracker depends on.
+
+        For **rival** colonies the flat inventory must stay empty
+        of raw resources (otherwise the AI thinks it has phantom
+        stockpiles and makes bad decisions).  If no storage has
+        room, the cargo is discarded — equivalent to the player's
+        situation when every container is full.
+        """
+        if amount <= 0:
+            return
+        storage_types = (
+            BuildingType.STORAGE,
+            BuildingType.CAMP,
+            BuildingType.TRIBAL_CAMP,
+        )
+        remaining = float(amount)
+        for stype in storage_types:
+            if remaining <= 1e-6:
+                break
+            for b in self.buildings.by_type(stype):
+                if remaining <= 1e-6:
+                    break
+                if getattr(b, "faction", "SURVIVOR") != colony.faction_id:
+                    continue
+                dep = self._deposit(b, res, remaining)
+                if dep > 0:
+                    remaining -= dep
+        if remaining > 1e-6 and colony.is_player:
+            # Player-only legacy fallback.  Rival cargo is simply
+            # lost when the logistics network has no room — this
+            # matches what happens to a player whose storage is
+            # equally full.
+            colony.inventory.add(res, remaining)
 
     def _deposit(self, b: "Building", res: Resource, amount: float) -> float:
         """Add *amount* of *res* to ``b.storage``, capped to capacity.
@@ -2188,7 +3280,10 @@ class World:
         """Deposit a newly-produced resource and record cumulative production."""
         dep = self._deposit(b, res, amount)
         if dep > 0:
-            self._total_produced[res] += dep
+            # Credit the building's owning faction for tier-progress
+            # tracking — the player and each rival each maintain
+            # their own "lifetime gathered" counter.
+            self.colony_for(b).total_produced[res] += dep
         return dep
 
     def _harvest_from_terrain(
@@ -2274,30 +3369,36 @@ class World:
         """Per-frame resource production.  All outputs go into the
         building's own ``storage`` (halting when full)."""
         s = self.settings
+        from compprog_pygame.games.hex_colony.settings import Difficulty
+        is_desolation = (
+            getattr(s, "difficulty", None) == Difficulty.DESOLATION
+        )
+        gm = params.DESOLATION_GATHER_RATE_MULT if is_desolation else 1.0
+        farm_m = params.DESOLATION_FARM_FOOD_MULT if is_desolation else 1.0
         # Woodcutter
         for b in self.buildings.by_type(BuildingType.WOODCUTTER):
             self._harvest_from_terrain(
-                b, {Resource.WOOD}, s.gather_wood, dt,
+                b, {Resource.WOOD}, s.gather_wood * gm, dt,
             )
         # Quarry: mines stone by default, or iron/copper ore if selected.
         for b in self.buildings.by_type(BuildingType.QUARRY):
             if b.quarry_output is None:
                 self._harvest_from_terrain(
-                    b, {Resource.STONE}, s.gather_stone, dt,
+                    b, {Resource.STONE}, s.gather_stone * gm, dt,
                 )
             else:
                 self._harvest_from_terrain(
-                    b, {b.quarry_output}, params.QUARRY_ORE_RATE, dt,
+                    b, {b.quarry_output}, params.QUARRY_ORE_RATE * gm, dt,
                 )
         # Gatherer: produce only the user-selected resource (default food)
         for b in self.buildings.by_type(BuildingType.GATHERER):
             if b.gatherer_output == Resource.FIBER:
                 self._harvest_from_terrain(
-                    b, {Resource.FIBER}, s.gather_fiber, dt,
+                    b, {Resource.FIBER}, s.gather_fiber * gm, dt,
                 )
             else:
                 self._harvest_from_terrain(
-                    b, {Resource.FOOD}, s.gather_food, dt,
+                    b, {Resource.FOOD}, s.gather_food * gm, dt,
                 )
 
         # Pre-compute well locations for farm bonus
@@ -2317,7 +3418,7 @@ class World:
                 if nb in well_coords:
                     bonus += params.WELL_FARM_BONUS
                     break
-            amount = params.FARM_FOOD_RATE * farm.workers * bonus * dt
+            amount = params.FARM_FOOD_RATE * farm.workers * bonus * farm_m * dt
             self._produce(farm, Resource.FOOD, amount)
             farm.active = True
 
@@ -2388,45 +3489,58 @@ class World:
                 mm.active = False
                 continue
 
-            fuel_needed = params.MINING_MACHINE_FUEL_RATE * dt
             fuel_res: Resource | None = None
-            for fuel_name in params.MINING_MACHINE_FUELS:
+            for fuel_name in params.MINING_MACHINE_ORE_PER_FUEL:
                 candidate = Resource[fuel_name]
-                have_here = mm.storage.get(candidate, 0.0)
-                if have_here + self.inventory[candidate] >= fuel_needed:
+                # Strict on-site fuel: at least 1 unit of either fuel
+                # must be present in the machine's own storage before
+                # it begins working.  Logistics is responsible for
+                # delivering it; the global inventory is no longer a
+                # fallback.
+                if mm.storage.get(candidate, 0.0) >= 1.0:
                     fuel_res = candidate
                     break
             if fuel_res is None:
                 mm.active = False
                 continue
-            # Prefer on-site fuel (delivered by logistics).
-            on_site = mm.storage.get(fuel_res, 0.0)
-            from_local = min(on_site, fuel_needed)
-            if from_local > 0:
-                mm.storage[fuel_res] = on_site - from_local
-                if mm.storage[fuel_res] <= 1e-6:
-                    mm.storage.pop(fuel_res, None)
-            rem = fuel_needed - from_local
-            if rem > 0:
-                self.inventory.spend(fuel_res, rem)
             mm.active = True
 
+            # Discrete fuel burn: one unit of fuel produces a fixed
+            # amount of ore.  ``rate`` is the per-tick ore budget; we
+            # mine ore until the budget is exhausted, deducting
+            # fractional fuel from on-site storage as we go.
+            ore_per_unit = params.MINING_MACHINE_ORE_PER_FUEL[fuel_res.name]
             rate = params.MINING_MACHINE_RATE * dt
+            ore_mined_this_tick = 0.0
             for nb, ore in adjacent_ores:
                 if rate <= 0:
                     break
                 if self._storage_free(mm) <= 0:
                     break
+                # Cap by remaining fuel (in ore-equivalent units).
+                fuel_left = mm.storage.get(fuel_res, 0.0)
+                if fuel_left <= 0:
+                    break
+                ore_budget_from_fuel = fuel_left * ore_per_unit
                 tile = self.grid.get(nb)
                 if tile is None:
                     continue
                 take = min(rate, tile.resource_amount,
-                           self._storage_free(mm))
+                           self._storage_free(mm),
+                           ore_budget_from_fuel)
                 if take > 0:
                     tile.resource_amount -= take
                     self._produce(mm, ore, take)
                     rate -= take
+                    ore_mined_this_tick += take
                     self._maybe_deplete_tile(tile)
+            if ore_mined_this_tick > 0:
+                fuel_used = ore_mined_this_tick / ore_per_unit
+                remaining = mm.storage.get(fuel_res, 0.0) - fuel_used
+                if remaining <= 1e-6:
+                    mm.storage.pop(fuel_res, None)
+                else:
+                    mm.storage[fuel_res] = remaining
 
         # Oil drill: placed *on top of* an OIL_DEPOSIT tile.  No fuel
         # required — extracts OIL into its own storage at a fixed rate
@@ -2505,38 +3619,120 @@ class World:
         # how material recipes work and lets the demand-priority tab
         # actually feed the workshop.
         cost = building_costs[station.recipe]
-        can_afford = all(
-            self._station_available(station, res, amount) >= amount
-            for res, amount in cost.costs.items()
-        )
-        if not can_afford:
-            return
+        # In god mode, skip the input requirement entirely so the
+        # crafting building produces without consuming materials.
+        if not self.god_mode:
+            can_afford = all(
+                self._station_available(station, res, amount) >= amount
+                for res, amount in cost.costs.items()
+            )
+            if not can_afford:
+                return
         station.craft_progress += dt * station.workers
         if station.craft_progress >= params.WORKSHOP_CRAFT_TIME:
-            for res, amount in cost.costs.items():
-                self._station_consume(station, res, amount)
-            self.building_inventory.add(station.recipe)
+            if not self.god_mode:
+                for res, amount in cost.costs.items():
+                    self._station_consume(station, res, amount)
+            # Crafted placeable buildings go into the *owning faction's*
+            # building inventory so each rival has its own stockpile.
+            self.colony_for(station).building_inventory.add(station.recipe)
             station.craft_progress = 0.0
+
+    # Crafting stations that maintain reserved input buffers — these
+    # are excluded from the shared input pool so workshops don't
+    # steal each other's incoming deliveries.
+    _FACTION_CRAFTING_STATION_TYPES = None  # initialised lazily below
+
+    def _faction_input_pool(self, colony, exclude_station=None) -> "list":
+        """Every faction-owned building whose storage is fair game as
+        a crafting input source for *colony*'s stations.
+
+        For the player, ``colony.inventory`` plays this role.  For AI
+        rivals (which deliberately never get the flat-inventory
+        fallback in :meth:`_inventory_deposit_with_fallback`), we
+        instead let stations draw from the storage of any faction-
+        owned building **except** other crafting stations (so a
+        WORKSHOP's reserved input buffer isn't drained by a sibling
+        WORKSHOP) and the source station itself.
+
+        This mirrors the player's flat-inventory model: raw resources
+        produced anywhere in the colony are visible to every workshop
+        for crafting purposes.
+        """
+        if World._FACTION_CRAFTING_STATION_TYPES is None:
+            World._FACTION_CRAFTING_STATION_TYPES = frozenset({
+                BuildingType.WORKSHOP,
+                BuildingType.FORGE,
+                BuildingType.REFINERY,
+                BuildingType.ASSEMBLER,
+                BuildingType.CHEMICAL_PLANT,
+                BuildingType.OIL_REFINERY,
+            })
+        out = []
+        fid = colony.faction_id
+        excluded = World._FACTION_CRAFTING_STATION_TYPES
+        for b in self.buildings.buildings:
+            if b is exclude_station:
+                continue
+            if getattr(b, "faction", "SURVIVOR") != fid:
+                continue
+            if b.type in excluded:
+                continue
+            if not b.storage:
+                continue
+            out.append(b)
+        return out
 
     def _station_available(
         self, station, res: Resource, amount: float,
     ) -> float:
         """How much of *res* the station can draw on, counting its own
-        storage first, the global inventory second."""
-        return station.storage.get(res, 0.0) + self.inventory[res]
+        storage first, then its faction's shared pool (flat inventory
+        for the player; every faction-owned non-crafting building's
+        storage for AI rival colonies)."""
+        colony = self.colony_for(station)
+        total = station.storage.get(res, 0.0)
+        if colony.is_player:
+            total += colony.inventory[res]
+        else:
+            for b in self._faction_input_pool(colony, exclude_station=station):
+                total += b.storage.get(res, 0.0)
+                if total >= amount:
+                    break
+        return total
 
     def _station_consume(
         self, station, res: Resource, amount: float,
     ) -> None:
-        """Consume *amount* of *res*, preferring the station's storage."""
+        """Consume *amount* of *res*, preferring the station's storage,
+        then drawing from the colony's shared pool (flat inventory for
+        the player; faction-owned non-crafting buildings for AI)."""
         from_local = min(station.storage.get(res, 0.0), amount)
         if from_local > 0:
             station.storage[res] = station.storage.get(res, 0.0) - from_local
             if station.storage[res] <= 1e-6:
                 station.storage.pop(res, None)
         rem = amount - from_local
-        if rem > 0:
-            self.inventory.spend(res, rem)
+        if rem <= 0:
+            return
+        colony = self.colony_for(station)
+        if colony.is_player:
+            colony.inventory.spend(res, rem)
+            return
+        # AI rival: drain across the faction's shared input pool.
+        for b in self._faction_input_pool(colony, exclude_station=station):
+            if rem <= 1e-6:
+                break
+            avail = b.storage.get(res, 0.0)
+            if avail <= 0:
+                continue
+            take = min(avail, rem)
+            new_amt = avail - take
+            if new_amt <= 1e-6:
+                b.storage.pop(res, None)
+            else:
+                b.storage[res] = new_amt
+            rem -= take
 
     def _tick_material_recipe(self, station, recipe, dt: float) -> None:
         # Ensure there's room to deposit the next batch of output.
@@ -2546,13 +3742,17 @@ class World:
             station.active = False
             return
         # Check inputs (storage + global inventory fallback).
-        for res, amount in recipe.inputs.items():
-            if self._station_available(station, res, amount) < amount:
-                return
+        # In god mode, crafting buildings produce without consuming
+        # any inputs.
+        if not self.god_mode:
+            for res, amount in recipe.inputs.items():
+                if self._station_available(station, res, amount) < amount:
+                    return
         station.craft_progress += dt * station.workers
         station.active = station.workers > 0
         if station.craft_progress >= recipe.time:
-            for res, amount in recipe.inputs.items():
-                self._station_consume(station, res, amount)
+            if not self.god_mode:
+                for res, amount in recipe.inputs.items():
+                    self._station_consume(station, res, amount)
             self._produce(station, recipe.output, recipe.output_amount)
             station.craft_progress = 0.0

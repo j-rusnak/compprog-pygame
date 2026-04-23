@@ -23,11 +23,13 @@ from compprog_pygame.games.hex_colony.ui import (
     UI_TEXT,
     draw_panel_bg,
     render_text_clipped,
+    set_tooltip,
 )
 from compprog_pygame.games.hex_colony.strings import (
     RESOURCE_BAR_DELETE,
     RESOURCE_BAR_SANDBOX,
     RESOURCE_BAR_MAX_TIER,
+    RESOURCE_BAR_TOOLTIPS,
 )
 
 if TYPE_CHECKING:
@@ -58,6 +60,16 @@ class ResourceBar(Panel):
         self.world: "World | None" = None
         self._btn_minus = pygame.Rect(0, 0, 0, 0)
         self._btn_plus = pygame.Rect(0, 0, 0, 0)
+        self._btn_help = pygame.Rect(0, 0, 0, 0)
+        self._btn_research = pygame.Rect(0, 0, 0, 0)
+        self._on_help: "callable | None" = None
+        self._on_research: "callable | None" = None
+
+    def set_on_help(self, callback) -> None:
+        self._on_help = callback
+
+    def set_on_research(self, callback) -> None:
+        self._on_research = callback
 
     def set_on_pop_change(self, callback) -> None:
         self._on_pop_change = callback
@@ -96,17 +108,31 @@ class ResourceBar(Panel):
         world: World,
         font_val: pygame.font.Font, font_icon: pygame.font.Font,
     ) -> int:
-        pop = world.population.count
+        pop = world.player_population_count
         housing = world.connected_housing()
         pop_color = UI_BAD if pop > housing else UI_TEXT
         icon = font_icon.render("\u263a", True, _PERSON_COLOR)
         text = font_val.render(f"{pop}/{housing}", True, pop_color)
         if x + icon.get_width() + 4 + text.get_width() > max_x:
             return x
+        pop_x0 = x
         surface.blit(icon, (x, cy - icon.get_height() // 2))
         x += icon.get_width() + 4
         surface.blit(text, (x, cy - text.get_height() // 2))
         x += text.get_width() + 6
+        pop_rect = pygame.Rect(
+            pop_x0, cy - icon.get_height() // 2 - 2,
+            x - pop_x0, max(icon.get_height(), text.get_height()) + 4,
+        )
+        if pop_rect.collidepoint(pygame.mouse.get_pos()):
+            title, body = RESOURCE_BAR_TOOLTIPS["population"]
+            extra = ""
+            if pop > housing:
+                extra = (
+                    f"\nOver capacity by {pop - housing} — build "
+                    "another Habitat soon."
+                )
+            set_tooltip(body + extra, title=title)
 
         if self.sandbox:
             btn_sz = 20
@@ -144,8 +170,16 @@ class ResourceBar(Panel):
         tier_label = render_text_clipped(
             font_val, f"Tier {lvl}: {tier_name}", _TIER_COLOR, max_x - x,
         )
+        tier_x0 = x
         surface.blit(tier_label, (x, cy - tier_label.get_height() // 2))
         x += tier_label.get_width() + _ITEM_GAP
+        tier_rect = pygame.Rect(
+            tier_x0, cy - tier_label.get_height() // 2 - 2,
+            tier_label.get_width() + 4, tier_label.get_height() + 4,
+        )
+        if tier_rect.collidepoint(pygame.mouse.get_pos()):
+            title, body = RESOURCE_BAR_TOOLTIPS["tier"]
+            set_tooltip(body, title=f"{title} — Tier {lvl}: {tier_name}")
 
         progress = self.tier_tracker.check_requirements(world)
         if not progress:
@@ -189,38 +223,120 @@ class ResourceBar(Panel):
         """Draw right-aligned indicators. Returns leftmost x used."""
         rx = self.rect.right - _PADDING_X
 
+        # Help button (always shown, right-most).
+        help_label = font_val.render("Help", True, UI_TEXT)
+        help_pad_x = 10
+        help_pad_y = 3
+        help_w = help_label.get_width() + help_pad_x * 2
+        help_h = help_label.get_height() + help_pad_y * 2
+        rx -= help_w
+        self._btn_help = pygame.Rect(
+            rx, cy - help_h // 2, help_w, help_h,
+        )
+        hover = self._btn_help.collidepoint(pygame.mouse.get_pos())
+        bg = pygame.Surface((help_w, help_h), pygame.SRCALPHA)
+        bg.fill((70, 120, 180, 220) if hover else (40, 70, 120, 200))
+        surface.blit(bg, self._btn_help.topleft)
+        pygame.draw.rect(
+            surface, UI_ACCENT, self._btn_help, width=1, border_radius=4,
+        )
+        surface.blit(help_label, (
+            self._btn_help.x + help_pad_x,
+            self._btn_help.y + help_pad_y,
+        ))
+        if hover:
+            title, body = RESOURCE_BAR_TOOLTIPS["help"]
+            set_tooltip(body, title=title)
+        rx -= _ITEM_GAP
+
         if self.delete_mode:
             s = font_val.render(RESOURCE_BAR_DELETE, True, UI_BAD)
             rx -= s.get_width()
             surface.blit(s, (rx, cy - s.get_height() // 2))
+            del_rect = pygame.Rect(
+                rx - 2, cy - s.get_height() // 2 - 2,
+                s.get_width() + 4, s.get_height() + 4,
+            )
+            if del_rect.collidepoint(pygame.mouse.get_pos()):
+                title, body = RESOURCE_BAR_TOOLTIPS["delete"]
+                set_tooltip(body, title=title)
             rx -= _ITEM_GAP
 
         if self.sandbox:
             s = font_val.render(RESOURCE_BAR_SANDBOX, True, UI_ACCENT)
             rx -= s.get_width()
             surface.blit(s, (rx, cy - s.get_height() // 2))
+            sb_rect = pygame.Rect(
+                rx - 2, cy - s.get_height() // 2 - 2,
+                s.get_width() + 4, s.get_height() + 4,
+            )
+            if sb_rect.collidepoint(pygame.mouse.get_pos()):
+                title, body = RESOURCE_BAR_TOOLTIPS["sandbox"]
+                set_tooltip(body, title=title)
             rx -= _ITEM_GAP
 
         if self.sim_speed > 3.0:
             s = font_val.render(f"{self.sim_speed / 3:.0f}x", True, UI_ACCENT)
             rx -= s.get_width()
             surface.blit(s, (rx, cy - s.get_height() // 2))
+            sp_rect = pygame.Rect(
+                rx - 2, cy - s.get_height() // 2 - 2,
+                s.get_width() + 4, s.get_height() + 4,
+            )
+            if sp_rect.collidepoint(pygame.mouse.get_pos()):
+                title, body = RESOURCE_BAR_TOOLTIPS["speed"]
+                set_tooltip(body, title=title)
             rx -= _ITEM_GAP
 
+        # Research indicator: always render something clickable that
+        # opens the tech tree — either the active research progress
+        # or a subtle "Research" hint when none is active.
+        research_text: str | None = None
         if self.tech_tree is not None and self.tech_tree.current_research is not None:
             node = TECH_NODES.get(self.tech_tree.current_research)
             if node is not None:
                 pct = int(self.tech_tree.research_progress / node.time * 100)
-                s = font_small.render(
-                    f"\u2261 {node.name}: {pct}%", True, UI_ACCENT,
+                research_text = f"\u2261 {node.name}: {pct}%"
+        elif self.tech_tree is not None:
+            research_text = "\u2261 Research"
+        if research_text is not None:
+            s = font_small.render(research_text, True, UI_ACCENT)
+            rx -= s.get_width()
+            rect = pygame.Rect(
+                rx - 4, cy - s.get_height() // 2 - 2,
+                s.get_width() + 8, s.get_height() + 4,
+            )
+            hover = rect.collidepoint(pygame.mouse.get_pos())
+            if hover:
+                bg = pygame.Surface(rect.size, pygame.SRCALPHA)
+                bg.fill((40, 70, 120, 160))
+                surface.blit(bg, rect.topleft)
+                key = (
+                    "research"
+                    if (self.tech_tree is not None
+                        and self.tech_tree.current_research is not None)
+                    else "research_idle"
                 )
-                rx -= s.get_width()
-                surface.blit(s, (rx, cy - s.get_height() // 2))
-                rx -= _ITEM_GAP
+                title, body = RESOURCE_BAR_TOOLTIPS[key]
+                set_tooltip(body, title=title)
+            self._btn_research = rect
+            surface.blit(s, (rx, cy - s.get_height() // 2))
+            rx -= _ITEM_GAP
+        else:
+            self._btn_research = pygame.Rect(0, 0, 0, 0)
 
         return rx
 
     def handle_event(self, event: pygame.event.Event) -> bool:
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self._btn_help.collidepoint(event.pos):
+                if self._on_help:
+                    self._on_help()
+                return True
+            if self._btn_research.collidepoint(event.pos):
+                if self._on_research:
+                    self._on_research()
+                return True
         if not self.sandbox:
             return False
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:

@@ -35,6 +35,10 @@ BUILDING_LABELS: dict[str, str] = {
     "ROCKET_SILO":      "Rocket Silo",
     "OIL_DRILL":        "Oil Drill",
     "OIL_REFINERY":     "Oil Refinery",
+    "PIPE":             "Pipe",
+    "FLUID_TANK":       "Fluid Tank",
+    "TURRET":           "Turret",
+    "TRAP":             "Spike Trap",
 }
 
 # Short label used in the buildings tab (bottom bar).
@@ -43,10 +47,14 @@ BUILDING_SHORT_LABELS: dict[str, str] = {
     "RESEARCH_CENTER": "Research",
     "CHEMICAL_PLANT":  "Chem Plant",
     "CONVEYOR":        "Conveyor",
-    "SOLAR_ARRAY":     "Solar",
-    "ROCKET_SILO":     "Rocket",
+    "SOLAR_ARRAY":     "Solar Panel",
+    "ROCKET_SILO":     "Rocket Silo",
     "OIL_DRILL":       "Drill",
-    "OIL_REFINERY":    "Refinery+",
+    "OIL_REFINERY":    "Oil Refinery",
+    "PIPE":            "Pipe",
+    "FLUID_TANK":      "Tank",
+    "TURRET":          "Turret",
+    "TRAP":            "Trap",
 }
 
 
@@ -55,28 +63,32 @@ BUILDING_SHORT_LABELS: dict[str, str] = {
 # ═════════════════════════════════════════════════════════════════
 
 BUILDING_DESCRIPTIONS: dict[str, str] = {
-    "HABITAT":          "Houses 6 survivors",
-    "PATH":             "Connects buildings",
-    "BRIDGE":           "Path over water",
-    "WOODCUTTER":       "Harvests wood",
-    "QUARRY":           "Harvests stone and ores",
-    "GATHERER":         "Gathers fiber & food",
-    "STORAGE":          "Stores 100 resources",
-    "REFINERY":         "Processes metals",
-    "MINING_MACHINE":   "Auto-mines ore (uses fuel)",
-    "FARM":             "Grows food",
-    "WELL":             "Boosts nearby farms",
-    "WALL":             "Defensive wall",
-    "WORKSHOP":         "Basic crafting station",
-    "FORGE":            "Smelts metal bars",
-    "ASSEMBLER":        "Builds advanced parts",
-    "RESEARCH_CENTER":  "Researches new technologies",
-    "CHEMICAL_PLANT":   "Synthesises plastic, fuel & batteries",
-    "CONVEYOR":         "Walking on belts is 2x faster",
-    "SOLAR_ARRAY":      "Boosts adjacent crafting (passive)",
-    "ROCKET_SILO":      "Assemble rocket parts to escape this world",
-    "OIL_DRILL":        "Place on an Oil Deposit to extract crude oil (no fuel needed)",
-    "OIL_REFINERY":     "Refines crude Oil into Petroleum and Lubricant",
+    "HABITAT":          "Houses 6 colonists. Population grows when a Habitat has free space and on-site Food.",
+    "PATH":             "Connects buildings into a network so workers and haulers can reach them. Place anywhere except water.",
+    "BRIDGE":           "Acts as a Path over water tiles. Required to reach islands or cross rivers.",
+    "WOODCUTTER":       "Place adjacent to forest tiles to harvest Wood. Workers walk to nearby trees and bring logs back.",
+    "QUARRY":           "Place adjacent to mountain or stone tiles to harvest Stone. Also harvests Iron & Copper from neighbouring veins.",
+    "GATHERER":         "Place on / next to grass and fiber patches to harvest Fiber and Food.",
+    "STORAGE":          "Buffers up to 100 of one resource type. Click to choose which resource to stockpile.",
+    "REFINERY":         "Crafting station: turns Stone into Bricks and (with research) Stone+Iron into Concrete.",
+    "MINING_MACHINE":   "Deep-mines an adjacent ore vein. Burns Charcoal or Petroleum as fuel \u2014 keep it supplied.",
+    "FARM":             "Grows Food on any tile. Output multiplied by adjacent Wells.",
+    "WELL":             "Place adjacent to one or more Farms to boost their Food output. Must be on or next to water.",
+    "WALL":             "Decorative / defensive barrier. Blocks pathfinding but doesn't connect to your network.",
+    "WORKSHOP":         "Crafting station: planks, rope, copper wire, and most placeable buildings. Click and pick a recipe.",
+    "FORGE":            "Crafting station: smelts ore into Iron / Copper Bars and (with research) Steel Bars, Glass and Charcoal.",
+    "ASSEMBLER":        "Crafting station: machines Gears, Silicon, Circuits and assembles late-game items like the Rocket Silo.",
+    "RESEARCH_CENTER":  "Spend resources over time to unlock new buildings and recipes. Open Tech Tree from its info panel or via the Help button.",
+    "CHEMICAL_PLANT":   "Crafting station: synthesises Plastic, Rocket Fuel and Rubber from Charcoal, Glass and Petroleum.",
+    "CONVEYOR":         "Acts as a Path; colonists walking on it move at 2x speed. Great for long supply lines.",
+    "SOLAR_ARRAY":      "Passive: every adjacent crafting station (Workshop / Forge / Assembler / Refinery / Chemical Plant) crafts +25% faster.",
+    "ROCKET_SILO":      "End-game goal. Feed it Rocket Parts assembled at the Assembler to launch off-world and win.",
+    "OIL_DRILL":        "Must be placed directly on an Oil Deposit tile. Pumps Crude Oil automatically with no fuel. Connect to refinery via Pipes.",
+    "OIL_REFINERY":     "Crafting station: turns Crude Oil into Petroleum (a powerful fuel) and Lubricant (used in Robotic Arms).",
+    "PIPE":             "Carries fluids (Oil, Petroleum, Rocket Fuel) between buildings. Workers can't carry fluids — only pipes can. Pipes route around Paths and never connect to them.",
+    "FLUID_TANK":       "Buffers one fluid type. Connect to producers and consumers via Pipes; click to select which fluid.",
+    "TURRET":           "Auto-cannon. Targets the nearest ancient invader within range and fires until destroyed. Costs Stone, Iron Bars and Planks.",
+    "TRAP":             "One-shot spike trap. Detonates when an enemy steps on it for heavy damage to all enemies in 1 hex. Cheap and disposable.",
 }
 
 
@@ -90,6 +102,7 @@ BUILDING_CATEGORY_NAMES: list[str] = [
     "Resource",
     "Processing",
     "Logistics",
+    "Defense",
 ]
 
 
@@ -160,6 +173,8 @@ def building_description(key: str) -> str:
 
 NOTIF_RESEARCH_COMPLETE  = "Research complete: {name}"
 NOTIF_GOD_MODE_ON        = "God mode ON"
+NOTIF_GOD_SPAWN_OFF      = "Spawn-enemy tool: OFF"
+NOTIF_GOD_SPAWN_ON       = "Spawn-enemy tool: {name}  (left-click to spawn, F2 to cycle, right-click to cancel)"
 NOTIF_GOD_MODE_OFF       = "God mode OFF"
 NOTIF_REQUIRES_RESEARCH  = "Requires {name} research"
 NOTIF_REQUIRES_TIER      = "Requires Tier {level}: {name}"
@@ -167,17 +182,30 @@ NOTIF_BUILT              = "Built {name}"
 NOTIF_BUILT_PATH         = "Built {count} {label}"  # label = "tile"/"tiles"
 NOTIF_NEW_COLONIST       = "A new colonist was born!"
 NOTIF_UNREACHABLE        = "No workers can reach {name}"
+NOTIF_WAVE_INCOMING      = "Enemy wave incoming!"
+NOTIF_BUILDING_DESTROYED = "{name} destroyed by ancient machines!"
+NOTIF_EMERGENCY_REFUND   = "Emergency relief: a {name} has been added to your build inventory."
+NOTIF_COLONIST_KILLED    = "A colonist was killed by ancient machines"
+NOTIF_DEFENSE_UNLOCKED   = "Defense buildings unlocked — build Turrets and Traps!"
+NOTIF_CAMP_DESTROYED     = "The Ship Wreckage has fallen. The colony is lost."
 
 
 # ═════════════════════════════════════════════════════════════════
 #  MENU SCREEN  (hex colony title / seed / play)
 # ═════════════════════════════════════════════════════════════════
 
-MENU_TITLE           = "Hex Colony"
-MENU_SUBTITLE        = "Survive on a re-evolved Earth"
+MENU_TITLE           = "RePioneer"
+MENU_SUBTITLE        = "Survive  •  Reclaim  •  Rebuild"
 MENU_SEED_LABEL      = "World Seed"
 MENU_SEED_PLACEHOLDER = "Leave blank for random seed"
 MENU_MAP_SIZE_LABEL  = "Map Size"
+MENU_DIFFICULTY_LABEL = "Difficulty"
+MENU_DIFFICULTY_EASY = "Isolation"
+MENU_DIFFICULTY_HARD = "Evolution"
+MENU_DIFFICULTY_DESOLATION = "Desolation"
+MENU_DIFFICULTY_EASY_DESC = "Rebuild humanity's old home"
+MENU_DIFFICULTY_HARD_DESC = "There's something out there..."
+MENU_DIFFICULTY_DESOLATION_DESC = "You will not escape."
 MENU_PLAY_BUTTON     = "Play"
 MENU_HINT            = "Enter seed  \u2022  ENTER or click Play  \u2022  ESC to go back"
 
@@ -206,9 +234,42 @@ QUALITY_DESCRIPTIONS: dict[str, str] = {
 #  GAME OVER
 # ═════════════════════════════════════════════════════════════════
 
-GAME_OVER_TITLE      = "All Survivors Lost"
+GAME_OVER_TITLE      = "Colony Lost"
 GAME_OVER_BUTTONS: list[str] = ["Return to Main Menu", "Quit"]
 GAME_OVER_STATS      = "Survived {time}   |   Buildings: {buildings}"
+
+# Cause-specific titles + flavor lines shown above the stat block.
+GAME_OVER_TITLE_NO_SURVIVORS    = "All Survivors Lost"
+GAME_OVER_TITLE_CAMP_DESTROYED  = "The Ship Has Fallen"
+GAME_OVER_REASON_NO_SURVIVORS   = (
+    "Every colonist has perished. With no one left to tend the camp, "
+    "the colony falls silent."
+)
+GAME_OVER_REASON_CAMP_DESTROYED = (
+    "The crashed ship\u2014your last link to home\u2014was destroyed by the "
+    "ancient threat. The colony cannot continue without it."
+)
+
+GAME_OVER_TITLE_VICTORY = "Escape Velocity"
+GAME_OVER_REASON_VICTORY = (
+    "With a full tank of rocket fuel, your rocket thunders to life and "
+    "climbs through the clouds. You leave this world behind\u2014"
+    "the colony's long labor finally repaid."
+)
+
+ROCKET_LAUNCH_TITLE    = "LIFTOFF"
+ROCKET_LAUNCH_SUBTITLE = "The colony escapes the planet"
+ROCKET_LAUNCH_SKIP_HINT = "ESC to skip"
+
+# Stat-line labels (one per row in the summary panel).
+GAME_OVER_STAT_TIME          = "Time survived"
+GAME_OVER_STAT_TIER          = "Tier reached"
+GAME_OVER_STAT_RESEARCH      = "Tech researched"
+GAME_OVER_STAT_BUILDINGS     = "Buildings standing"
+GAME_OVER_STAT_PEAK_POP      = "Peak population"
+GAME_OVER_STAT_FINAL_POP     = "Survivors at end"
+GAME_OVER_STAT_ENEMIES       = "Enemies defeated"
+GAME_OVER_STAT_WAVES         = "Waves endured"
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -269,7 +330,7 @@ HELP_BINDINGS: list[tuple[str, str]] = [
     ("X",              "Toggle delete mode"),
     ("H",              "Toggle this help overlay"),
     ("I",              "Toggle game guide"),
-    ("1 / 2 / 3",      "Set game speed"),
+    ("1 / 2 / 3 / 5",  "Set game speed (5 = 10x)"),
     ("Tab",            "Toggle sandbox mode"),
     ("Alt (hold)",     "Show resource overlay"),
     ("Escape",         "Pause menu"),
@@ -287,7 +348,7 @@ GUIDE_DISMISS      = "Press I or Escape to close"
 # Lines starting with "#" render as section headers.
 GUIDE_PAGES: list[tuple[str, list[str]]] = [
     ("Getting Started", [
-        "# Welcome to Hex Colony!",
+        "# Welcome to RePioneer!",
         "You've crash-landed on an alien world.  Build a thriving",
         "colony by harvesting resources, constructing buildings,",
         "and managing your growing population.",
@@ -409,7 +470,7 @@ GUIDE_PAGES: list[tuple[str, list[str]]] = [
         "# Interface",
         "\u2022 I \u2014 toggle this info guide.",
         "\u2022 H \u2014 toggle quick controls reference.",
-        "\u2022 1 / 2 / 3 \u2014 set game speed.",
+        "\u2022 1 / 2 / 3 / 5 \u2014 set game speed (5 = 10x).",
         "\u2022 Tab \u2014 toggle sandbox mode.",
         "\u2022 Alt (hold) \u2014 show resource overlay.",
         "\u2022 Escape \u2014 pause menu.",
@@ -429,9 +490,9 @@ TUTORIAL_DISMISS_BUTTON = "Got it!"
 TUTORIAL_STEPS: list[dict[str, object]] = [
     {
         "id": "welcome",
-        "title": "Welcome to Hex Colony!",
+        "title": "Welcome to RePioneer!",
         "lines": [
-            "You've crash-landed on an alien world.",
+            "You've crash-landed on an abandoned Earth.",
             "Your crew needs Food to survive \u2014 without it",
             "your colonists will starve!",
             "",
@@ -439,15 +500,31 @@ TUTORIAL_STEPS: list[dict[str, object]] = [
         ],
     },
     {
+        "id": "basic_controls",
+        "title": "Basic Controls",
+        "lines": [
+            "Left-click a tile or building to see info",
+            "about it in the side panel.",
+            "",
+            "Hold middle-click (or right-click on empty",
+            "space) and drag to pan the camera. Scroll",
+            "to zoom. Middle-click also pans menus that",
+            "scroll.",
+            "",
+            "Right-click to cancel build mode or clear",
+            "your current selection.",
+        ],
+    },
+    {
         "id": "build_gatherer",
         "title": "Build a Gatherer",
         "lines": [
             "Open the Buildings tab at the bottom of the",
-            "screen and select \u201cGatherer\u201d.",
-            "",
-            "Place it on a fiber patch tile (light green)",
-            "near your crash zone.",
-            "Gatherers harvest Food from surrounding tiles.",
+            "screen and select \u201cGatherer\u201d from",
+            "the Resource subtab",
+            "Place it on a fiber patch tile (light green",
+            "with spots) near your crash zone.",
+            "Gatherers harvest Food and Fiber.",
         ],
     },
     {
@@ -567,7 +644,7 @@ TUTORIAL_STEPS: list[dict[str, object]] = [
             "Press I to open the Info Guide with detailed",
             "colony stats and controls reference.",
             "",
-            "Press 1 / 2 / 3 to change the game speed.",
+            "Press 1 / 2 / 3 / 5 to change the game speed.",
         ],
     },
     # ── Tier 4+ feature tutorials ─────────────────────────────────
@@ -663,7 +740,8 @@ TUTORIAL_STEPS: list[dict[str, object]] = [
             "",
             "Research Petroleum Engineering to unlock the Oil",
             "Drill and Oil Refinery, then refine Oil into",
-            "Petroleum, Lubricant, and Rubber.",
+            "Petroleum and Rubber. Lubricant is produced",
+            "alongside and hauled by workers.",
         ],
     },
     {
@@ -687,8 +765,23 @@ TUTORIAL_STEPS: list[dict[str, object]] = [
             "tile. It runs automatically with no fuel and",
             "fills its own storage with Crude Oil.",
             "",
-            "Logistics workers will haul the oil to your",
-            "Oil Refinery (or any Storage building).",
+            "Crude Oil is a fluid \u2014 workers cannot carry it.",
+            "Connect the drill to a refinery with Pipes.",
+        ],
+    },
+    {
+        "id": "pipe_intro",
+        "title": "Pipes & Fluid Tanks",
+        "lines": [
+            "Fluids (Oil, Petroleum, Rocket Fuel)",
+            "never travel by worker \u2014 only through Pipes.",
+            "",
+            "Place Pipes (made from Steel) to connect any",
+            "fluid-using buildings: drills, refineries,",
+            "chemical plants, mining machines, and silos.",
+            "",
+            "Fluid Tanks attach to a pipe network and buffer",
+            "one fluid of your choice for later use.",
         ],
     },
     {
@@ -715,6 +808,22 @@ TUTORIAL_STEPS: list[dict[str, object]] = [
             "These feed into Automation and Spacefarer tier",
             "goals \u2014 and the Rocket Silo itself now demands",
             "Reinforced Concrete and Robotic Arms.",
+        ],
+    },
+    {
+        "id": "first_raid",
+        "title": "Something Stirred",
+        "lines": [
+            "An ancient machine just struck your colony.",
+            "More waves will follow \u2014 and they grow stronger.",
+            "",
+            "Build defences before the next raid:",
+            "  \u2022 Turret \u2014 auto-fires on nearby enemies.",
+            "  \u2022 Trap \u2014 one-shot AoE; rebuild after use.",
+            "  \u2022 Wall \u2014 funnels enemies onto your turrets.",
+            "",
+            "Research Defense Basics to unlock the Trap, and",
+            "craft Turrets at the Workshop.",
         ],
     },
 ]
@@ -756,11 +865,109 @@ TAB_SUPPLY    = "Supply"
 TAB_STATS     = "Stats"
 TAB_INFO      = "Info"
 
+# Hover tooltips for the bottom-bar tabs.  Aimed at first-time players
+# — explain *why* each tab exists, not just what it shows.
+TAB_TOOLTIPS: dict[str, str] = {
+    TAB_BUILDINGS: (
+        "Pick a building to place on the map.\n"
+        "Cards show stock — empty cards mean you must craft more at "
+        "a Workshop or Assembler first."
+    ),
+    TAB_WORKERS: (
+        "Set how aggressively each building competes for workers.\n"
+        "Higher priority buildings fill their job slots first when "
+        "people are scarce."
+    ),
+    TAB_DEMAND: (
+        "Order which consumers logistics workers serve first.\n"
+        "Use this when something keeps running out of inputs even "
+        "though you produce it."
+    ),
+    TAB_SUPPLY: (
+        "Order which suppliers logistics workers pull from first.\n"
+        "Useful for keeping a key Workshop fed before sending overflow "
+        "to Storage."
+    ),
+    TAB_STATS: (
+        "Live colony stats: production, consumption, idle workers, "
+        "and storage levels."
+    ),
+    TAB_INFO: (
+        "Colony at a glance: age, population, building count."
+    ),
+}
+
+# Tooltips for the top resource-bar elements.  Each value is a (title,
+# body) pair so the renderer can show an emphasised title above an
+# explanation.
+RESOURCE_BAR_TOOLTIPS: dict[str, tuple[str, str]] = {
+    "tier": (
+        "Current Tier",
+        "Your colony's tech tier.  Each new tier unlocks new buildings "
+        "and recipes.  Click the Ship Wreckage to advance once the "
+        "requirements shown here are met.",
+    ),
+    "population": (
+        "Population / Housing",
+        "Number of colonists living in your buildings versus total "
+        "housing capacity.  When pop > housing, growth slows and "
+        "colonists become unhappy.",
+    ),
+    "research": (
+        "Active Research",
+        "Click to open the Tech Tree.  A Research Center with at "
+        "least one assigned worker is required for any progress.",
+    ),
+    "research_idle": (
+        "Tech Tree",
+        "Click to choose a research project.  Build a Research "
+        "Center, assign a worker, and feed it the required resources.",
+    ),
+    "help": (
+        "Help & Guide",
+        "Open the in-game guide: getting started, current tier "
+        "goals, every unlocked building, all recipes, the research "
+        "list, and key bindings.  (Shortcut: H or I)",
+    ),
+    "delete": (
+        "Delete Mode (X)",
+        "Press X or click the red Delete card in the Buildings tab "
+        "to toggle.  Click any of your buildings to demolish it; "
+        "half of the materials are returned to your inventory.",
+    ),
+    "sandbox": (
+        "Sandbox Mode",
+        "Free building, instant research, no resource costs.  Use "
+        "this for testing layouts or learning the game.",
+    ),
+    "speed": (
+        "Simulation Speed",
+        "Press +/− to step the speed up or down.  Useful for "
+        "watching long crafting chains or skipping idle time.",
+    ),
+}
+
+# Tooltip shown when hovering the Help button on the help overlay
+# itself (and used as the description of the Help tab).
+HELP_BUTTON_TOOLTIP = (
+    "Open the comprehensive guide.  Includes building recipes, "
+    "current-tier goals, unlocked research, and key bindings."
+)
+
 
 # ═════════════════════════════════════════════════════════════════
 #  HOME SCREEN  (game-select screen)
 # ═════════════════════════════════════════════════════════════════
 
-HOME_TITLE           = "Select a Game"
-HOME_HINT            = "Click a game to play  \u2022  ESC to quit"
+HOME_TITLE           = "RePioneer"
+HOME_HINT            = "Press Play to begin  \u2022  ESC to quit"
 HOME_NO_GAMES        = "No games registered yet!"
+
+
+
+# -----------------------------------------------------------------
+#  ANCIENT TECH AWAKENING
+# -----------------------------------------------------------------
+
+NOTIF_AWAKENING_TRIGGERED = "Ancient technology awakens!"
+NOTIF_AWAKENING_BUILDING_LOST = "Ancient towers consumed your {building}"

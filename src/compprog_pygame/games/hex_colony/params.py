@@ -58,7 +58,7 @@ PERSON_SPEED: float = 60.0  # pixels per second
 
 BUILDING_COST_CAMP: dict[str, int] = {}
 BUILDING_COST_HOUSE: dict[str, int] = {"WOOD": 12, "FIBER": 4}
-BUILDING_COST_HABITAT: dict[str, int] = {"WOOD": 12, "STONE": 10, "FIBER": 4, "IRON_BAR": 1}
+BUILDING_COST_HABITAT: dict[str, int] = {"WOOD": 12, "STONE": 10, "FIBER": 4, "IRON_BAR": 2}
 BUILDING_COST_PATH: dict[str, int] = {"STONE": 1, "WOOD": 1}
 BUILDING_COST_BRIDGE: dict[str, int] = {"PLANKS": 4}
 BUILDING_COST_WOODCUTTER: dict[str, int] = {"WOOD": 10, "STONE": 5}
@@ -83,6 +83,14 @@ BUILDING_COST_ROCKET_SILO: dict[str, int] = {"REINFORCED_CONCRETE": 20, "STEEL_P
 # ── Petrochemical chain ────────────────────────────────────
 BUILDING_COST_OIL_DRILL: dict[str, int] = {"STEEL_BAR": 6, "GEARS": 4, "PLANKS": 4}
 BUILDING_COST_OIL_REFINERY: dict[str, int] = {"BRICKS": 12, "STEEL_BAR": 6, "COPPER_WIRE": 4, "GEARS": 4}
+# ── Fluid handling (pipes & tanks) ─────────────────────────
+# Pipes are deliberately cheap so the player can lay long runs
+# between oil drills, refineries and tanks; they connect adjacent
+# fluid-capable buildings into a fluid network.
+BUILDING_COST_PIPE: dict[str, int] = {"STEEL_BAR": 1}
+# Fluid tanks buffer a single fluid resource and require pipes to
+# reach producers/consumers; sized between Storage and Refinery.
+BUILDING_COST_FLUID_TANK: dict[str, int] = {"STEEL_BAR": 6, "BRICKS": 4}
 
 # ═══════════════════════════════════════════════════════════════════
 #  BUILDING CAPACITY
@@ -114,11 +122,13 @@ BUILDING_MAX_WORKERS_SOLAR_ARRAY: int = 0
 BUILDING_MAX_WORKERS_ROCKET_SILO: int = 0
 BUILDING_MAX_WORKERS_OIL_DRILL: int = 0
 BUILDING_MAX_WORKERS_OIL_REFINERY: int = 2
+BUILDING_MAX_WORKERS_PIPE: int = 0
+BUILDING_MAX_WORKERS_FLUID_TANK: int = 0
 
 # Housing capacity (number of people that can live here; 0 = not a dwelling)
 BUILDING_HOUSING_CAMP: int = 10
 BUILDING_HOUSING_HOUSE: int = 5
-BUILDING_HOUSING_HABITAT: int = 6
+BUILDING_HOUSING_HABITAT: int = 8
 BUILDING_HOUSING_PATH: int = 0
 BUILDING_HOUSING_BRIDGE: int = 0
 BUILDING_HOUSING_WOODCUTTER: int = 0
@@ -141,6 +151,8 @@ BUILDING_HOUSING_SOLAR_ARRAY: int = 0
 BUILDING_HOUSING_ROCKET_SILO: int = 0
 BUILDING_HOUSING_OIL_DRILL: int = 0
 BUILDING_HOUSING_OIL_REFINERY: int = 0
+BUILDING_HOUSING_PIPE: int = 0
+BUILDING_HOUSING_FLUID_TANK: int = 0
 
 # Storage capacity (max total resources stored; 0 = none)
 # Camp capacity is set dynamically at placement time.
@@ -169,6 +181,10 @@ BUILDING_STORAGE_SOLAR_ARRAY: int = 0
 BUILDING_STORAGE_ROCKET_SILO: int = 200
 BUILDING_STORAGE_OIL_DRILL: int = 80
 BUILDING_STORAGE_OIL_REFINERY: int = 80
+BUILDING_STORAGE_PIPE: int = 0
+# Fluid tanks hold a single fluid resource; bigger than refinery
+# buffers so they're worth building between producers/consumers.
+BUILDING_STORAGE_FLUID_TANK: int = 200
 
 # ═══════════════════════════════════════════════════════════════════
 #  LOGISTICS
@@ -177,11 +193,21 @@ BUILDING_STORAGE_OIL_REFINERY: int = 80
 # Items a single logistics worker can carry in one trip.
 LOGISTICS_CARRY_CAPACITY: int = 5
 
-# Maximum number of idle logistics workers that may run the
-# (expensive) supply/demand search per simulation tick.  The world
-# round-robins through the idle pool so every worker still gets
-# served promptly while large colonies don't stall.
-LOGISTICS_JOBS_PER_FRAME: int = 4
+# Floor on the number of idle logistics workers that always run the
+# (expensive) supply/demand search per simulation tick — the wall-
+# clock budget below is the real cap.  This used to be a hard cap of
+# 4, which left dozens of haulers sitting at home waiting for their
+# round-robin turn while supply/demand pairs went unserved.
+LOGISTICS_JOBS_PER_FRAME: int = 8
+
+# Hard wall-clock budget (in milliseconds) for per-frame logistics
+# job-finding.  The loop scans as many idle workers as it can within
+# this budget, ensuring a single tick can never blow the frame
+# budget regardless of colony size.  Idle workers that didn't get a
+# turn this frame are picked up next frame via the round-robin
+# cursor.  8 ms ≈ half a 60 fps frame and is plenty for thousands
+# of suppliers/consumers in practice.
+LOGISTICS_FIND_JOB_BUDGET_MS: int = 8
 
 # ═══════════════════════════════════════════════════════════════════
 #  POPULATION GROWTH
@@ -193,6 +219,16 @@ POPULATION_REPRO_INTERVAL: float = 120.0
 POPULATION_FOOD_PER_BIRTH: float = 25.0
 # Minimum food a dwelling must hold before a birth can occur.
 POPULATION_MIN_FOOD_TO_BIRTH: float = 25.0
+
+# ── Desolation difficulty multipliers ─────────────────────────
+# These tweak the base economy & combat numbers when the player
+# selects the DESOLATION game mode.  All other modes ignore them.
+DESOLATION_GATHER_RATE_MULT: float = 2.0 / 3.0  # gather rates cut by 1/3
+DESOLATION_FARM_FOOD_MULT:   float = 0.10        # farm food output cut by 90%
+DESOLATION_BIRTH_FOOD:       float = 50.0       # food per new colonist (vs 25)
+DESOLATION_ENEMY_HP_MULT:    float = 2.0        # enemies twice as tough
+DESOLATION_ENEMY_DAMAGE_MULT: float = 2.0       # enemies twice as deadly
+DESOLATION_ENEMY_COUNT_MULT: int = 2            # spawn twice as many enemies
 
 # ═══════════════════════════════════════════════════════════════════
 #  BUILDING DELETE REFUND
@@ -209,20 +245,29 @@ DELETE_REFUND_FRACTION: float = 0.5
 REFINERY_RATE: float = 0.3  # units per second per worker (faster than raw gathering)
 
 # Mining machine: fuel-powered automated ore miner for iron/copper veins.
-# Consumes a small amount of CHARCOAL per second while active.  Faster
-# than a worker-staffed refinery but stops entirely when out of fuel.
+# Burns one unit of fuel from its on-site storage to mine a fixed amount
+# of ore.  CHARCOAL: 40 ore per unit; PETROLEUM: 100 ore per unit.
+# The machine refuses to start until at least one unit of fuel is on
+# site (logistics must deliver it — the global inventory is no longer a
+# fallback).
 MINING_MACHINE_RATE: float = 1.2  # ore per second (machine, not per worker)
-MINING_MACHINE_FUEL_RATE: float = 0.08  # CHARCOAL per second while active
+# Discrete ore-per-fuel-unit ratios.  Order matters: when both fuels are
+# on site the first listed is preferred (charcoal is the early-game
+# fuel; petroleum is the late-game upgrade).
+MINING_MACHINE_ORE_PER_FUEL: dict[str, float] = {
+    "CHARCOAL": 40.0,
+    "PETROLEUM": 100.0,
+}
+# Kept for backwards-compatibility with older code paths that still ask
+# for the rate-based fuel data (e.g. tooltip generation).
+MINING_MACHINE_FUEL_RATE: float = MINING_MACHINE_RATE / MINING_MACHINE_ORE_PER_FUEL["CHARCOAL"]
+MINING_MACHINE_FUELS: dict[str, float] = {
+    name: MINING_MACHINE_ORE_PER_FUEL[name] / MINING_MACHINE_ORE_PER_FUEL["CHARCOAL"]
+    for name in MINING_MACHINE_ORE_PER_FUEL
+}
 # Oil drill: placed directly on an OIL_DEPOSIT tile.  No fuel needed —
 # extracts crude OIL straight into its own storage at a steady rate.
 OIL_DRILL_RATE: float = 0.6  # crude oil per second
-# Acceptable fuel resources (name -> energy multiplier).  Currently only
-# CHARCOAL is implemented; additional fuels (coal, oil) will be added
-# later and plugged in here.
-MINING_MACHINE_FUELS: dict[str, float] = {
-    "CHARCOAL": 1.0,
-    "PETROLEUM": 2.5,  # cleaner-burning, lasts 2.5x longer per unit
-}
 
 # Farm: produces food per second per worker (no terrain requirement)
 FARM_FOOD_RATE: float = 0.8
@@ -272,6 +317,12 @@ BUILDING_RECIPE_STATION: dict[str, str] = {
     "ROCKET_SILO":      "ASSEMBLER",
     "OIL_DRILL":        "ASSEMBLER",
     "OIL_REFINERY":     "ASSEMBLER",
+    "PIPE":             "WORKSHOP",
+    "FLUID_TANK":       "ASSEMBLER",
+    # Defense buildings — crafted at the Workshop once
+    # ``defense_basics`` research unlocks them.
+    "TURRET":           "WORKSHOP",
+    "TRAP":             "WORKSHOP",
 }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -590,7 +641,6 @@ TIER_DATA: list[dict] = [
         "requirements": {
             "population": 42,
             "resource_gathered": {"OIL": 30, "PETROLEUM": 20, "RUBBER": 8},
-            "research_count": 8,
         },
     },
     # ── Tier 6 ───────────────────────────────────────────────────
@@ -605,7 +655,6 @@ TIER_DATA: list[dict] = [
                 "PLASTIC": 25, "CIRCUIT": 15, "BATTERY": 5,
                 "ADVANCED_CIRCUIT": 6,
             },
-            "research_count": 12,
         },
     },
     # ── Tier 7 ───────────────────────────────────────────────────
@@ -620,7 +669,6 @@ TIER_DATA: list[dict] = [
                 "ELECTRONICS": 25, "ROCKET_FUEL": 10,
                 "REINFORCED_CONCRETE": 8, "ROBOTIC_ARM": 4,
             },
-            "research_count": 17,
         },
     },
 ]
@@ -657,7 +705,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "time": 45.0,
         "prerequisites": [],
         "unlocks": ["FARM"],
-        "position": (1, 0),
+        "position": (3, 0),
     },
     "metallurgy": {
         "name": "Metallurgy",
@@ -667,7 +715,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": [],
         "unlocks": ["REFINERY"],
         "unlock_resources": ["IRON_BAR", "COPPER_BAR"],
-        "position": (2, 0),
+        "position": (5, 0),
     },
     "irrigation": {
         "name": "Irrigation",
@@ -676,7 +724,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "time": 40.0,
         "prerequisites": ["agriculture"],
         "unlocks": ["WELL"],
-        "position": (1, 1),
+        "position": (3, 1),
     },
     "fortification": {
         "name": "Fortification",
@@ -686,7 +734,16 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["metallurgy"],
         "unlocks": [],
         "unlock_resources": ["STEEL_PLATE"],
-        "position": (2, 1),
+        "position": (5, 1),
+    },
+    "defense_basics": {
+        "name": "Defense Basics",
+        "description": "Build Turrets and Spike Traps to repel ancient invaders",
+        "cost": {"WOOD": 15, "STONE": 15, "IRON_BAR": 4},
+        "time": 50.0,
+        "prerequisites": ["metallurgy"],
+        "unlocks": ["TURRET", "TRAP"],
+        "position": (4, 2),
     },
     "advanced_smelting": {
         "name": "Advanced Smelting",
@@ -696,7 +753,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["metallurgy"],
         "unlocks": [],
         "unlock_resources": ["STEEL_BAR", "GLASS"],
-        "position": (3, 1),
+        "position": (6, 1),
     },
     "exploration": {
         "name": "Exploration",
@@ -719,7 +776,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["fortification"],
         "unlocks": [],
         "unlock_resources": ["REINFORCED_CONCRETE"],
-        "position": (2, 2),
+        "position": (5, 2),
     },
     "concrete_works": {
         "name": "Concrete Works",
@@ -729,7 +786,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["masonry", "advanced_smelting"],
         "unlocks": [],
         "unlock_resources": ["CONCRETE"],
-        "position": (3, 2),
+        "position": (5, 3),
     },
     "basic_chemistry": {
         "name": "Basic Chemistry",
@@ -738,7 +795,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "time": 100.0,
         "prerequisites": ["advanced_smelting"],
         "unlocks": ["CHEMICAL_PLANT"],
-        "position": (4, 2),
+        "position": (6, 2),
     },
     "electronics_basics": {
         "name": "Electronics Basics",
@@ -748,7 +805,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["advanced_smelting"],
         "unlocks": [],
         "unlock_resources": ["COPPER_WIRE", "GEARS", "SILICON"],
-        "position": (5, 2),
+        "position": (8, 2),
     },
     "conveyor_belts": {
         "name": "Conveyor Belts",
@@ -757,7 +814,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "time": 80.0,
         "prerequisites": ["advanced_logistics", "metallurgy"],
         "unlocks": ["CONVEYOR"],
-        "position": (0, 2),
+        "position": (1, 1),
     },
     # ═══════════════════════════════════════════════════════════
     #  LATE GAME  (tier 5 — chemistry, electronics, power)
@@ -770,17 +827,17 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["basic_chemistry"],
         "unlocks": [],
         "unlock_resources": ["PLASTIC"],
-        "position": (4, 3),
+        "position": (7, 3),
     },
     "petroleum_engineering": {
         "name": "Petroleum Engineering",
-        "description": "Drill surface oil deposits and refine them into Petroleum & Lubricant",
+        "description": "Drill surface oil deposits, refine them into Petroleum & Lubricant, and lay Pipes & Fluid Tanks to move them",
         "cost": {"STEEL_BAR": 6, "GEARS": 6, "BRICKS": 8},
         "time": 110.0,
         "prerequisites": ["basic_chemistry"],
-        "unlocks": ["OIL_DRILL", "OIL_REFINERY"],
+        "unlocks": ["OIL_DRILL", "OIL_REFINERY", "PIPE", "FLUID_TANK"],
         "unlock_resources": ["OIL", "PETROLEUM", "LUBRICANT"],
-        "position": (3, 3),
+        "position": (6, 3),
     },
     "polymers": {
         "name": "Polymers",
@@ -790,7 +847,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["plastics", "petroleum_engineering"],
         "unlocks": [],
         "unlock_resources": ["RUBBER"],
-        "position": (4, 4),
+        "position": (6, 4),
     },
     "microchips": {
         "name": "Microchips",
@@ -800,7 +857,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["electronics_basics", "plastics"],
         "unlocks": [],
         "unlock_resources": ["CIRCUIT", "ELECTRONICS"],
-        "position": (5, 3),
+        "position": (8, 3),
     },
     "energy_storage": {
         "name": "Energy Storage",
@@ -810,7 +867,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["microchips"],
         "unlocks": [],
         "unlock_resources": ["BATTERY"],
-        "position": (5, 4),
+        "position": (8, 4),
     },
     "solar_panels": {
         "name": "Solar Panels",
@@ -819,7 +876,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "time": 150.0,
         "prerequisites": ["energy_storage"],
         "unlocks": ["SOLAR_ARRAY"],
-        "position": (5, 5),
+        "position": (8, 5),
     },
     "advanced_electronics": {
         "name": "Advanced Electronics",
@@ -829,7 +886,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["microchips", "polymers"],
         "unlocks": [],
         "unlock_resources": ["ADVANCED_CIRCUIT"],
-        "position": (6, 3),
+        "position": (7, 4),
     },
     "automation_logistics": {
         "name": "Automation Logistics",
@@ -839,7 +896,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["conveyor_belts", "advanced_electronics"],
         "unlocks": [],
         "unlock_resources": ["ROBOTIC_ARM"],
-        "position": (0, 3),
+        "position": (1, 4),
     },
     # ═══════════════════════════════════════════════════════════
     #  END GAME  (tier 6 — spacefaring)
@@ -852,7 +909,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["polymers", "advanced_electronics"],
         "unlocks": [],
         "unlock_resources": ["ROCKET_FUEL"],
-        "position": (4, 5),
+        "position": (6, 5),
     },
     "orbital_assembly": {
         "name": "Orbital Assembly",
@@ -862,7 +919,7 @@ TECH_TREE_DATA: dict[str, dict] = {
         "prerequisites": ["rocketry", "solar_panels", "concrete_works", "automation_logistics"],
         "unlocks": ["ROCKET_SILO"],
         "unlock_resources": ["ROCKET_PART"],
-        "position": (5, 6),
+        "position": (7, 6),
     },
 }
 
@@ -870,20 +927,22 @@ TECH_TREE_DATA: dict[str, dict] = {
 #  RUINS
 # ═══════════════════════════════════════════════════════════════════
 
-# Ruins spawn as small clusters of weathered structures.  The map
-# generates 1-2 clusters on small maps and up to 3 on large maps.
-# Each cluster contains 5-8 ruin pieces placed on nearby tiles.
-RUINS_CLUSTERS_MIN: int = 1
-RUINS_CLUSTERS_MAX: int = 2
+# Ruins spawn as small clusters of weathered structures.  Each
+# cluster awakens *one* ancient tower (see AWAKENING_TOWERS_PER_EVENT)
+# so the map needs many more clusters than there are tower slots.
+# Cluster count scales further on large maps.
+RUINS_CLUSTERS_MIN: int = 8
+RUINS_CLUSTERS_MAX: int = 14
 # Map-radius threshold above which an extra cluster may appear.
-RUINS_EXTRA_CLUSTER_RADIUS: int = 80
-# Pieces per cluster.
-RUINS_PIECES_MIN: int = 5
-RUINS_PIECES_MAX: int = 8
+RUINS_EXTRA_CLUSTER_RADIUS: int = 40
+# Pieces per cluster — kept small now that each cluster only feeds
+# one tower; lots of small ruin sites read better than a few large ones.
+RUINS_PIECES_MIN: int = 3
+RUINS_PIECES_MAX: int = 6
 # Minimum hex distance from camp for any cluster centre.
 RUINS_MIN_DISTANCE: int = 8
 # Minimum hex distance between two cluster centres.
-RUINS_CLUSTER_SEPARATION: int = 10
+RUINS_CLUSTER_SEPARATION: int = 6
 # Radius (in hexes) around the cluster centre in which pieces are placed.
 RUINS_CLUSTER_RADIUS: int = 2
 
@@ -910,16 +969,20 @@ TILE_RESOURCE_COPPER_VEIN: tuple[float, float] = (200.0, 500.0)
 #  ORE VEIN GENERATION
 # ═══════════════════════════════════════════════════════════════════
 
-# Number of veins = max(ORE_VEIN_COUNT_MIN, ORE_VEIN_COUNT_BASE + radius // ORE_VEIN_COUNT_RADIUS_DIVISOR)
+# Number of veins = max(ORE_VEIN_COUNT_MIN, ORE_VEIN_COUNT_BASE
+#   + radius // ORE_VEIN_COUNT_RADIUS_DIVISOR)
 # Iron and copper are tuned identically so the player gets roughly equal
-# stocks of both metals.
-ORE_IRON_VEIN_COUNT_MIN: int = 5
-ORE_IRON_VEIN_COUNT_BASE: int = 4
-ORE_IRON_VEIN_COUNT_RADIUS_DIVISOR: int = 10
+# stocks of both metals.  Counts are kept small — even distribution
+# across the map is enforced by ring-bucketing the seed picker (see
+# ``_generate_ore_veins``), so a low count still reaches every ring
+# of the map without painting the whole world in ore.
+ORE_IRON_VEIN_COUNT_MIN: int = 8
+ORE_IRON_VEIN_COUNT_BASE: int = 6
+ORE_IRON_VEIN_COUNT_RADIUS_DIVISOR: int = 8
 
-ORE_COPPER_VEIN_COUNT_MIN: int = 5
-ORE_COPPER_VEIN_COUNT_BASE: int = 4
-ORE_COPPER_VEIN_COUNT_RADIUS_DIVISOR: int = 10
+ORE_COPPER_VEIN_COUNT_MIN: int = 8
+ORE_COPPER_VEIN_COUNT_BASE: int = 6
+ORE_COPPER_VEIN_COUNT_RADIUS_DIVISOR: int = 8
 
 # Vein size range (number of tiles per vein) — equal for iron and copper.
 ORE_IRON_VEIN_SIZE_MIN: int = 8
@@ -946,7 +1009,7 @@ OIL_DEPOSIT_CLUSTER_SIZE_MAX: int = 4
 # Probability that a neighbour tile joins an oil pool during BFS growth.
 OIL_DEPOSIT_EXPAND_CHANCE: float = 0.55
 # Resource amount (units of OIL) per deposit tile.
-TILE_RESOURCE_OIL_DEPOSIT: tuple[float, float] = (300.0, 700.0)
+TILE_RESOURCE_OIL_DEPOSIT: tuple[float, float] = (3000.0, 7000.0)
 # Minimum hex distance from camp for any oil cluster centre.
 OIL_DEPOSIT_MIN_DISTANCE: int = 14
 
@@ -978,3 +1041,292 @@ CAMERA_ZOOM_MAX: float = 3.0
 
 # Hex-distance radius for resource-collection buildings
 COLLECTION_RADIUS: int = 2
+
+
+# -------------------------------------------------------------------
+#  ANCIENT TECH THREAT  (towers that rise from the ground)
+# -------------------------------------------------------------------
+
+# How many awakenings can fire over the course of a game.
+AWAKENING_MAX_COUNT: int = 3
+
+# Population thresholds for trigger 1 (>= reaches the next awakening).
+AWAKENING_POP_THRESHOLDS: list[int] = [20, 50, 100]
+
+# Disturbance thresholds for trigger 2 (number of unique ruin tiles
+# disturbed by the player; ascending per awakening).
+AWAKENING_DISTURBANCE_THRESHOLDS: list[int] = [3, 7, 12]
+
+# How many towers spawn per awakening, escalating with index.
+AWAKENING_TOWERS_PER_EVENT: list[int] = [3, 6, 9]
+
+# Wasteland radius (in hexes) around each tower.
+AWAKENING_TOWER_RADIUS: int = 2
+
+# Sites are kept this many hexes apart so towers spread across the
+# map instead of clustering in one corner.
+AWAKENING_TOWER_SEPARATION: int = 12
+
+# Minimum / maximum hex distance from the player camp at which a
+# tower can spawn.  Keeps the spaceship safe and lets towers reach
+# most of the world rather than hugging the camp.
+AWAKENING_MIN_CAMP_DISTANCE: int = 8
+AWAKENING_MAX_CAMP_DISTANCE: int = 80
+
+# Cutscene timings (real seconds).
+AWAKENING_INTRO_TIME: float = 1.4
+AWAKENING_PAN_TIME: float = 1.1
+AWAKENING_RISE_TIME: float = 1.6
+AWAKENING_HOLD_TIME: float = 0.7
+AWAKENING_OUTRO_TIME: float = 1.2
+
+# Camera zoom forced during the cutscene.
+AWAKENING_ZOOM: float = 1.4
+
+# Letterbox bar height as a fraction of screen height.
+AWAKENING_LETTERBOX_FRAC: float = 0.10
+
+# Banner text shown over the cutscene.
+AWAKENING_TITLE_TEXT: str = "AWAKENING"
+AWAKENING_SUBTITLE_TEXT: str = "Ancient machines stir beneath the soil..."
+AWAKENING_SKIP_HINT: str = "Space / click to skip"
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  COMBAT — DEFENSE BUILDINGS
+#  Costs / capacity / health for the new defense subtab.  All numbers
+#  are tuned for early-mid game (a single Turret should comfortably
+#  kill a SCOUT, struggle vs a BRUTE, and stand no chance vs a
+#  COLOSSUS without support).
+# ═══════════════════════════════════════════════════════════════════
+
+BUILDING_COST_TURRET: dict[str, int] = {"STONE": 12, "IRON_BAR": 4, "PLANKS": 4}
+BUILDING_COST_TRAP: dict[str, int] = {"WOOD": 4, "IRON_BAR": 1}
+
+BUILDING_MAX_WORKERS_TURRET: int = 0
+BUILDING_MAX_WORKERS_TRAP: int = 0
+
+BUILDING_HOUSING_TURRET: int = 0
+BUILDING_HOUSING_TRAP: int = 0
+
+BUILDING_STORAGE_TURRET: int = 0
+BUILDING_STORAGE_TRAP: int = 0
+
+# Turret combat behaviour.
+TURRET_RANGE_HEXES: int = 4
+TURRET_DAMAGE: float = 12.0
+TURRET_RELOAD_SECONDS: float = 0.9
+TURRET_PROJECTILE_SPEED: float = 320.0  # px/sec
+
+# One-shot trap that arms when placed and detonates the first time
+# an enemy steps on it.  Heavy damage but consumed on use.
+TRAP_DAMAGE: float = 60.0
+
+# Crashed spaceship (CAMP) auto-defence.  Free, always-on laser:
+# the wreckage doubles as a short-range turret so the player has at
+# least one defender before they unlock the proper Turret tech.
+CAMP_LASER_RANGE_HEXES: int = 3
+CAMP_LASER_DAMAGE: float = 20.0
+CAMP_LASER_RELOAD_SECONDS: float = 0.6
+
+# ═══════════════════════════════════════════════════════════════════
+#  COMBAT — HEALTH
+#  Per-building HP.  Anything not in this table defaults to
+#  ``BUILDING_DEFAULT_MAX_HEALTH``.  The CAMP is heavily armoured —
+#  it is the lose condition.
+# ═══════════════════════════════════════════════════════════════════
+
+PERSON_MAX_HEALTH: float = 30.0
+PERSON_DEATH_NOTIFY: bool = True
+
+BUILDING_DEFAULT_MAX_HEALTH: float = 100.0
+BUILDING_MAX_HEALTH: dict[str, float] = {
+    "CAMP":            800.0,
+    "HABITAT":         150.0,
+    "HOUSE":           80.0,
+    "PATH":            30.0,
+    "BRIDGE":          40.0,
+    "WALL":            220.0,    # walls are the player's primary blocker
+    "WOODCUTTER":      70.0,
+    "QUARRY":          80.0,
+    "GATHERER":        70.0,
+    "STORAGE":         120.0,
+    "REFINERY":        100.0,
+    "MINING_MACHINE":  120.0,
+    "FARM":            70.0,
+    "WELL":            50.0,
+    "WORKSHOP":        100.0,
+    "FORGE":           110.0,
+    "ASSEMBLER":       110.0,
+    "RESEARCH_CENTER": 130.0,
+    "TRIBAL_CAMP":     150.0,
+    "CHEMICAL_PLANT":  130.0,
+    "CONVEYOR":        20.0,
+    "SOLAR_ARRAY":     60.0,
+    "ROCKET_SILO":     400.0,
+    "OIL_DRILL":       100.0,
+    "OIL_REFINERY":    130.0,
+    "PIPE":            20.0,
+    "FLUID_TANK":      120.0,
+    "TURRET":          90.0,
+    "TRAP":            10.0,
+}
+
+# ═══════════════════════════════════════════════════════════════════
+#  COMBAT — ENEMIES
+#  Three escalating tiers.  Each entry is a string-keyed dict so we
+#  stay free of enum imports.
+#    hp           — total health
+#    damage       — damage per attack against a building or person
+#    attack_cd    — seconds between attacks (against an adjacent target)
+#    move_period  — seconds between 1-hex moves (lower = faster enemy)
+#    bounty       — wood awarded to player on kill (small economic loop)
+#    sprite       — file in assets/sprites/enemies/ (without .png)
+#    color        — fallback procedural colour when no sprite is present
+#    radius_px    — base sprite radius for procedural drawing
+# ═══════════════════════════════════════════════════════════════════
+
+ENEMY_TYPE_DATA: dict[str, dict] = {
+    "SCOUT": {
+        "hp":          30.0,
+        "damage":      6.0,
+        "attack_cd":   1.0,
+        "move_period": 0.55,
+        "bounty":      2,
+        "sprite":      "scout",
+        "color":       (180, 80, 200),
+        "radius_px":   8,
+    },
+    "BRUTE": {
+        "hp":          90.0,
+        "damage":      14.0,
+        "attack_cd":   1.2,
+        "move_period": 0.85,
+        "bounty":      5,
+        "sprite":      "brute",
+        "color":       (200, 60, 80),
+        "radius_px":   11,
+    },
+    "COLOSSUS": {
+        "hp":          260.0,
+        "damage":      32.0,
+        "attack_cd":   1.6,
+        "move_period": 1.2,
+        "bounty":      12,
+        "sprite":      "colossus",
+        "color":       (90, 60, 160),
+        "radius_px":   15,
+    },
+}
+
+# ═══════════════════════════════════════════════════════════════════
+#  COMBAT — WAVE COMPOSITION
+#  WAVE_COMPOSITION_PER_TOWER[wave_index] = list[(EnemyType, count)]
+#  Wave 0 fires after the FIRST awakening cutscene; wave 1 after the
+#  second; etc.  When the awakening list is exhausted, periodic waves
+#  use ``POST_AWAKENING_WAVE_COMPOSITION`` and scale further with
+#  population growth and elapsed time.
+# ═══════════════════════════════════════════════════════════════════
+
+# Per-tower spawn counts.  Total wave size = (n_towers * sum(counts)).
+WAVE_COMPOSITION_PER_TOWER: list[list[tuple[str, int]]] = [
+    # Wave 0 — gentle introduction; camp laser will mop these up
+    [("SCOUT", 3)],
+    # Wave 1 — first time the player needs turrets
+    [("SCOUT", 4), ("BRUTE", 1)],
+    # Wave 2 — last awakening, mixed force
+    [("SCOUT", 4), ("BRUTE", 3), ("COLOSSUS", 1)],
+]
+
+# After the final awakening, periodic waves spawn from random map
+# edges.  Composition is rolled per wave and scales with the wave
+# counter (see :data:`POST_AWAKENING_WAVE_SCALING`).
+POST_AWAKENING_WAVE_COMPOSITION: list[tuple[str, int]] = [
+    ("SCOUT", 6), ("BRUTE", 3), ("COLOSSUS", 1),
+]
+
+# Each post-awakening wave multiplies per-type counts by
+# (1 + wave_index * POST_AWAKENING_COUNT_GROWTH) and adds
+# (population // POST_AWAKENING_POP_DIVISOR) extra SCOUTs so a big
+# colony attracts proportionally bigger raids.
+POST_AWAKENING_COUNT_GROWTH: float = 0.15
+POST_AWAKENING_POP_DIVISOR: int = 8
+
+# Seconds between automatic post-awakening waves.  Decreases each
+# wave (clamped) so the late-game pressure keeps ramping.
+POST_AWAKENING_WAVE_INTERVAL_BASE: float = 240.0  # 4 sim minutes
+POST_AWAKENING_WAVE_INTERVAL_MIN: float = 90.0
+POST_AWAKENING_WAVE_INTERVAL_DECAY_PER_WAVE: float = 12.0
+
+# Extra delay after the final awakening before the first periodic
+# wave so the player gets a breather to rebuild.
+POST_AWAKENING_GRACE_PERIOD: float = 180.0
+
+# ═══════════════════════════════════════════════════════════════════
+#  COMBAT — SPAWN / MOVEMENT
+# ═══════════════════════════════════════════════════════════════════
+
+# How many hexes from a tower an enemy may spawn on (random in
+# [0, ENEMY_SPAWN_RADIUS]).  0 = always on the tower hex itself.
+ENEMY_SPAWN_RADIUS: int = 1
+
+# Enemies retarget every N seconds so they re-evaluate closest
+# building when one is destroyed.  Keep it small enough to feel
+# reactive but large enough to avoid per-frame BFS storms.
+ENEMY_RETARGET_INTERVAL: float = 1.5
+
+# Maximum A* search budget (nodes expanded) when an enemy looks for
+# a path to its current target.  A* with a hex-distance heuristic is
+# far cheaper than a flood-fill BFS, so we can afford a generous
+# budget that comfortably spans the whole map.
+ENEMY_PATHFIND_MAX_DEPTH: int = 1500
+
+# When the path-finder fails (target temporarily unreachable), wait
+# this long before retrying — prevents per-frame BFS storms when an
+# enemy is in a pocket it can't escape.
+ENEMY_RETARGET_FAIL_INTERVAL: float = 5.0
+
+# Hexes the enemy can stand on.  Walls / buildings block movement;
+# WATER and MOUNTAIN block by terrain.  PATH / BRIDGE / CONVEYOR are
+# walkable (acts as a small bonus for the defender — these are easy
+# to break, so funnelling enemies onto them is a viable strategy).
+ENEMY_TERRAIN_BLOCKERS: frozenset[str] = frozenset({"WATER", "MOUNTAIN"})
+
+# Building types that physically block enemy movement (they must be
+# attacked and destroyed before the enemy can pass).
+ENEMY_BUILDING_BLOCKERS: frozenset[str] = frozenset({
+    "WALL", "CAMP", "HABITAT", "STORAGE", "WORKSHOP", "FORGE",
+    "ASSEMBLER", "RESEARCH_CENTER", "REFINERY", "FARM", "WELL",
+    "WOODCUTTER", "QUARRY", "GATHERER", "MINING_MACHINE",
+    "TURRET", "CHEMICAL_PLANT", "SOLAR_ARRAY", "ROCKET_SILO",
+    "OIL_DRILL", "OIL_REFINERY", "FLUID_TANK",
+})
+
+# Building types enemies actively prefer to attack — they pick the
+# CLOSEST blocker to walk toward, but ties are broken by this
+# priority list (lower index = higher priority).
+ENEMY_TARGET_PRIORITY: list[str] = [
+    "CAMP", "ROCKET_SILO", "RESEARCH_CENTER", "TURRET",
+    "HABITAT", "STORAGE", "WORKSHOP", "FORGE", "ASSEMBLER",
+]
+
+# Pre-computed {building_name: priority_index} dict so the combat
+# tick can do an O(1) lookup instead of an O(N) ``list.index`` per
+# enemy retarget.  Names not in the priority list fall through to
+# ``len(ENEMY_TARGET_PRIORITY)``.
+ENEMY_TARGET_PRIORITY_INDEX: dict[str, int] = {
+    name: i for i, name in enumerate(ENEMY_TARGET_PRIORITY)
+}
+
+# Maximum number of enemy retargets (A* + nearest-target scan) we
+# allow per simulation tick.  Above this we defer the rest to the
+# next frame.  Without this, a wave of N hundred enemies all coming
+# off cooldown together can spike the frame to 200+ ms even though
+# the per-call cost is reasonable.
+ENEMY_RETARGET_BUDGET_PER_TICK: int = 20
+
+# How often (sim seconds) the world refreshes its "starved /
+# unreachable" caches.  Visible in the renderer as the dim/red overlay
+# on isolated buildings — humans don't notice update lag below ~2 s.
+# Auto-tuned by ``perf_autotune`` based on map complexity.
+UNREACHABLE_RECHECK_INTERVAL: float = 0.5

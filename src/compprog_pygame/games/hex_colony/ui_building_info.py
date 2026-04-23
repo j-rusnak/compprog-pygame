@@ -178,6 +178,11 @@ class BuildingInfoPanel(Panel):
         self._tech_tree_btn: pygame.Rect | None = None
         self._recipe_dropdown_open: bool = False
         self._recipe_dropdown_btn: pygame.Rect | None = None
+        # Floating-overlay rect + internal scroll offset, used so the
+        # recipe dropdown can fit on screen even when there are many
+        # recipes (e.g. the assembler with all techs researched).
+        self._recipe_dropdown_rect: pygame.Rect | None = None
+        self._dropdown_scroll: int = 0
         self.on_open_tech_tree: typing.Callable[[], None] | None = None
         self.tier_tracker: typing.Any = None
         self.tech_tree: typing.Any = None
@@ -204,6 +209,8 @@ class BuildingInfoPanel(Panel):
             self._tech_tree_btn = None
             self._recipe_dropdown_open = False
             self._recipe_dropdown_btn = None
+            self._recipe_dropdown_rect = None
+            self._dropdown_scroll = 0
             return
 
         items = self._build_items(world)
@@ -497,8 +504,10 @@ class BuildingInfoPanel(Panel):
         self, surface: pygame.Surface, world: World,
     ) -> None:
         """Draw the open recipe list as a floating overlay anchored to
-        the dropdown header.  Populates ``_recipe_rects`` /
-        ``_mat_recipe_rects`` so click handling continues to work."""
+        the dropdown header.  Materials are listed first (so they're
+        always visible immediately), then buildings.  The overlay is
+        clamped to fit on screen and scrolls with the mouse wheel
+        when it would otherwise overflow."""
         assert self._recipe_dropdown_btn is not None
         b = self.building
         if b is None:
@@ -516,22 +525,37 @@ class BuildingInfoPanel(Panel):
         row_h = _LINE_H + gap
         header_pad = _SMALL_LINE_H + gap
         n_rows = len(building_recipes) + len(material_recipes)
-        total_h = (
-            n_rows * row_h
-            + (header_pad if material_recipes else 0)
-            + _PADDING
+        # Two section headers ("Materials" + "Buildings") when both
+        # kinds of recipes exist; one header when only one.
+        n_headers = (
+            (1 if material_recipes else 0)
+            + (1 if building_recipes else 0)
         )
+        content_h = n_rows * row_h + n_headers * header_pad + _PADDING
 
         x = self._recipe_dropdown_btn.x
         w = self._recipe_dropdown_btn.w
-        # Open below the header by default; flip up if it would
-        # overflow the screen.
-        y = self._recipe_dropdown_btn.bottom + 2
-        if y + total_h > self._screen_h - _BOTTOM_MARGIN:
+        # Cap the overlay to the visible screen between the resource
+        # bar and the bottom bar so long recipe lists never run
+        # off-screen.
+        max_h = max(120, self._screen_h - _TOP_MARGIN - _BOTTOM_MARGIN)
+        total_h = min(content_h, max_h)
+
+        # Open below the header by default; flip above if there isn't
+        # room.  When content overflows even the larger side, pin the
+        # overlay flush against the side that has more room.
+        space_below = self._screen_h - _BOTTOM_MARGIN - (
+            self._recipe_dropdown_btn.bottom + 2
+        )
+        space_above = self._recipe_dropdown_btn.top - 2 - _TOP_MARGIN
+        if total_h <= space_below:
+            y = self._recipe_dropdown_btn.bottom + 2
+        elif total_h <= space_above:
             y = self._recipe_dropdown_btn.top - total_h - 2
-            if y < _TOP_MARGIN:
-                # Last resort: clip to screen bottom.
-                y = max(_TOP_MARGIN, self._screen_h - _BOTTOM_MARGIN - total_h)
+        elif space_below >= space_above:
+            y = self._recipe_dropdown_btn.bottom + 2
+        else:
+            y = max(_TOP_MARGIN, self._recipe_dropdown_btn.top - total_h - 2)
 
         rect = pygame.Rect(x, y, w, total_h)
         bg = pygame.Surface((rect.w, rect.h), pygame.SRCALPHA)
@@ -539,13 +563,21 @@ class BuildingInfoPanel(Panel):
         surface.blit(bg, rect.topleft)
         pygame.draw.rect(surface, UI_ACCENT, rect, width=2, border_radius=4)
 
-        cy = y + _PADDING // 2
-        for craft_type, selected in building_recipes:
-            self._draw_recipe_btn(
-                surface, x - _PADDING, cy,
-                _RecipeBtn(craft_type, selected=selected), world,
-            )
-            cy += row_h
+        # Stash for event handling (scroll + outside-click detection).
+        self._recipe_dropdown_rect = rect
+
+        max_scroll = max(0, content_h - total_h)
+        self._dropdown_scroll = max(
+            0, min(self._dropdown_scroll, max_scroll),
+        )
+
+        prev_clip = surface.get_clip()
+        surface.set_clip(rect)
+
+        cy = y + _PADDING // 2 - self._dropdown_scroll
+
+        # Materials first so intermediates are always visible without
+        # scrolling past the (potentially long) building list.
         if material_recipes:
             hdr = render_text_clipped(
                 Fonts.small(), INFO_MATERIALS_HEADER, UI_MUTED, w - 12,
@@ -558,6 +590,35 @@ class BuildingInfoPanel(Panel):
                     _MaterialRecipeBtn(mrec, selected=selected), world,
                 )
                 cy += row_h
+
+        if building_recipes:
+            hdr = render_text_clipped(
+                Fonts.small(), "Buildings:", UI_MUTED, w - 12,
+            )
+            surface.blit(hdr, (x + 6, cy))
+            cy += header_pad
+            for craft_type, selected in building_recipes:
+                self._draw_recipe_btn(
+                    surface, x - _PADDING, cy,
+                    _RecipeBtn(craft_type, selected=selected), world,
+                )
+                cy += row_h
+
+        surface.set_clip(prev_clip)
+
+        # Scrollbar when content is taller than visible area.
+        if max_scroll > 0:
+            track = pygame.Rect(
+                rect.right - _SCROLLBAR_W - 2, rect.top + 4,
+                _SCROLLBAR_W, rect.h - 8,
+            )
+            pygame.draw.rect(surface, UI_BG, track, border_radius=3)
+            visible_frac = total_h / content_h
+            thumb_h = max(20, int(track.h * visible_frac))
+            pos_frac = self._dropdown_scroll / max_scroll
+            thumb_y = track.y + int((track.h - thumb_h) * pos_frac)
+            thumb = pygame.Rect(track.x, thumb_y, track.w, thumb_h)
+            pygame.draw.rect(surface, UI_BORDER, thumb, border_radius=3)
 
     def _draw_tech_btn(self, surface: pygame.Surface, x: int, cy: int) -> None:
         btn_rect = pygame.Rect(
@@ -618,7 +679,7 @@ class BuildingInfoPanel(Panel):
         # Camp-specific: tier info
         if b.type == BuildingType.CAMP:
             items.append(_Spacer())
-            pop = world.population.count
+            pop = world.player_population_count
             total_housing = world.connected_housing()
             homeless = max(0, pop - total_housing)
             line(f"Population: {pop}/{total_housing}")
@@ -642,7 +703,7 @@ class BuildingInfoPanel(Panel):
                 b.type in (
                     BuildingType.WORKSHOP, BuildingType.FORGE,
                     BuildingType.REFINERY, BuildingType.ASSEMBLER,
-                    BuildingType.CHEMICAL_PLANT,
+                    BuildingType.CHEMICAL_PLANT, BuildingType.OIL_REFINERY,
                 )
                 and isinstance(b.recipe, Resource)
             )
@@ -762,10 +823,11 @@ class BuildingInfoPanel(Panel):
         # this storage is dedicated to.  Shown as a scrollable list of
         # buttons with resource icon + name.  Clicking selects /
         # deselects.  Only raw + processed resources are offered
-        # (buildings themselves aren't storable).
+        # (buildings themselves aren't storable).  Fluids are excluded
+        # — those go in FLUID_TANK and travel through pipes only.
         if b.type == BuildingType.STORAGE:
             from compprog_pygame.games.hex_colony.resources import (
-                RAW_RESOURCES, PROCESSED_RESOURCES,
+                RAW_RESOURCES, PROCESSED_RESOURCES, FLUID_RESOURCES,
             )
             items.append(_Spacer())
             current = b.stored_resource
@@ -778,6 +840,33 @@ class BuildingInfoPanel(Panel):
             for res in list(RAW_RESOURCES) + [
                 r for r in Resource if r in PROCESSED_RESOURCES
             ]:
+                if res in FLUID_RESOURCES:
+                    continue
+                if not god and not is_resource_available(
+                    res, self.tech_tree, self.tier_tracker,
+                ):
+                    continue
+                items.append(_StorageResBtn(
+                    resource=res, selected=(current == res),
+                ))
+                items.append(_Spacer(2))
+
+        # FLUID_TANK building: like STORAGE, but only fluids are
+        # selectable.  Tanks participate in the pipe network for the
+        # selected fluid only.
+        if b.type == BuildingType.FLUID_TANK:
+            from compprog_pygame.games.hex_colony.resources import (
+                FLUID_RESOURCES,
+            )
+            items.append(_Spacer())
+            current = b.stored_resource
+            line(
+                f"Stores: {resource_name(current.name) if current else '(none selected)'}",
+                UI_ACCENT if current else UI_MUTED,
+            )
+            items.append(_Spacer(2))
+            god = bool(self.god_mode_getter and self.god_mode_getter())
+            for res in [r for r in Resource if r in FLUID_RESOURCES]:
                 if not god and not is_resource_available(
                     res, self.tech_tree, self.tier_tracker,
                 ):
@@ -820,13 +909,15 @@ class BuildingInfoPanel(Panel):
                 ))
                 items.append(_Spacer(2))
 
-        # Crafting stations — Workshop / Forge / Refinery / Assembler.
+        # Crafting stations — Workshop / Forge / Refinery / Assembler /
+        # Chemical Plant / Oil Refinery.
         if b.type in (
             BuildingType.WORKSHOP,
             BuildingType.FORGE,
             BuildingType.REFINERY,
             BuildingType.ASSEMBLER,
             BuildingType.CHEMICAL_PLANT,
+            BuildingType.OIL_REFINERY,
         ):
             items.append(_Spacer())
 
@@ -941,7 +1032,12 @@ class BuildingInfoPanel(Panel):
         # When the recipe dropdown is open, allow clicks on the
         # floating option rects even if they fall outside the panel.
         in_panel = self.rect.collidepoint(event.pos)
-        if not in_panel:
+        in_dropdown = bool(
+            self._recipe_dropdown_open
+            and self._recipe_dropdown_rect is not None
+            and self._recipe_dropdown_rect.collidepoint(event.pos)
+        )
+        if not in_panel and not in_dropdown:
             if (event.type == pygame.MOUSEBUTTONDOWN
                     and self._recipe_dropdown_open):
                 for btn_rect, _ in self._recipe_rects:
@@ -961,6 +1057,16 @@ class BuildingInfoPanel(Panel):
                 return False
 
         if event.type == pygame.MOUSEWHEEL:
+            # Scroll the recipe dropdown when the cursor is over it,
+            # otherwise scroll the panel itself.
+            mx, my = pygame.mouse.get_pos()
+            if (self._recipe_dropdown_open
+                    and self._recipe_dropdown_rect is not None
+                    and self._recipe_dropdown_rect.collidepoint((mx, my))):
+                self._dropdown_scroll -= event.y * 30
+                if self._dropdown_scroll < 0:
+                    self._dropdown_scroll = 0
+                return True
             self._scroll -= event.y * 30
             max_scroll = max(0, self._content_h - self._view_h)
             self._scroll = max(0, min(self._scroll, max_scroll))
@@ -977,6 +1083,7 @@ class BuildingInfoPanel(Panel):
                 BuildingType.REFINERY,
                 BuildingType.ASSEMBLER,
                 BuildingType.CHEMICAL_PLANT,
+                BuildingType.OIL_REFINERY,
             ):
                 # Dropdown header toggle.
                 if (self._recipe_dropdown_btn is not None
@@ -1003,7 +1110,9 @@ class BuildingInfoPanel(Panel):
                             self.building.craft_progress = 0.0
                         self._recipe_dropdown_open = False
                         return True
-            if self.building.type == BuildingType.STORAGE:
+            if self.building.type in (
+                BuildingType.STORAGE, BuildingType.FLUID_TANK,
+            ):
                 for btn_rect, res in self._storage_res_rects:
                     if btn_rect.collidepoint(event.pos):
                         if self.building.stored_resource == res:

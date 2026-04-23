@@ -153,16 +153,19 @@ class TechTree:
         self.research_progress = 0.0
         self._consumed = {}
 
-    def update(self, dt: float, world: object | None = None) -> str | None:
+    def update(
+        self, dt: float, world: object | None = None,
+        faction: str = "SURVIVOR",
+    ) -> str | None:
         """Advance research by *dt* seconds, consuming resources from
         the Research Center's on-site storage (preferred) and the
-        global inventory (fallback) as work happens.
+        owning faction's inventory (fallback) as work happens.
 
-        * Requires at least one Research Center building to be placed
-          AND staffed by at least one worker (when *world* is provided).
-        * Progress is scaled by the total worker count across all
-          Research Centers, so two staffed centers research at twice
-          the rate of one.
+        * Requires at least one Research Center building **owned by
+          *faction*** to be placed AND staffed by at least one worker
+          (when *world* is provided).
+        * Progress is scaled by the total worker count across that
+          faction's research centers.
         * Each tick attempts to advance ``effective_dt`` seconds of
           work and consumes a proportional share of each input.  If
           a required input is short, progress is throttled to the
@@ -175,16 +178,17 @@ class TechTree:
         if node is None:
             self.current_research = None
             return None
-        # Gate on a built and staffed Research Center.
+        # Gate on a built and staffed Research Center owned by *faction*.
         rc_list: list = []
         worker_total = 0
         if world is not None:
             from compprog_pygame.games.hex_colony.buildings import (
                 BuildingType,
             )
-            rc_list = list(world.buildings.by_type(
-                BuildingType.RESEARCH_CENTER,
-            ))
+            rc_list = [
+                rc for rc in world.buildings.by_type(BuildingType.RESEARCH_CENTER)
+                if getattr(rc, "faction", "SURVIVOR") == faction
+            ]
             if not rc_list:
                 return None
             worker_total = sum(rc.workers for rc in rc_list)
@@ -205,7 +209,11 @@ class TechTree:
             )
 
         # How much of each input we'd need to reach target_progress.
-        inv = world.inventory if world is not None else None
+        # Pull fallback inventory from *faction*'s colony state.
+        inv = None
+        if world is not None:
+            colony = world.colonies.get(faction) if hasattr(world, "colonies") else None
+            inv = colony.inventory if colony is not None else getattr(world, "inventory", None)
         for res, total_amount in node.cost.items():
             already = self._consumed.get(res, 0.0)
             needed_total = (target_progress / node.time) * total_amount
@@ -347,10 +355,13 @@ class TierTracker:
         self._baseline_produced: dict[str, float] = {}
         self._baseline_research: int = 0
 
-    def check_requirements(self, world) -> dict[str, tuple[float, float]]:
+    def check_requirements(
+        self, world, faction: str = "SURVIVOR",
+    ) -> dict[str, tuple[float, float]]:
         """Return {req_name: (current, required)} for the next tier.
 
         Values are (current_progress, target).  Returns empty if max tier.
+        Population/building/research counts are scoped to *faction*.
         """
         next_level = self.current_tier + 1
         if next_level >= len(TIERS):
@@ -359,41 +370,49 @@ class TierTracker:
         progress: dict[str, tuple[float, float]] = {}
 
         if "population" in reqs:
-            progress["Population"] = (
-                float(world.population.count),
-                float(reqs["population"]),
+            # Count people whose home belongs to this faction.
+            pop = sum(
+                1 for p in world.population.people
+                if p.home is not None
+                and getattr(p.home, "faction", "SURVIVOR") == faction
             )
+            # Backwards-compat: when the faction has no homes yet but
+            # is the player, fall back to the global count so the
+            # very first tick (before _update_housing runs) still
+            # reports the correct starting population.
+            if pop == 0 and faction == "SURVIVOR":
+                pop = world.population.count
+            progress["Population"] = (float(pop), float(reqs["population"]))
         if "buildings_placed" in reqs:
-            # Count non-path, non-camp player buildings only.
             count = sum(
                 1 for b in world.buildings.buildings
                 if b.type not in (BuildingType.PATH, BuildingType.BRIDGE,
                                   BuildingType.CAMP, BuildingType.WALL,
                                   BuildingType.TRIBAL_CAMP, BuildingType.HOUSE)
-                and getattr(b, "faction", "SURVIVOR") == "SURVIVOR"
+                and getattr(b, "faction", "SURVIVOR") == faction
             )
             progress["Buildings"] = (float(count), float(reqs["buildings_placed"]))
         if "resource_gathered" in reqs:
             from compprog_pygame.games.hex_colony.resources import Resource
             for res_name, target in reqs["resource_gathered"].items():
                 res = Resource[res_name]
-                # Use total produced (lifetime gathered/crafted) so that
-                # spending the resource does not erase progress.  Subtract
-                # the baseline captured at the previous tier-up so each
-                # tier's goal counts from 0.
                 baseline = self._baseline_produced.get(res_name, 0.0)
-                current = max(0.0, world.total_produced(res) - baseline)
+                current = max(0.0, world.total_produced(res, faction) - baseline)
                 progress[res_name.capitalize()] = (float(current), float(target))
         if "research_count" in reqs:
-            count = getattr(world, '_tech_research_count', 0)
+            colony = world.colonies.get(faction) if hasattr(world, "colonies") else None
+            if colony is not None:
+                count = colony.tech_research_count
+            else:
+                count = getattr(world, '_tech_research_count', 0)
             current = max(0, count - self._baseline_research)
             progress["Research"] = (float(current), float(reqs["research_count"]))
 
         return progress
 
-    def try_advance(self, world) -> bool:
+    def try_advance(self, world, faction: str = "SURVIVOR") -> bool:
         """Check if all requirements met; if so, advance tier.  Returns True if advanced."""
-        progress = self.check_requirements(world)
+        progress = self.check_requirements(world, faction)
         if not progress:
             return False  # already max tier
         for current, required in progress.values():
@@ -404,9 +423,13 @@ class TierTracker:
         # display progress starting from 0.
         from compprog_pygame.games.hex_colony.resources import Resource
         self._baseline_produced = {
-            r.name: world.total_produced(r) for r in Resource
+            r.name: world.total_produced(r, faction) for r in Resource
         }
-        self._baseline_research = getattr(world, '_tech_research_count', 0)
+        colony = world.colonies.get(faction) if hasattr(world, "colonies") else None
+        self._baseline_research = (
+            colony.tech_research_count if colony is not None
+            else getattr(world, '_tech_research_count', 0)
+        )
         return True
 
     def is_building_unlocked(self, btype: BuildingType) -> bool:

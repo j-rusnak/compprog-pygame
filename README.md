@@ -1,102 +1,280 @@
 # compprog-pygame
 
-A small Pygame mini-game collection with a home screen, currently featuring a playable Physics Tetris prototype and tooling to build a Windows executable.
+A small Pygame mini-game launcher with a home screen. The flagship game is
+**Hex Colony** — a hex-grid colony / logistics sim with research, combat
+against ancient machines, and ~50 distinct buildings. A secondary game,
+**Physics Tetris**, is also included as a smaller self-contained
+prototype.
 
-The project uses `pygame-ce` (imported as `pygame`) plus `pymunk` for physics.
+The project is built on `pygame-ce` (imported as `pygame`) plus `pymunk`
+for physics.
 
-## Current status
+---
 
-- Home screen that lists registered mini-games
-- Physics Tetris is fully wired and playable
-- Physics Tetris includes an Easy/Hard difficulty selector
-- Portal Tetris files exist as placeholders but are not currently registered in the menu
-- PyInstaller build script is included for Windows executable export
+## Requirements
 
-## Project layout
+| Requirement | Version |
+|---|---|
+| Python | **3.11 or newer** (3.13+ recommended for `hex_colony`) |
+| OS | Windows 10/11, macOS, or Linux. Native single-file builds are supported on all three (see [Building a native executable](#building-a-native-executable)) |
+| GPU | Anything that runs SDL2 — no dedicated GPU required |
+| Disk | ~250 MB including the dev virtualenv |
 
-```text
-.
-|-- .vscode/
-|   |-- launch.json
-|   `-- tasks.json
-|-- assets/
-|   |-- audio/
-|   |-- fonts/
-|   `-- images/
-|-- src/
-|   `-- compprog_pygame/
-|       |-- __main__.py
-|       |-- game_registry.py
-|       |-- home_screen.py
-|       |-- settings.py
-|       `-- games/
-|           |-- physics_tetris/
-|           `-- portal_tetris/  (scaffold only)
-|-- tests/
-|   `-- test_settings.py
-|-- tools/
-|   `-- build.ps1
-|-- CompProgGame.spec
-`-- pyproject.toml
-```
+Runtime Python packages (installed automatically by the steps below):
 
-## Setup (PowerShell)
+- `pygame-ce >= 2.5.5, < 3`
+- `pymunk >= 7.0, < 8`
 
-If you do not already have a local virtual environment:
+Optional dev packages (installed via the `[dev]` extra):
 
-```powershell
-python -m venv .venv
-```
+- `pyinstaller >= 6.0` — Windows executable build
+- `pytest >= 8.0` — test runner
 
-Activate and install dependencies:
+---
 
-```powershell
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -e .[dev]
-```
-
-## Run the game
+## First-time setup (Windows / PowerShell)
 
 From the repository root:
+
+```powershell
+# 1. Create a virtual environment in the repo (only needed once).
+python -m venv .venv
+
+# 2. If your execution policy blocks activation scripts, allow them
+#    for THIS process only (does not affect the system policy).
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+
+# 3. Activate the venv. Your prompt should now start with "(.venv)".
+.\.venv\Scripts\Activate.ps1
+
+# 4. Upgrade pip and install the project in editable mode with dev extras.
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+```
+
+### Linux / macOS equivalent
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+```
+
+> The `-e` flag installs in editable mode so that any code change is
+> picked up the next time you run the game — no reinstall required.
+
+---
+
+## Running the game
+
+With the venv active:
 
 ```powershell
 python -m compprog_pygame
 ```
 
-You can also run:
+This opens the launcher's **home screen** where you can click a game
+card to launch it. Press `Esc` from the home screen to quit.
 
-- VS Code launch config: `Run Pygame Project`
-- VS Code task: `Run Game`
+### Alternative: using the VS Code task
 
-## Controls
+If you opened the repo in VS Code, the **`Run Game`** task is
+pre-configured (`Terminal > Run Task… > Run Game`). It sets
+`PYTHONPATH=src` automatically and uses the workspace's selected
+Python interpreter.
 
-- Home screen: click a game card to launch, press `Esc` to quit
-- Physics Tetris menu: choose difficulty, click `Play`, press `Esc` to return
-- Physics Tetris gameplay: click and drag to draw temporary guide lines, press `Esc` to go back to the home screen
+### Alternative: from the command line without activating the venv
 
-## Run tests
+```powershell
+$env:PYTHONPATH = "src"
+.\.venv\Scripts\python.exe -m compprog_pygame
+```
+
+---
+
+## Games
+
+### Hex Colony
+
+Hex-grid colony sim. Crash-land, harvest resources, expand a road
+network, research the tech tree, and survive periodic waves of ancient
+machines awakened by your activity.
+
+**Default keybindings (in-game):**
+
+| Key | Action |
+|---|---|
+| `Esc` | Cancel current build/delete tool, or open the pause menu |
+| `B` | Cycle through buildable building types |
+| `X` | Toggle delete mode |
+| `H` or `I` | Toggle the help overlay |
+| `Tab` | Toggle sandbox mode (free resources, dev only) |
+| `1` / `2` / `3` / `5` | Set sim speed: 3× / 6× / 9× / 30× |
+| `F1` | Toggle god mode (dev) |
+| `F2` | Cycle the enemy-spawn tool while in god mode |
+| Mouse wheel | Zoom in / out |
+| Middle-click drag | Pan the camera |
+| Right-click | Pan the camera (alt) / cancel current tool |
+| Left-click | Place / delete / select buildings, depending on the active tool |
+
+Press **`H`** in-game at any time for the in-app help overlay; the
+in-game tutorial walks you through the first few mechanics
+automatically.
+
+### Physics Tetris
+
+A small Tetris variant where pieces fall and collide as physics bodies
+(`pymunk`).
+
+- Difficulty menu: choose **Easy** or **Hard**, click **Play**.
+- In gameplay, click and drag to draw a temporary guide line.
+- Press `Esc` to return to the home screen.
+
+---
+
+## Running the tests
 
 ```powershell
 python -m pytest
 ```
 
-Current tests are lightweight sanity checks around settings and asset-path wiring.
+Or, if the venv is not active:
 
-## Build a Windows executable
+```powershell
+$env:PYTHONPATH = "src"; python -m pytest tests/ -x
+```
+
+The current test suite is intentionally small (settings + asset-path
+sanity checks). New tests should live under `tests/`.
+
+---
+
+## Building a native executable
+
+The project ships with a cross-platform single-file builder. From the
+repository root, with the venv active:
+
+```powershell
+python tools/build_native.py
+```
+
+This auto-installs PyInstaller into the active interpreter if it's
+missing and produces a self-contained artifact for the host OS that
+needs no Python install or extra files to run:
+
+| Host OS | Output |
+|---|---|
+| Windows | `dist/CompProgGame.exe` (single `.exe`) |
+| macOS   | `dist/CompProgGame.app` (double-clickable bundle) |
+| Linux   | `dist/CompProgGame` (single binary) |
+
+PyInstaller cannot cross-compile, so a single invocation only produces
+a binary for the host it runs on.
+
+### Building for both Windows and macOS from one machine
+
+A GitHub Actions workflow at
+[`.github/workflows/build-native.yml`](.github/workflows/build-native.yml)
+builds Windows + macOS artifacts in parallel on GitHub-hosted runners.
+You can trigger it from your local machine via the bundled helper
+(requires the [GitHub CLI](https://cli.github.com/) — `gh auth login`
+once):
+
+```powershell
+python tools/build_cross.py
+```
+
+The script triggers the workflow, waits for both builds to finish, and
+downloads the resulting `CompProgGame.exe` and `CompProgGame-macos.zip`
+into `dist-cross/`. Pushing a `v*` tag will additionally attach both
+artifacts to a GitHub Release.
+
+### Legacy PowerShell build (Windows only)
+
+The original PowerShell script is still available:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\build.ps1
 ```
 
-This runs PyInstaller in one-file windowed mode and includes the `assets` directory.
+It invokes PyInstaller using `CompProgGame.spec` and produces
+`dist/CompProgGame.exe`.
 
-Expected output:
+---
 
-- `dist/CompProgGame.exe`
+## Regenerating sprite assets
 
-## Notes
+All Hex Colony building, overlay, person, and enemy sprites are
+procedurally generated from the drawing code under
+[`src/compprog_pygame/games/hex_colony/render_buildings.py`](src/compprog_pygame/games/hex_colony/render_buildings.py)
+and friends. To regenerate every PNG under `assets/sprites/` from the
+current code (useful after tweaking a drawer):
 
-- Python requirement: `>=3.11`
-- Runtime dependencies: `pygame-ce`, `pymunk`
-- Dev dependencies include `pyinstaller` and `pytest`
+```powershell
+$env:PYTHONPATH = "src"; python -m compprog_pygame.games.hex_colony.generate_sprites
+```
+
+The generator covers all ~30 buildings (camp, house, habitat,
+woodcutter, quarry, gatherer, storage, refinery, farm, well, bridge,
+wall, turret, trap, tribal_camp, workshop, forge, assembler,
+research_center, chemical_plant, mining_machine, oil_drill,
+oil_refinery, pipe, fluid_tank, conveyor, solar_array, rocket_silo,
+ancient_tower) plus overlays, people, and enemies.
+
+PNGs can be hand-edited or replaced with custom pixel art at the same
+dimensions and the game will pick them up automatically (drawers fall
+back to procedural rendering only when the PNG is missing).
+
+---
+
+## Project layout
+
+```text
+.
+├── assets/                       # Fonts, audio, images, sprites
+├── docs/
+│   └── HEX_COLONY_ARCHITECTURE.md  # Definitive architectural reference
+├── src/
+│   └── compprog_pygame/
+│       ├── __main__.py           # Entry point: python -m compprog_pygame
+│       ├── home_screen.py        # Game launcher
+│       ├── game_registry.py      # Registered games list
+│       ├── settings.py
+│       └── games/
+│           ├── hex_colony/       # ~50 modules — flagship game
+│           └── physics_tetris/   # Small physics-based Tetris variant
+├── tests/                        # pytest suite
+├── tools/
+│   ├── build.ps1                 # Legacy Windows-only PyInstaller wrapper
+│   ├── build_native.py           # Cross-platform single-file builder
+│   └── build_cross.py            # Trigger GitHub Actions build of both OSes
+├── .github/workflows/
+│   └── build-native.yml          # Windows + macOS build matrix
+├── CompProgGame.spec             # PyInstaller spec (used by build.ps1)
+├── pyproject.toml                # Build & dependency metadata
+└── README.md
+```
+
+For Hex Colony specifically, see
+[`docs/HEX_COLONY_ARCHITECTURE.md`](docs/HEX_COLONY_ARCHITECTURE.md)
+for the module map, data-flow diagrams, and an
+"I want to do X → edit Y" cheat sheet.
+
+---
+
+## Troubleshooting
+
+- **`ModuleNotFoundError: No module named 'compprog_pygame'`** — the
+  venv is not active, or you skipped `pip install -e .[dev]`. Activate
+  it (`.\.venv\Scripts\Activate.ps1`) and re-run, or set
+  `PYTHONPATH=src` for that shell.
+- **`ExecutionPolicy` error when activating the venv** — run
+  `Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned`
+  in the same PowerShell window first.
+- **Black / blank window or missing assets** — confirm you ran the game
+  from the repository root so relative `assets/` paths resolve.
+- **Performance issues in Hex Colony** — set
+  `HEX_COLONY_PERF=1` (writes spike samples to
+  `hex_colony_perf.jsonl`) and `HEX_COLONY_LOGISTICS=0` to disable the
+  logistics monitor if it is contributing overhead.

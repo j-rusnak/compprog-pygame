@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 from compprog_pygame.games.hex_colony import params
+
+
+class Difficulty(Enum):
+    """Per-run difficulty selection (chosen on the menu screen)."""
+    EASY = "easy"   # peaceful sandbox — no enemies
+    HARD = "hard"   # reserved for future enemies; currently same as EASY
+    DESOLATION = "desolation"  # extreme: gimped economy, deadlier enemies
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +32,11 @@ class HexColonySettings:
 
     # World generation
     world_radius: int = params.DEFAULT_WORLD_RADIUS
+
+    # Per-run difficulty.  Both EASY and HARD currently behave the
+    # same (peaceful sandbox); HARD is a placeholder until the new
+    # enemy systems are implemented.
+    difficulty: Difficulty = Difficulty.EASY
 
     # People movement
     person_speed: float = params.PERSON_SPEED

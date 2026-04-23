@@ -62,7 +62,7 @@ def _has_workers_at(world: "World", btype: BuildingType) -> bool:
 
 
 def _population(world: "World") -> int:
-    return world.population.count
+    return world.player_population_count
 
 
 def _research_done(world: "World", node_id: str) -> bool:
@@ -91,6 +91,25 @@ def _has_building(world: "World", type_name: str) -> bool:
         return False
 
 
+def _is_hard_mode(world: "World") -> bool:
+    """True if this run was started on a difficulty that has enemies
+    (HARD/Evolution or DESOLATION)."""
+    from compprog_pygame.games.hex_colony.settings import Difficulty
+    settings = getattr(world, "settings", None)
+    if settings is None:
+        return False
+    diff = getattr(settings, "difficulty", None)
+    return diff in (Difficulty.HARD, Difficulty.DESOLATION)
+
+
+def _waves_triggered(world: "World") -> int:
+    """Total number of enemy waves that have spawned so far."""
+    combat = getattr(world, "combat", None)
+    if combat is None:
+        return 0
+    return int(getattr(combat, "waves_triggered", 0))
+
+
 # Build a lookup from step id -> text dict for quick access.
 _TEXT_BY_ID: dict[str, dict] = {d["id"]: d for d in _TUTORIAL_TEXT}  # type: ignore[arg-type]
 
@@ -112,6 +131,13 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         title=_text("welcome")[0],
         lines=_text("welcome")[1],
         trigger=lambda w, ctx: ctx.get("time", 0) < 2.0,
+    ),
+    _TutorialStep(
+        id="basic_controls",
+        title=_text("basic_controls")[0],
+        lines=_text("basic_controls")[1],
+        trigger=lambda w, ctx: True,
+        after="welcome",
     ),
     _TutorialStep(
         id="build_gatherer",
@@ -233,22 +259,16 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         id="conveyor_intro",
         title=_text("conveyor_intro")[0],
         lines=_text("conveyor_intro")[1],
-        # ~25 s after entering tier 4 \u2014 by then Conveyor research is realistic.
-        trigger=lambda w, ctx: (
-            ctx.get("current_tier_level", 0) >= 3
-            and ctx.get("time_in_tier", 0.0) >= 15.0
-        ),
+        # Only fire once the player has actually researched conveyors.
+        trigger=lambda w, ctx: _research_done(w, "conveyor_belts"),
         after="industrial_intro",
     ),
     _TutorialStep(
         id="chemical_plant_intro",
         title=_text("chemical_plant_intro")[0],
         lines=_text("chemical_plant_intro")[1],
-        # 60 s into tier 4 \u2014 player has likely started Basic Chemistry.
-        trigger=lambda w, ctx: (
-            ctx.get("current_tier_level", 0) >= 3
-            and ctx.get("time_in_tier", 0.0) >= 30.0
-        ),
+        # Only fire once Basic Chemistry has been researched.
+        trigger=lambda w, ctx: _research_done(w, "basic_chemistry"),
         after="industrial_intro",
     ),
     _TutorialStep(
@@ -262,10 +282,8 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         id="solar_array_intro",
         title=_text("solar_array_intro")[0],
         lines=_text("solar_array_intro")[1],
-        trigger=lambda w, ctx: (
-            ctx.get("current_tier_level", 0) >= 5
-            and ctx.get("time_in_tier", 0.0) >= 15.0
-        ),
+        # Gate on the Solar Panels tech so the hint matches reality.
+        trigger=lambda w, ctx: _research_done(w, "solar_panels"),
         after="automation_intro",
     ),
     _TutorialStep(
@@ -279,10 +297,8 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         id="rocket_silo_intro",
         title=_text("rocket_silo_intro")[0],
         lines=_text("rocket_silo_intro")[1],
-        trigger=lambda w, ctx: (
-            ctx.get("current_tier_level", 0) >= 6
-            and ctx.get("time_in_tier", 0.0) >= 15.0
-        ),
+        # Only after Orbital Assembly research unlocks the silo.
+        trigger=lambda w, ctx: _research_done(w, "orbital_assembly"),
         after="spacefarer_intro",
     ),
     # ── Petrochemical tier (inserted between Industrial and Automation) ──
@@ -297,13 +313,9 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         id="oil_deposit_intro",
         title=_text("oil_deposit_intro")[0],
         lines=_text("oil_deposit_intro")[1],
-        # Fire when the player has researched petroleum_engineering or
-        # has reached the Petrochemical tier and has discovered an oil
-        # tile (we proxy "has discovered" with time-in-tier).
-        trigger=lambda w, ctx: (
-            ctx.get("current_tier_level", 0) >= 4
-            and ctx.get("time_in_tier", 0.0) >= 8.0
-        ),
+        # Only fire after Petroleum Engineering has actually been
+        # researched so the hint matches what the player can build.
+        trigger=lambda w, ctx: _research_done(w, "petroleum_engineering"),
         after="petrochemical_intro",
     ),
     _TutorialStep(
@@ -314,9 +326,9 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         after="oil_deposit_intro",
     ),
     _TutorialStep(
-        id="oil_refinery_intro",
-        title=_text("oil_refinery_intro")[0],
-        lines=_text("oil_refinery_intro")[1],
+        id="pipe_intro",
+        title=_text("pipe_intro")[0],
+        lines=_text("pipe_intro")[1],
         trigger=lambda w, ctx: (
             _research_done(w, "petroleum_engineering")
             and _has_building(w, "OIL_DRILL")
@@ -324,11 +336,33 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         after="oil_drill_intro",
     ),
     _TutorialStep(
+        id="oil_refinery_intro",
+        title=_text("oil_refinery_intro")[0],
+        lines=_text("oil_refinery_intro")[1],
+        trigger=lambda w, ctx: (
+            _research_done(w, "petroleum_engineering")
+            and _has_building(w, "OIL_DRILL")
+        ),
+        after="pipe_intro",
+    ),
+    _TutorialStep(
         id="advanced_materials_intro",
         title=_text("advanced_materials_intro")[0],
         lines=_text("advanced_materials_intro")[1],
         trigger=lambda w, ctx: ctx.get("current_tier_level", 0) >= 5,
         after="petrochemical_intro",
+    ),
+    # ── Hard-mode (Evolution) combat tutorials ────────────────────
+    _TutorialStep(
+        id="first_raid",
+        title=_text("first_raid")[0],
+        lines=_text("first_raid")[1],
+        # Fire once, on hard mode, immediately after the first wave
+        # has been spawned (awakening cutscene counts as wave #1).
+        trigger=lambda w, ctx: (
+            _is_hard_mode(w) and _waves_triggered(w) >= 1
+        ),
+        after=None,
     ),
 ]
 

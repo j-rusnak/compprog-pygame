@@ -22,6 +22,7 @@ TERRAIN_BASE_COLOR: dict[Terrain, tuple[int, int, int]] = {
     Terrain.IRON_VEIN:     (120, 90, 75),
     Terrain.COPPER_VEIN:   (100, 130, 85),
     Terrain.OIL_DEPOSIT:   (28, 24, 30),
+    Terrain.WASTELAND:     (58, 44, 40),
 }
 
 # Blending weight for neighbor influence (0 = no blend, 1 = full average)
@@ -30,8 +31,12 @@ _BLEND_STRENGTH = 0.45
 # Bank colour tinted toward water-adjacent tiles
 _BANK_COLOR = (148, 138, 105)  # sandy/muddy
 
-# Tile-layer cache padding multiplier
-_TILE_LAYER_PAD = 2.0
+# Tile-layer cache padding multiplier.  Larger pad = the cached tile
+# layer covers more world around the screen so quick pans/zooms can
+# reuse the cache without triggering a full O(N) rebuild.  2.5 keeps
+# the cache surface at ~6.25x screen-area which is still well within
+# VRAM budgets while smoothing out short pan bursts.
+_TILE_LAYER_PAD = 2.5
 _SQRT3 = 1.7320508075688772
 
 # Intra-tile gradient: how much edge sub-triangles blend toward the neighbor
@@ -50,6 +55,7 @@ _TERRAIN_CAT: dict[Terrain, int] = {
     Terrain.IRON_VEIN: 4,
     Terrain.COPPER_VEIN: 4,
     Terrain.OIL_DEPOSIT: 5,
+    Terrain.WASTELAND: 6,
 }
 
 # ── Building colours ────────────────────────────────────────────
@@ -80,6 +86,10 @@ BUILDING_COLORS: dict[BuildingType, tuple[int, int, int]] = {
     BuildingType.ROCKET_SILO: (235, 235, 240),
     BuildingType.OIL_DRILL: (60, 55, 65),
     BuildingType.OIL_REFINERY: (90, 85, 105),
+    BuildingType.PIPE: (155, 150, 145),
+    BuildingType.FLUID_TANK: (110, 130, 150),
+    BuildingType.TURRET: (180, 80, 60),
+    BuildingType.TRAP: (140, 100, 50),
 }
 
 _PATH_BASE = (185, 165, 120)

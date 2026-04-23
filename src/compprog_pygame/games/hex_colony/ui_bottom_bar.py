@@ -37,6 +37,8 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_habitat,
     draw_mining_machine,
     draw_path,
+    draw_pipe,
+    draw_fluid_tank,
     draw_refinery,
     draw_research_center,
     draw_rocket_silo,
@@ -45,6 +47,8 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_wall,
     draw_well,
     draw_workshop,
+    draw_turret,
+    draw_trap,
 )
 from compprog_pygame.games.hex_colony.tech_tree import is_building_available
 from compprog_pygame.games.hex_colony.strings import (
@@ -55,6 +59,7 @@ from compprog_pygame.games.hex_colony.strings import (
     STATS_POPULATION,
     STATS_BUILDINGS,
     TAB_BUILDINGS,
+    TAB_TOOLTIPS,
 )
 from compprog_pygame.games.hex_colony.ui import (
     Fonts,
@@ -71,6 +76,7 @@ from compprog_pygame.games.hex_colony.ui import (
     UI_TEXT,
     draw_panel_bg,
     render_text_clipped,
+    set_tooltip,
 )
 
 if TYPE_CHECKING:
@@ -156,12 +162,16 @@ class BuildingsTabContent(TabContent):
         (BUILDING_CATEGORY_NAMES[1], [BuildingType.HABITAT]),
         (BUILDING_CATEGORY_NAMES[2], [BuildingType.WOODCUTTER, BuildingType.QUARRY,
                       BuildingType.GATHERER, BuildingType.FARM, BuildingType.WELL,
-                      BuildingType.MINING_MACHINE, BuildingType.SOLAR_ARRAY]),
+                      BuildingType.MINING_MACHINE, BuildingType.SOLAR_ARRAY,
+                      BuildingType.OIL_DRILL]),
         (BUILDING_CATEGORY_NAMES[3], [BuildingType.WORKSHOP, BuildingType.FORGE,
                         BuildingType.ASSEMBLER, BuildingType.REFINERY,
-                        BuildingType.CHEMICAL_PLANT, BuildingType.STORAGE]),
+                        BuildingType.CHEMICAL_PLANT, BuildingType.OIL_REFINERY,
+                        BuildingType.STORAGE, BuildingType.FLUID_TANK]),
         (BUILDING_CATEGORY_NAMES[4], [BuildingType.PATH, BuildingType.BRIDGE,
-                        BuildingType.CONVEYOR, BuildingType.WALL]),
+                        BuildingType.CONVEYOR, BuildingType.PIPE]),
+        (BUILDING_CATEGORY_NAMES[5], [BuildingType.WALL, BuildingType.TURRET,
+                        BuildingType.TRAP]),
     ]
 
     BUILDABLE: list[BuildingType] = []
@@ -189,6 +199,12 @@ class BuildingsTabContent(TabContent):
         BuildingType.CONVEYOR: "\u21d2",
         BuildingType.SOLAR_ARRAY: "\u2600",
         BuildingType.ROCKET_SILO: "\u29bf",
+        BuildingType.OIL_DRILL: "\u26fd",
+        BuildingType.OIL_REFINERY: "\u2697",
+        BuildingType.PIPE: "\u2550",
+        BuildingType.FLUID_TANK: "\u25d2",
+        BuildingType.TURRET: "\u2620",
+        BuildingType.TRAP: "\u2737",
     }
 
     _COLOR: dict[BuildingType, tuple[int, int, int]] = {
@@ -212,6 +228,12 @@ class BuildingsTabContent(TabContent):
         BuildingType.CONVEYOR: (200, 180, 90),
         BuildingType.SOLAR_ARRAY: (60, 100, 200),
         BuildingType.ROCKET_SILO: (235, 235, 240),
+        BuildingType.OIL_DRILL: (60, 55, 65),
+        BuildingType.OIL_REFINERY: (90, 85, 105),
+        BuildingType.PIPE: (155, 150, 145),
+        BuildingType.FLUID_TANK: (110, 130, 150),
+        BuildingType.TURRET: (180, 80, 60),
+        BuildingType.TRAP: (140, 100, 50),
     }
 
     _DESC: dict[BuildingType, str] = {
@@ -250,10 +272,14 @@ class BuildingsTabContent(TabContent):
         BuildingType.WALL: draw_wall,
         BuildingType.MINING_MACHINE: draw_mining_machine,
         BuildingType.PATH: draw_path,
+        BuildingType.PIPE: draw_pipe,
+        BuildingType.FLUID_TANK: draw_fluid_tank,
         BuildingType.CHEMICAL_PLANT: draw_chemical_plant,
         BuildingType.CONVEYOR: draw_conveyor,
         BuildingType.SOLAR_ARRAY: draw_solar_array,
         BuildingType.ROCKET_SILO: draw_rocket_silo,
+        BuildingType.TURRET: draw_turret,
+        BuildingType.TRAP: draw_trap,
     }
 
     # Cache of building-sprite preview surfaces, keyed by (btype, size).
@@ -282,6 +308,8 @@ class BuildingsTabContent(TabContent):
         elif btype == BuildingType.PATH:
             # Path preview: isolated hub centred in the icon.
             drawer(surf, cx, size // 2, r, 1.0, [], 0, 0)
+        elif btype == BuildingType.PIPE:
+            drawer(surf, cx, size // 2, r, 1.0, [], 0, 0)
         else:
             drawer(surf, cx, cy, r, 1.0)
         cls._preview_cache[key] = surf
@@ -301,6 +329,13 @@ class BuildingsTabContent(TabContent):
         self._cat_tab_rects: list[pygame.Rect] = []
         self._card_rects: list[tuple[pygame.Rect, BuildingType]] = []
         self._delete_rect: pygame.Rect = pygame.Rect(0, 0, 0, 0)
+        # Categories actually shown this frame; recomputed in
+        # ``draw_content`` so handle_event uses the same list when
+        # mapping clicks to category indices.  The Defense tab is
+        # filtered out on Isolation (peaceful sandbox).
+        self._visible_categories: list[tuple[str, list[BuildingType]]] = list(
+            type(self)._CATEGORIES
+        )
 
     def set_on_select(self, callback) -> None:
         self._on_select = callback
@@ -316,9 +351,26 @@ class BuildingsTabContent(TabContent):
     def draw_content(
         self, surface: pygame.Surface, rect: pygame.Rect, world: World,
     ) -> None:
+        # Recompute the visible category list for this frame.  On
+        # Isolation/EASY (peaceful sandbox) we drop the Defense tab
+        # entirely — no enemies, no walls, no turrets.
+        from compprog_pygame.games.hex_colony.settings import Difficulty
+        difficulty = getattr(world.settings, "difficulty", None)
+        full = type(self)._CATEGORIES
+        if difficulty == Difficulty.EASY:
+            self._visible_categories = [
+                (name, types) for (name, types) in full
+                if name != BUILDING_CATEGORY_NAMES[5]
+            ]
+        else:
+            self._visible_categories = list(full)
+        # Clamp the active tab into range after filtering.
+        if self._active_cat >= len(self._visible_categories):
+            self._active_cat = 0
+
         self._draw_category_tabs(surface, rect)
 
-        _, cat_types = self._CATEGORIES[self._active_cat]
+        _, cat_types = self._visible_categories[self._active_cat]
         # Hide locked buildings unless god mode is on.
         if not self._god():
             cat_types = [
@@ -365,7 +417,7 @@ class BuildingsTabContent(TabContent):
         y = rect.y + 2
         x = rect.x + _CARD_MARGIN_X
         self._cat_tab_rects = []
-        for ci, (cat_name, _) in enumerate(self._CATEGORIES):
+        for ci, (cat_name, _) in enumerate(self._visible_categories):
             tw = cat_font.size(cat_name)[0] + 18
             tr = pygame.Rect(x, y, tw, _CAT_TAB_H)
             self._cat_tab_rects.append(tr)
@@ -457,6 +509,78 @@ class BuildingsTabContent(TabContent):
                 rect.x + 8, rect.bottom - desc_surf.get_height() - 6,
             ))
 
+        # Hover tooltip: full cost, crafting station, and stock hint.
+        if is_hov and rect.collidepoint(pygame.mouse.get_pos()):
+            self._set_card_tooltip(btype, stock)
+
+    def _set_card_tooltip(self, btype: BuildingType, stock: int) -> None:
+        """Compose a verbose tooltip for a building card."""
+        from compprog_pygame.games.hex_colony.buildings import (
+            BUILDING_COSTS, BUILDING_HARVEST_RESOURCES,
+            BUILDING_HOUSING, BUILDING_MAX_WORKERS,
+            BUILDING_STORAGE_CAPACITY,
+        )
+        from compprog_pygame.games.hex_colony import params
+        from compprog_pygame.games.hex_colony.strings import (
+            building_label, resource_name,
+        )
+
+        title = self._LABEL.get(btype, btype.name.title())
+        lines: list[str] = []
+        desc = self._DESC.get(btype)
+        if desc:
+            lines.append(desc)
+
+        cost = BUILDING_COSTS.get(btype)
+        if cost is not None and getattr(cost, "costs", None):
+            cost_txt = ", ".join(
+                f"{amt} {resource_name(r.name)}"
+                for r, amt in cost.costs.items()
+            )
+            lines.append(f"Cost: {cost_txt}")
+        else:
+            lines.append("Cost: free")
+
+        station = params.BUILDING_RECIPE_STATION.get(btype.name)
+        if station:
+            lines.append(f"Crafted at: {building_label(station)}")
+
+        details: list[str] = []
+        mw = BUILDING_MAX_WORKERS.get(btype, 0)
+        if mw:
+            details.append(f"max {mw} worker{'s' if mw != 1 else ''}")
+        h = BUILDING_HOUSING.get(btype, 0)
+        if h:
+            details.append(f"houses {h}")
+        s = BUILDING_STORAGE_CAPACITY.get(btype, 0)
+        if s:
+            details.append(f"storage {s}")
+        if details:
+            lines.append(" \u2022 ".join(details))
+
+        harvests = BUILDING_HARVEST_RESOURCES.get(btype)
+        if harvests:
+            lines.append(
+                "Harvests: " + ", ".join(
+                    resource_name(r.name) for r in harvests
+                )
+            )
+
+        if not self._god():
+            if stock <= 0:
+                lines.append(
+                    "Out of stock \u2014 craft one at the station above."
+                )
+            else:
+                lines.append(
+                    f"Stock: {stock}.  Click to select, then click a "
+                    "tile to place."
+                )
+        else:
+            lines.append("Sandbox: unlimited stock.")
+
+        set_tooltip("\n".join(lines), title=title)
+
     def _draw_delete_card(
         self, surface: pygame.Surface, rect: pygame.Rect,
     ) -> None:
@@ -488,6 +612,14 @@ class BuildingsTabContent(TabContent):
         surface.blit(hint, (
             rect.x + 8, rect.bottom - hint.get_height() - 6,
         ))
+
+        if is_hov and rect.collidepoint(pygame.mouse.get_pos()):
+            set_tooltip(
+                "Toggle Delete mode (X).  Click any of your buildings "
+                "to demolish it; half of the materials are returned to "
+                "your inventory.\nThe Ship Wreckage cannot be deleted.",
+                title="Delete Building",
+            )
 
     # ── Events ───────────────────────────────────────────────────
 
@@ -557,7 +689,7 @@ class InfoTabContent(TabContent):
         )
         items = [
             (STATS_COLONY_AGE, f"{mins}:{secs:02d}"),
-            (STATS_POPULATION, str(world.population.count)),
+            (STATS_POPULATION, str(world.player_population_count)),
             (STATS_BUILDINGS, str(n_buildings)),
         ]
         # Lay out in columns
@@ -667,6 +799,13 @@ class BottomBar(Panel):
                 lx = tr.x + (tr.w - tab.label_surf.get_width()) // 2
                 ly = tr.y + (tr.h - tab.label_surf.get_height()) // 2
                 surface.blit(tab.label_surf, (lx, ly))
+
+            # Tooltip on tab hover — explains what the tab is for so
+            # new players don't have to open every tab to find out.
+            if is_hover and tr.collidepoint(pygame.mouse.get_pos()):
+                tip = TAB_TOOLTIPS.get(tab.label)
+                if tip:
+                    set_tooltip(tip, title=tab.label)
 
         if 0 <= self._active < len(self._tabs):
             self._tabs[self._active].content.draw_content(
