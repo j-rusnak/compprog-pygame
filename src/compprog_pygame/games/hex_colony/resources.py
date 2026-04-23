@@ -83,7 +83,7 @@ PROCESSED_RESOURCES: frozenset[Resource] = frozenset({
 # tick.  Never appears in :func:`World._building_supply` /
 # :func:`World._building_demand`, which drive worker logistics.
 FLUID_RESOURCES: frozenset[Resource] = frozenset({
-    Resource.OIL, Resource.PETROLEUM, Resource.LUBRICANT,
+    Resource.OIL, Resource.PETROLEUM,
     Resource.ROCKET_FUEL,
 })
 

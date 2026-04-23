@@ -45,7 +45,22 @@ def draw_tree(
 ) -> None:
     key = f"overlays/tree_{item.style}"
     total_h = item.trunk_h + item.crown_ry * 2
-    if _try_overlay_sprite(surface, key, sx, sy - total_h * z * 0.3, z, item.crown_rx * 3, int(total_h * 1.2)):
+    # Per-style scale multipliers applied on top of the base 2x render
+    # size, tuned so each tree style reads at the right visual weight:
+    #   round  → 3.0x  (1.5x relative to the previous 2x baseline)
+    #   conifer → 1.8x (0.9x relative to baseline)
+    #   canopy  → ~0.667x (1/3x relative to baseline)
+    _TREE_STYLE_SCALE = {
+        "round": 3.0,
+        "conifer": 1.8,
+        "canopy": 2.0 / 3.0,
+    }
+    _TREE_SCALE = _TREE_STYLE_SCALE.get(item.style, 2.0)
+    if _try_overlay_sprite(
+        surface, key, sx, sy - total_h * z * 0.3 * _TREE_SCALE,
+        z, int(item.crown_rx * 3 * _TREE_SCALE),
+        int(total_h * 1.2 * _TREE_SCALE),
+    ):
         return
     if item.style == "canopy":
         crx = max(3, int(item.crown_rx * z))
@@ -175,7 +190,12 @@ def draw_crystal(
     """Draw a faceted crystal shard poking out of the ground."""
     # Pick sprite based on crystal colour (iron vs copper)
     key = "overlays/crystal_iron" if item.color[0] > item.color[2] else "overlays/crystal_copper"
-    if _try_overlay_sprite(surface, key, sx, sy, z, item.w * 6, item.h * 4):
+    # Ore outcroppings render at 2x their procedural size.
+    _ORE_SCALE = 2.0
+    if _try_overlay_sprite(
+        surface, key, sx, sy - item.h * z * _ORE_SCALE * 0.25, z,
+        int(item.w * 6 * _ORE_SCALE), int(item.h * 4 * _ORE_SCALE),
+    ):
         return
     h = max(3, int(item.h * z))
     w = max(2, int(item.w * z))

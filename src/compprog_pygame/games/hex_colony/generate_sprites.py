@@ -36,6 +36,21 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_turret,
     draw_trap,
     draw_enemy,
+    draw_tribal_camp,
+    draw_pipe,
+    draw_fluid_tank,
+    draw_mining_machine,
+    draw_workshop,
+    draw_forge,
+    draw_assembler,
+    draw_research_center,
+    draw_chemical_plant,
+    draw_conveyor,
+    draw_solar_array,
+    draw_rocket_silo,
+    draw_oil_drill,
+    draw_oil_refinery,
+    draw_ancient_tower,
 )
 from compprog_pygame.games.hex_colony.render_overlays import (
     draw_bush,
@@ -139,6 +154,79 @@ def _generate_buildings() -> None:
     s = _make_surface()
     draw_trap(s, _HALF, _HALF, _R, _Z)
     _save(s, "buildings", "trap.png")
+
+    # Tribal camp (enemy spawn).
+    s = _make_surface()
+    draw_tribal_camp(s, _HALF, _HALF, _R, _Z)
+    _save(s, "buildings", "tribal_camp.png")
+
+    # Crafting / production buildings.
+    s = _make_surface()
+    draw_workshop(s, _HALF, _HALF, _R, _Z)
+    _save(s, "buildings", "workshop.png")
+
+    s = _make_surface()
+    draw_forge(s, _HALF, _HALF, _R, _Z)
+    _save(s, "buildings", "forge.png")
+
+    s = _make_surface()
+    draw_assembler(s, _HALF, _HALF, _R, _Z)
+    _save(s, "buildings", "assembler.png")
+
+    s = _make_surface()
+    draw_chemical_plant(s, _HALF, _HALF, _R, _Z)
+    _save(s, "buildings", "chemical_plant.png")
+
+    # Research Center is much taller than other buildings; render onto
+    # a larger canvas so the antenna/dish aren't clipped.
+    big_size = _SIZE * 2
+    big_half = big_size // 2
+    s = pygame.Surface((big_size, big_size), pygame.SRCALPHA)
+    draw_research_center(s, big_half, big_half, _R, _Z)
+    _save(s, "buildings", "research_center.png")
+
+    # Mining / extraction.
+    s = _make_surface()
+    draw_mining_machine(s, _HALF, _HALF, _R, _Z)
+    _save(s, "buildings", "mining_machine.png")
+
+    s = _make_surface()
+    draw_oil_drill(s, _HALF, _HALF, _R, _Z)
+    _save(s, "buildings", "oil_drill.png")
+
+    s = _make_surface()
+    draw_oil_refinery(s, _HALF, _HALF, _R, _Z)
+    _save(s, "buildings", "oil_refinery.png")
+
+    # Fluid network.
+    s = _make_surface()
+    draw_pipe(s, _HALF, _HALF, _R, _Z, [], 0, 0)
+    _save(s, "buildings", "pipe.png")
+
+    s = _make_surface()
+    draw_fluid_tank(s, _HALF, _HALF, _R, _Z)
+    _save(s, "buildings", "fluid_tank.png")
+
+    # Logistics.
+    s = _make_surface()
+    draw_conveyor(s, _HALF, _HALF, _R, _Z, None, 0, 0)
+    _save(s, "buildings", "conveyor.png")
+
+    # Power.
+    s = _make_surface()
+    draw_solar_array(s, _HALF, _HALF, _R, _Z)
+    _save(s, "buildings", "solar_array.png")
+
+    # Endgame: rocket silo (rocket extends well above the hex; use a
+    # larger canvas so the nose cone isn't clipped).
+    s = pygame.Surface((_SIZE, _SIZE * 2), pygame.SRCALPHA)
+    draw_rocket_silo(s, _HALF, _SIZE + _HALF // 2, _R, _Z)
+    _save(s, "buildings", "rocket_silo.png")
+
+    # Ancient threat tower.
+    s = pygame.Surface((_SIZE, _SIZE * 2), pygame.SRCALPHA)
+    draw_ancient_tower(s, _HALF, _SIZE + _HALF // 2, _R, _Z)
+    _save(s, "buildings", "ancient_tower.png")
 
 
 def _generate_overlays() -> None:

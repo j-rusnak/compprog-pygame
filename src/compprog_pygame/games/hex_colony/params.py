@@ -193,19 +193,21 @@ BUILDING_STORAGE_FLUID_TANK: int = 200
 # Items a single logistics worker can carry in one trip.
 LOGISTICS_CARRY_CAPACITY: int = 5
 
-# Maximum number of idle logistics workers that may run the
-# (expensive) supply/demand search per simulation tick.  The world
-# round-robins through the idle pool so every worker still gets
-# served promptly while large colonies don't stall.
-LOGISTICS_JOBS_PER_FRAME: int = 4
+# Floor on the number of idle logistics workers that always run the
+# (expensive) supply/demand search per simulation tick — the wall-
+# clock budget below is the real cap.  This used to be a hard cap of
+# 4, which left dozens of haulers sitting at home waiting for their
+# round-robin turn while supply/demand pairs went unserved.
+LOGISTICS_JOBS_PER_FRAME: int = 8
 
 # Hard wall-clock budget (in milliseconds) for per-frame logistics
-# job-finding.  Even when ``LOGISTICS_JOBS_PER_FRAME`` would allow
-# more, the loop bails out after this many ms so a single tick can
-# never blow the frame budget regardless of colony size.  Idle
-# workers that didn't get a turn this frame are picked up next
-# frame via the round-robin cursor.
-LOGISTICS_FIND_JOB_BUDGET_MS: int = 4
+# job-finding.  The loop scans as many idle workers as it can within
+# this budget, ensuring a single tick can never blow the frame
+# budget regardless of colony size.  Idle workers that didn't get a
+# turn this frame are picked up next frame via the round-robin
+# cursor.  8 ms ≈ half a 60 fps frame and is plenty for thousands
+# of suppliers/consumers in practice.
+LOGISTICS_FIND_JOB_BUDGET_MS: int = 8
 
 # ═══════════════════════════════════════════════════════════════════
 #  POPULATION GROWTH
@@ -639,7 +641,6 @@ TIER_DATA: list[dict] = [
         "requirements": {
             "population": 42,
             "resource_gathered": {"OIL": 30, "PETROLEUM": 20, "RUBBER": 8},
-            "research_count": 8,
         },
     },
     # ── Tier 6 ───────────────────────────────────────────────────
@@ -654,7 +655,6 @@ TIER_DATA: list[dict] = [
                 "PLASTIC": 25, "CIRCUIT": 15, "BATTERY": 5,
                 "ADVANCED_CIRCUIT": 6,
             },
-            "research_count": 12,
         },
     },
     # ── Tier 7 ───────────────────────────────────────────────────
@@ -669,7 +669,6 @@ TIER_DATA: list[dict] = [
                 "ELECTRONICS": 25, "ROCKET_FUEL": 10,
                 "REINFORCED_CONCRETE": 8, "ROBOTIC_ARM": 4,
             },
-            "research_count": 17,
         },
     },
 ]
@@ -1010,7 +1009,7 @@ OIL_DEPOSIT_CLUSTER_SIZE_MAX: int = 4
 # Probability that a neighbour tile joins an oil pool during BFS growth.
 OIL_DEPOSIT_EXPAND_CHANCE: float = 0.55
 # Resource amount (units of OIL) per deposit tile.
-TILE_RESOURCE_OIL_DEPOSIT: tuple[float, float] = (300.0, 700.0)
+TILE_RESOURCE_OIL_DEPOSIT: tuple[float, float] = (3000.0, 7000.0)
 # Minimum hex distance from camp for any oil cluster centre.
 OIL_DEPOSIT_MIN_DISTANCE: int = 14
 

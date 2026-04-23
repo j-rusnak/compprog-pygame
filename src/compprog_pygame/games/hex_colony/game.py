@@ -25,6 +25,7 @@ from compprog_pygame.games.hex_colony.ui_tile_info import TileInfoPanel
 from compprog_pygame.games.hex_colony.world import World
 from compprog_pygame.games.hex_colony.notifications import NotificationManager
 from compprog_pygame.games.hex_colony.awakening_cutscene import AwakeningCutscene
+from compprog_pygame.games.hex_colony.rocket_launch_cutscene import RocketLaunchCutscene
 from compprog_pygame.games.hex_colony.settings import Difficulty
 from compprog_pygame.games.hex_colony.tech_tree import (
     TechTree, TierTracker, TECH_REQUIREMENTS, TECH_NODES,
@@ -160,6 +161,9 @@ class Game:
         # God mode: bypass tech/tier/inventory gates and reveal all
         # locked content in the UI.  Toggle at runtime with F1.
         self.god_mode: bool = self.settings.god_mode
+        # Mirror to the world so simulation code (crafting recipes,
+        # etc.) can grant cheats too.
+        self.world.god_mode = self.god_mode
         # God-mode-only tool: when set to a key in
         # ``params.ENEMY_TYPE_DATA``, left-clicking the world spawns
         # one enemy of that type at the clicked hex.  F2 cycles
@@ -331,6 +335,11 @@ class Game:
         # awakening).  When set, the world simulation is paused and
         # the cutscene drives the camera + tower-rise animation.
         self._awakening_cutscene: AwakeningCutscene | None = None
+        # End-game cutscene triggered when a rocket silo fills with
+        # fuel.  Runs once, then flips ``world.game_won`` so the
+        # game-over overlay shows the victory screen.
+        self._rocket_launch_cutscene = None
+        self._rocket_launch_done: bool = False
 
     # ── Public entry point ───────────────────────────────────────
 
@@ -396,6 +405,11 @@ class Game:
             self._awakening_cutscene.tick(dt)
             if not self._awakening_cutscene.active:
                 self._awakening_cutscene = None
+        elif self._rocket_launch_cutscene is not None and self._rocket_launch_cutscene.active:
+            self._rocket_launch_cutscene.tick(dt)
+            if not self._rocket_launch_cutscene.active:
+                # Clear reference; game_won flag was set in on_finish.
+                self._rocket_launch_cutscene = None
         elif not self._pause_overlay.visible and not self.world.game_over:
             with self.perf.section("input_camera"):
                 self._update_keyboard_pan(dt)
@@ -432,6 +446,11 @@ class Game:
                 if (self._awakening_cutscene is None
                         and self.world.ancient.pending_awakening is not None):
                     self._start_awakening_cutscene()
+                # Rocket silo filled with fuel — trigger the win cutscene.
+                if (self._rocket_launch_cutscene is None
+                        and not self._rocket_launch_done
+                        and not self.world.game_won):
+                    self._maybe_start_rocket_launch()
                 with self.perf.section("logistics_mon"):
                     self.logistics_mon.maybe_sample(self.world)
                 with self.perf.section("stats_sample"):
@@ -509,6 +528,8 @@ class Game:
                 self._draw_spawn_tool_hud(screen)
         if self._awakening_cutscene is not None:
             self._awakening_cutscene.draw_overlay(screen)
+        if self._rocket_launch_cutscene is not None:
+            self._rocket_launch_cutscene.draw_overlay(screen)
 
         with self.perf.section("flip"):
             pygame.display.flip()
@@ -526,6 +547,9 @@ class Game:
         # Cutscene swallows input first while playing.
         if self._awakening_cutscene is not None and self._awakening_cutscene.active:
             self._awakening_cutscene.handle_event(event)
+            return
+        if self._rocket_launch_cutscene is not None and self._rocket_launch_cutscene.active:
+            self._rocket_launch_cutscene.handle_event(event)
             return
 
         # Let UI consume events first
@@ -582,6 +606,7 @@ class Game:
             elif event.key == pygame.K_F1:
                 # Toggle god mode at runtime
                 self.god_mode = not self.god_mode
+                self.world.god_mode = self.god_mode
                 msg = NOTIF_GOD_MODE_ON if self.god_mode else NOTIF_GOD_MODE_OFF
                 col = (255, 215, 0) if self.god_mode else (200, 200, 200)
                 self.notifications.push(msg, col)
@@ -743,7 +768,7 @@ class Game:
         if self.delete_mode:
             self._try_delete_building(coord)
         elif self.build_mode is not None:
-            if self.build_mode in (BuildingType.PATH, BuildingType.WALL):
+            if self.build_mode in (BuildingType.PATH, BuildingType.WALL, BuildingType.PIPE):
                 self._handle_path_click(coord)
             else:
                 self._try_place_building(coord)
@@ -892,6 +917,29 @@ class Game:
             NOTIF_AWAKENING_TRIGGERED, (220, 130, 255),
         )
 
+    def _maybe_start_rocket_launch(self) -> None:
+        """If any player-owned Rocket Silo has filled with fuel, kick
+        off the end-game launch cutscene.  Idempotent: only fires
+        once per world."""
+        assert self.camera is not None
+        from compprog_pygame.games.hex_colony.resources import Resource
+        silo_type = BuildingType.ROCKET_SILO
+        for b in self.world.buildings.by_type(silo_type):
+            if getattr(b, "faction", "SURVIVOR") != "SURVIVOR":
+                continue
+            fuel = b.storage.get(Resource.ROCKET_FUEL, 0.0)
+            if fuel + 1e-3 >= b.storage_capacity:
+                self._rocket_launch_done = True
+
+                def _finish() -> None:
+                    self.world.game_won = True
+
+                self._rocket_launch_cutscene = RocketLaunchCutscene(
+                    b.coord, self.world, self.camera,
+                    on_finish=_finish,
+                )
+                return
+
     def _try_place_building(self, coord, silent: bool = False) -> bool:
         tile = self.world.grid[coord]
         # Can't build on unbuildable terrain (water, mountain, oil pool) —
@@ -950,9 +998,57 @@ class Game:
                 self.world.building_inventory.add(existing.type)
             self.world.buildings.remove(existing)
             tile.building = None
+        # Multi-tile buildings (currently just the Research Center):
+        # compute the extra footprint coords and validate that each
+        # is in the grid, not on unbuildable terrain, and empty.  If
+        # any footprint tile fails we abort the placement.
+        from compprog_pygame.games.hex_colony.world import (
+            building_footprint as _footprint_for,
+        )
+        footprint = _footprint_for(self.build_mode, coord)
+        if footprint:
+            for fc in footprint:
+                ftile = self.world.grid.get(fc)
+                if ftile is None:
+                    if not silent:
+                        self.notifications.push(
+                            "Needs a 1-radius clear hex cluster",
+                            (255, 150, 80),
+                        )
+                    # Refund any resources we already spent above.
+                    if not free_build:
+                        self.world.building_inventory.add(self.build_mode)
+                    return False
+                if ftile.terrain in UNBUILDABLE:
+                    if not silent:
+                        self.notifications.push(
+                            "Needs a 1-radius clear hex cluster",
+                            (255, 150, 80),
+                        )
+                    if not free_build:
+                        self.world.building_inventory.add(self.build_mode)
+                    return False
+                if ftile.building is not None:
+                    if not silent:
+                        self.notifications.push(
+                            "Needs a 1-radius clear hex cluster",
+                            (255, 150, 80),
+                        )
+                    if not free_build:
+                        self.world.building_inventory.add(self.build_mode)
+                    return False
         # Place building
-        building = self.world.buildings.place(self.build_mode, coord)
+        building = self.world.buildings.place(
+            self.build_mode, coord, footprint=footprint,
+        )
         tile.building = building
+        # Register the building on every footprint tile so clicks /
+        # placement checks / renderer queries on those tiles all
+        # resolve to this same building.
+        for fc in footprint:
+            ftile = self.world.grid.get(fc)
+            if ftile is not None:
+                ftile.building = building
         # Quarry QoL: when the only mineable resource in range is a
         # single ore type (iron OR copper, but not both, and no
         # stone/mountain), auto-select it so the player doesn't have
@@ -965,7 +1061,11 @@ class Game:
         # ore / fiber sprite under the path tile.
         if self.build_mode not in _PATH_LIKE:
             self.renderer.remove_overlays_at(coord, self.settings.hex_size)
+            for fc in footprint:
+                self.renderer.remove_overlays_at(fc, self.settings.hex_size)
         self._minimap.invalidate(coord)
+        for fc in footprint:
+            self._minimap.invalidate(fc)
         # Record to blueprint if recording
         if self.blueprints.is_recording:
             self.blueprints.record_building(coord, self.build_mode)
@@ -1001,6 +1101,61 @@ class Game:
             # Re-clicking the anchor cancels the chain.
             self._path_anchor = None
             self.renderer.path_preview = []
+            return
+
+        # PIPE chain placement: BFS route that avoids paths/bridges/
+        # water/other buildings so pipe networks stay independent.
+        if self.build_mode == BuildingType.PIPE:
+            route = self.world.find_pipe_route(self._path_anchor, coord)
+            if not route:
+                tile = self.world.grid.get(coord)
+                if tile is not None:
+                    self._path_anchor = coord
+                else:
+                    self._path_anchor = None
+                    self.renderer.path_preview = []
+                return
+            anchor_tile = self.world.grid.get(self._path_anchor)
+            full_route: list[HexCoord] = []
+            if anchor_tile is not None and anchor_tile.building is None:
+                full_route.append(self._path_anchor)
+            full_route.extend(route)
+            free_build = self.sandbox or self.god_mode
+            pipe_stock = (
+                10 ** 9 if free_build
+                else self.world.building_inventory[BuildingType.PIPE]
+            )
+            placed = 0
+            last_placed: HexCoord | None = None
+            original_mode = self.build_mode
+            try:
+                for step in full_route:
+                    tile = self.world.grid.get(step)
+                    if tile is None:
+                        break
+                    if tile.building is not None:
+                        last_placed = step
+                        continue
+                    if pipe_stock <= 0:
+                        break
+                    self.build_mode = BuildingType.PIPE
+                    if self._try_place_building(step, silent=True):
+                        placed += 1
+                        last_placed = step
+                        pipe_stock -= 1
+                    else:
+                        break
+            finally:
+                self.build_mode = original_mode
+            if placed > 0:
+                label = "tile" if placed == 1 else "tiles"
+                self.notifications.push(NOTIF_BUILT_PATH.format(count=placed, label=label))
+            self._path_anchor = None
+            self.renderer.path_preview = []
+            self.build_mode = None
+            btab = self._bottom_bar.buildings_tab
+            if btab:
+                btab.selected_building = None
             return
 
         # WALL chain placement: simple hex-line from anchor to clicked
@@ -1184,18 +1339,26 @@ class Game:
         # Return building to inventory
         if not self.sandbox:
             self.world.building_inventory.add(building.type)
-        # Remove building
-        self.world.buildings.remove(building)
-        tile.building = None
+        # Remove building (and clear every grid tile it occupied —
+        # multi-tile buildings like the Research Center leave stale
+        # ``tile.building`` refs on their footprint otherwise).
+        footprint = tuple(building.footprint)
+        self.world.demolish(building)
         # Restore the overlay pixel art (trees, ore crystals, fiber,
         # etc.) that was NaN-marked when the building was originally
         # placed on this tile.  Without this call, deleting a quarry
         # from an iron vein leaves a bare tile even though the ore
         # is still there.
         self.renderer.regenerate_overlays_at(coord, self.world)
+        for fc in footprint:
+            self.renderer.regenerate_overlays_at(fc, self.world)
         # Targeted tile layer redraw so cleared tile shows terrain
         self.renderer.invalidate_tile(coord)
+        for fc in footprint:
+            self.renderer.invalidate_tile(fc)
         self._minimap.invalidate(coord)
+        for fc in footprint:
+            self._minimap.invalidate(fc)
         self.world.mark_housing_dirty()
 
     def _on_building_selected(self, btype: BuildingType | None) -> None:
@@ -1345,7 +1508,7 @@ class Game:
             return
 
         # Switching to a non-chain build mode cancels any chain anchor.
-        if self.build_mode not in (BuildingType.PATH, BuildingType.WALL):
+        if self.build_mode not in (BuildingType.PATH, BuildingType.WALL, BuildingType.PIPE):
             self._path_anchor = None
 
         self.renderer.ghost_building = self.build_mode
@@ -1431,7 +1594,37 @@ class Game:
                     self.renderer.path_preview = preview
             else:
                 self.renderer.path_preview = []
-        elif (self.build_mode in (BuildingType.PATH, BuildingType.WALL)
+        elif (self.build_mode == BuildingType.PIPE
+                and self._path_anchor is not None
+                and self.renderer.ghost_coord is not None
+                and self.renderer.ghost_coord != self._path_anchor):
+            route = self.world.find_pipe_route(
+                self._path_anchor, self.renderer.ghost_coord,
+            )
+            if route:
+                free_build = self.sandbox or self.god_mode
+                pipe_stock = (
+                    10 ** 9 if free_build
+                    else self.world.building_inventory[BuildingType.PIPE]
+                )
+                full_route: list[HexCoord] = []
+                anchor_tile = self.world.grid.get(self._path_anchor)
+                if anchor_tile is not None and anchor_tile.building is None:
+                    full_route.append(self._path_anchor)
+                full_route.extend(route)
+                preview: list[HexCoord] = []
+                stock_left = pipe_stock
+                for step in full_route:
+                    tile = self.world.grid.get(step)
+                    if tile is not None and tile.building is None:
+                        if stock_left <= 0:
+                            break
+                        stock_left -= 1
+                    preview.append(step)
+                self.renderer.path_preview = preview
+            else:
+                self.renderer.path_preview = []
+        elif (self.build_mode in (BuildingType.PATH, BuildingType.WALL, BuildingType.PIPE)
               and self._path_anchor is not None):
             # Show anchor tile highlighted even before a second point
             # is chosen, so the player sees where the chain starts.
@@ -1446,8 +1639,22 @@ class Game:
         if tile is None:
             return False
         if tile.terrain in UNBUILDABLE:
-            if not (self.build_mode == BuildingType.BRIDGE and tile.terrain == Terrain.WATER):
+            # Allowed exceptions on otherwise-unbuildable terrain:
+            # bridges on water, oil drills on oil deposits.
+            allowed = (
+                (self.build_mode == BuildingType.BRIDGE
+                 and tile.terrain == Terrain.WATER)
+                or (self.build_mode == BuildingType.OIL_DRILL
+                    and tile.terrain == Terrain.OIL_DEPOSIT)
+            )
+            if not allowed:
                 return False
+        # Oil drills are *only* valid on oil deposits — keep the
+        # ghost red on every other terrain so the player can see
+        # they need to find a deposit before placing.
+        if (self.build_mode == BuildingType.OIL_DRILL
+                and tile.terrain != Terrain.OIL_DEPOSIT):
+            return False
         # Tech tree gate
         if not self.tech_tree.is_building_unlocked(self.build_mode):
             return False

@@ -1098,6 +1098,10 @@ class Renderer:
         _IMPLICIT_PATH_SKIP = {
             BuildingType.PATH, BuildingType.BRIDGE, BuildingType.WALL,
             BuildingType.PIPE,
+            # Research Center is a multi-tile building whose sprite
+            # already covers its whole cluster — an implicit path disc
+            # under it would poke out from behind the sprite.
+            BuildingType.RESEARCH_CENTER,
         }
         for building in world.buildings.buildings:
             if building.type in _IMPLICIT_PATH_SKIP:
@@ -1122,17 +1126,31 @@ class Renderer:
             if r < 2:
                 pygame.draw.circle(surface, _PATH_BASE, (int(sx), int(sy)), max(1, r))
                 continue
-            # Compute screen positions of adjacent path or building neighbours
+            # Compute screen positions of adjacent path or building neighbours.
+            # Pipes are deliberately excluded so the two networks stay
+            # visually disjoint — paths must not draw bands to pipes,
+            # and pipes underneath paths must not get an implicit
+            # path disc.
             nb_positions: list[tuple[float, float]] = []
             for nb_coord in building.coord.neighbors():
                 nb_building = world.buildings.at(nb_coord)
-                if nb_building is not None:
-                    nwx, nwy = self._get_pixel(nb_coord, size)
-                    nsx = (nwx - cam_x) * zoom + half_sw
-                    nsy = (nwy - cam_y) * zoom + half_sh
-                    nb_positions.append((nsx, nsy))
-                    if nb_building.type not in _PATH_TYPES:
-                        buildings_needing_path.add(nb_coord)
+                if nb_building is None:
+                    continue
+                if nb_building.type == BuildingType.PIPE:
+                    continue
+                nwx, nwy = self._get_pixel(nb_coord, size)
+                nsx = (nwx - cam_x) * zoom + half_sw
+                nsy = (nwy - cam_y) * zoom + half_sh
+                nb_positions.append((nsx, nsy))
+                if (nb_building.type not in _PATH_TYPES
+                        and nb_building.type != BuildingType.RESEARCH_CENTER):
+                    # Always mark the building's *anchor* coord so
+                    # multi-tile buildings (Research Center) only get
+                    # one path disc at their center instead of one
+                    # under every footprint hex.  The Research Center
+                    # itself is skipped entirely because its sprite
+                    # already covers the whole cluster.
+                    buildings_needing_path.add(nb_building.coord)
             if building.type == BuildingType.BRIDGE:
                 draw_bridge(surface, sx, sy, r, zoom, nb_positions,
                             building.coord.q, building.coord.r)
@@ -1244,7 +1262,27 @@ class Renderer:
 
             drawer = _BUILDING_DRAW.get(building.type)
             if drawer is not None:
-                drawer(surface, sx, sy, r, zoom)
+                # While the launch cutscene is animating the rocket,
+                # render the corresponding silo as an empty pad so the
+                # cutscene's flying rocket isn't doubled by the silo's
+                # static rocket art.
+                if (building.type == BuildingType.ROCKET_SILO
+                        and getattr(world, "launching_silo_coord", None)
+                        == building.coord):
+                    draw_rocket_silo(surface, sx, sy, r, zoom, pad_only=True)
+                elif building.type == BuildingType.RESEARCH_CENTER:
+                    # Research Center occupies a 1-radius hex cluster
+                    # (anchor + 6 neighbours).  Draw the sprite big
+                    # enough to span all 7 tiles so it visually
+                    # matches its footprint, and nudge it down a bit
+                    # so it sits more centered in the cluster rather
+                    # than floating above the anchor hex.  The 0.85
+                    # factor shrinks the sprite ~15% to keep it from
+                    # visually overpowering its footprint.
+                    big_r = int(r * 2.5 * 0.85)
+                    drawer(surface, sx, sy + int(r * 0.35), big_r, zoom)
+                else:
+                    drawer(surface, sx, sy, r, zoom)
 
             # Damage indicator: red HP bar floats above any building
             # whose health is below max.
@@ -1725,7 +1763,14 @@ class Renderer:
         # creating new SRCALPHA surfaces every frame.
         cache_key = (btype, r, self.ghost_valid)
         if self._ghost_cache_key != cache_key:
-            bld_size = r * 4
+            # The Research Center is rendered much larger than other
+            # buildings (spans a 7-tile cluster); give its ghost
+            # surface room to fit the scaled-up sprite so the preview
+            # matches the placed-building size.
+            if btype == BuildingType.RESEARCH_CENTER:
+                bld_size = r * 8
+            else:
+                bld_size = r * 4
             bld_surf = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)
             cx_local = bld_size // 2
             cy_local = bld_size // 2
@@ -1752,7 +1797,14 @@ class Renderer:
             elif btype == BuildingType.ASSEMBLER:
                 draw_assembler(bld_surf, cx_local, cy_local, r, zoom)
             elif btype == BuildingType.RESEARCH_CENTER:
-                draw_research_center(bld_surf, cx_local, cy_local, r, zoom)
+                # Match the placed-building rendering: scaled up to
+                # span the 7-tile cluster (with a 15% shrink) and
+                # nudged down so it sits centered in the cluster.
+                big_r = int(r * 2.5 * 0.85)
+                draw_research_center(
+                    bld_surf, cx_local, cy_local + int(r * 0.35),
+                    big_r, zoom,
+                )
             elif btype == BuildingType.MINING_MACHINE:
                 draw_mining_machine(bld_surf, cx_local, cy_local, r, zoom)
             elif btype == BuildingType.FARM:
@@ -1798,10 +1850,13 @@ class Renderer:
             self._ghost_cache = bld_surf
             self._ghost_cache_key = cache_key
 
-        bld_size = r * 4
-        cx_local = bld_size // 2
-        cy_local = bld_size // 2
-        surface.blit(self._ghost_cache, (int(sx) - cx_local, int(sy) - cy_local))
+        # Use the cached surface's actual size (it differs for the
+        # research center, whose ghost surface is larger).
+        gw, gh = self._ghost_cache.get_size()
+        surface.blit(
+            self._ghost_cache,
+            (int(sx) - gw // 2, int(sy) - gh // 2),
+        )
 
         # Range ring for collection buildings (only when valid)
         if self.ghost_valid and btype in _COLLECTION_BUILDINGS:

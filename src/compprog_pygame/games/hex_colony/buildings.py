@@ -244,6 +244,12 @@ class Building:
     health: float = 0.0
     # Turrets only: seconds remaining until the next shot may fire.
     weapon_cooldown: float = 0.0
+    # Extra hex coords this building occupies beyond ``coord`` (its
+    # anchor).  Most buildings are single-tile and leave this empty;
+    # the Research Center occupies its anchor plus all 6 neighbours
+    # (a 1-radius hex cluster, 7 tiles total) so clicks on any of
+    # those tiles resolve to the same building.
+    footprint: tuple = ()
 
     @property
     def max_workers(self) -> int:
@@ -267,16 +273,25 @@ class BuildingManager:
         self._by_coord: dict[HexCoord, Building] = {}
         self._by_type: dict[BuildingType, list[Building]] = {}
 
-    def place(self, btype: BuildingType, coord: HexCoord) -> Building:
+    def place(
+        self, btype: BuildingType, coord: HexCoord,
+        footprint: tuple = (),
+    ) -> Building:
         b = Building(
             type=btype,
             coord=coord,
             storage_capacity=BUILDING_STORAGE_CAPACITY.get(btype, 0),
+            footprint=tuple(footprint),
         )
         b.max_health = BUILDING_MAX_HEALTH.get(btype, params.BUILDING_DEFAULT_MAX_HEALTH)
         b.health = b.max_health
         self.buildings.append(b)
         self._by_coord[coord] = b
+        # Register each extra footprint coord so .at() resolves
+        # clicks anywhere inside the building's footprint back to
+        # the same anchor Building instance.
+        for fc in b.footprint:
+            self._by_coord[fc] = b
         self._by_type.setdefault(btype, []).append(b)
         return b
 
@@ -287,6 +302,12 @@ class BuildingManager:
         """Remove a building from the manager."""
         self.buildings.remove(building)
         self._by_coord.pop(building.coord, None)
+        for fc in building.footprint:
+            # Only clear the footprint slot if it still points at
+            # this building (defensive in case a newer building was
+            # placed there).
+            if self._by_coord.get(fc) is building:
+                self._by_coord.pop(fc, None)
         type_list = self._by_type.get(building.type)
         if type_list is not None:
             try:

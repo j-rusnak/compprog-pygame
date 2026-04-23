@@ -699,11 +699,11 @@ class CombatManager:
             self._destroy_building(world, b)
 
     def _destroy_building(self, world: "World", b: Building) -> None:
-        tile = world.grid.get(b.coord)
-        if tile is not None and tile.building is b:
-            tile.building = None
+        # ``world.demolish`` clears every tile the building occupied
+        # (anchor + footprint) and removes it from the manager, which
+        # matters for multi-tile buildings like the Research Center.
         try:
-            world.buildings.remove(b)
+            world.demolish(b)
         except Exception:
             pass
         world.mark_housing_dirty()

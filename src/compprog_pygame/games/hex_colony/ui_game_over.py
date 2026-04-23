@@ -28,8 +28,10 @@ from compprog_pygame.games.hex_colony.strings import (
     GAME_OVER_BUTTONS,
     GAME_OVER_TITLE_NO_SURVIVORS,
     GAME_OVER_TITLE_CAMP_DESTROYED,
+    GAME_OVER_TITLE_VICTORY,
     GAME_OVER_REASON_NO_SURVIVORS,
     GAME_OVER_REASON_CAMP_DESTROYED,
+    GAME_OVER_REASON_VICTORY,
     GAME_OVER_STAT_TIME,
     GAME_OVER_STAT_TIER,
     GAME_OVER_STAT_RESEARCH,
@@ -59,11 +61,14 @@ _STATS_GAP = 22
 _CAUSE_TITLES = {
     "camp_destroyed": GAME_OVER_TITLE_CAMP_DESTROYED,
     "no_survivors":   GAME_OVER_TITLE_NO_SURVIVORS,
+    "victory":        GAME_OVER_TITLE_VICTORY,
 }
 _CAUSE_REASONS = {
     "camp_destroyed": GAME_OVER_REASON_CAMP_DESTROYED,
     "no_survivors":   GAME_OVER_REASON_NO_SURVIVORS,
+    "victory":        GAME_OVER_REASON_VICTORY,
 }
+_VICTORY_TITLE_COLOR = (120, 230, 160)
 
 
 class GameOverOverlay(Panel):
@@ -185,9 +190,10 @@ class GameOverOverlay(Panel):
         py = (sh - ph) // 2
 
         panel = pygame.Rect(px, py, pw, ph)
+        title_color = _VICTORY_TITLE_COLOR if reason_key == "victory" else UI_BAD
         content_y = draw_titled_panel(
             surface, panel, title,
-            title_color=UI_BAD, title_font=hero_font,
+            title_color=title_color, title_font=hero_font,
         )
 
         y = content_y + _REASON_GAP

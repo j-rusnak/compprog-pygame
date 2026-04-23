@@ -1316,9 +1316,17 @@ def draw_solar_array(surface: pygame.Surface, sx: float, sy: float, r: int, z: f
                      (isx, isy + max(2, int(r * 0.10))), max(2, iz * 2))
 
 
-def draw_rocket_silo(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
-    """Rocket Silo — tall white rocket with red fins on a launch pad."""
-    if _try_sprite(surface, "buildings/rocket_silo", sx, sy, r, z):
+def draw_rocket_silo(
+    surface: pygame.Surface, sx: float, sy: float, r: int, z: float,
+    pad_only: bool = False,
+) -> None:
+    """Rocket Silo — tall white rocket with red fins on a launch pad.
+
+    When ``pad_only`` is True the rocket itself is omitted (used while
+    the launch cutscene is animating the rocket flying off-screen, so
+    the silo on the map shows only the empty launch pad).
+    """
+    if not pad_only and _try_sprite(surface, "buildings/rocket_silo", sx, sy, r, z):
         return
     isx, isy = int(sx), int(sy)
     iz = max(1, int(z))
@@ -1334,6 +1342,13 @@ def draw_rocket_silo(surface: pygame.Surface, sx: float, sy: float, r: int, z: f
     pygame.draw.rect(surface, pad, pad_rect, border_radius=max(1, iz))
     pygame.draw.rect(surface, _darken(pad, 0.7), pad_rect, max(1, iz),
                      border_radius=max(1, iz))
+    if pad_only:
+        # Add a faint scorch mark in the centre of the pad to suggest
+        # the rocket just took off.
+        scorch_r = max(2, int(min(pad_w, pad_h * 4) * 0.18))
+        pygame.draw.circle(surface, _darken(pad, 0.45), (isx, isy),
+                           scorch_r)
+        return
     # Rocket body
     body_w = max(3, int(r * 0.55))
     body_h = max(5, int(r * 1.40))

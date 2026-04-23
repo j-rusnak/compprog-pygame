@@ -234,8 +234,7 @@ class AncientThreat:
             # we want the tower itself to "occupy" that tile).
             existing = tile.building
             if existing is not None:
-                world.buildings.remove(existing)
-                tile.building = None
+                world.demolish(existing)
                 world.mark_housing_dirty()
 
             tile.terrain = Terrain.WASTELAND

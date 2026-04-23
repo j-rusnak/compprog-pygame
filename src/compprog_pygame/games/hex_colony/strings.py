@@ -85,7 +85,7 @@ BUILDING_DESCRIPTIONS: dict[str, str] = {
     "ROCKET_SILO":      "End-game goal. Feed it Rocket Parts assembled at the Assembler to launch off-world and win.",
     "OIL_DRILL":        "Must be placed directly on an Oil Deposit tile. Pumps Crude Oil automatically with no fuel. Connect to refinery via Pipes.",
     "OIL_REFINERY":     "Crafting station: turns Crude Oil into Petroleum (a powerful fuel) and Lubricant (used in Robotic Arms).",
-    "PIPE":             "Carries fluids (Oil, Petroleum, Lubricant, Rocket Fuel) between buildings. Workers can't carry fluids \u2014 only pipes can.",
+    "PIPE":             "Carries fluids (Oil, Petroleum, Rocket Fuel) between buildings. Workers can't carry fluids — only pipes can. Pipes route around Paths and never connect to them.",
     "FLUID_TANK":       "Buffers one fluid type. Connect to producers and consumers via Pipes; click to select which fluid.",
     "TURRET":           "Auto-cannon. Targets the nearest ancient invader within range and fires until destroyed. Costs Stone, Iron Bars and Planks.",
     "TRAP":             "One-shot spike trap. Detonates when an enemy steps on it for heavy damage to all enemies in 1 hex. Cheap and disposable.",
@@ -249,6 +249,17 @@ GAME_OVER_REASON_CAMP_DESTROYED = (
     "The crashed ship\u2014your last link to home\u2014was destroyed by the "
     "ancient threat. The colony cannot continue without it."
 )
+
+GAME_OVER_TITLE_VICTORY = "Escape Velocity"
+GAME_OVER_REASON_VICTORY = (
+    "With a full tank of rocket fuel, your rocket thunders to life and "
+    "climbs through the clouds. You leave this world behind\u2014"
+    "the colony's long labor finally repaid."
+)
+
+ROCKET_LAUNCH_TITLE    = "LIFTOFF"
+ROCKET_LAUNCH_SUBTITLE = "The colony escapes the planet"
+ROCKET_LAUNCH_SKIP_HINT = "ESC to skip"
 
 # Stat-line labels (one per row in the summary panel).
 GAME_OVER_STAT_TIME          = "Time survived"
@@ -729,7 +740,8 @@ TUTORIAL_STEPS: list[dict[str, object]] = [
             "",
             "Research Petroleum Engineering to unlock the Oil",
             "Drill and Oil Refinery, then refine Oil into",
-            "Petroleum, Lubricant, and Rubber.",
+            "Petroleum and Rubber. Lubricant is produced",
+            "alongside and hauled by workers.",
         ],
     },
     {
@@ -761,7 +773,7 @@ TUTORIAL_STEPS: list[dict[str, object]] = [
         "id": "pipe_intro",
         "title": "Pipes & Fluid Tanks",
         "lines": [
-            "Fluids (Oil, Petroleum, Lubricant, Rocket Fuel)",
+            "Fluids (Oil, Petroleum, Rocket Fuel)",
             "never travel by worker \u2014 only through Pipes.",
             "",
             "Place Pipes (made from Steel) to connect any",
