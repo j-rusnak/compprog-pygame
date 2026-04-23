@@ -16,7 +16,7 @@ for physics.
 | Requirement | Version |
 |---|---|
 | Python | **3.11 or newer** (3.13+ recommended for `hex_colony`) |
-| OS | Windows 10/11 (primary), Linux/macOS should work but build tooling is PowerShell-only |
+| OS | Windows 10/11, macOS, or Linux. Native single-file builds are supported on all three (see [Building a native executable](#building-a-native-executable)) |
 | GPU | Anything that runs SDL2 — no dedicated GPU required |
 | Disk | ~250 MB including the dev virtualenv |
 
@@ -150,21 +150,81 @@ sanity checks). New tests should live under `tests/`.
 
 ---
 
-## Building a Windows executable
+## Building a native executable
+
+The project ships with a cross-platform single-file builder. From the
+repository root, with the venv active:
+
+```powershell
+python tools/build_native.py
+```
+
+This auto-installs PyInstaller into the active interpreter if it's
+missing and produces a self-contained artifact for the host OS that
+needs no Python install or extra files to run:
+
+| Host OS | Output |
+|---|---|
+| Windows | `dist/CompProgGame.exe` (single `.exe`) |
+| macOS   | `dist/CompProgGame.app` (double-clickable bundle) |
+| Linux   | `dist/CompProgGame` (single binary) |
+
+PyInstaller cannot cross-compile, so a single invocation only produces
+a binary for the host it runs on.
+
+### Building for both Windows and macOS from one machine
+
+A GitHub Actions workflow at
+[`.github/workflows/build-native.yml`](.github/workflows/build-native.yml)
+builds Windows + macOS artifacts in parallel on GitHub-hosted runners.
+You can trigger it from your local machine via the bundled helper
+(requires the [GitHub CLI](https://cli.github.com/) — `gh auth login`
+once):
+
+```powershell
+python tools/build_cross.py
+```
+
+The script triggers the workflow, waits for both builds to finish, and
+downloads the resulting `CompProgGame.exe` and `CompProgGame-macos.zip`
+into `dist-cross/`. Pushing a `v*` tag will additionally attach both
+artifacts to a GitHub Release.
+
+### Legacy PowerShell build (Windows only)
+
+The original PowerShell script is still available:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\tools\build.ps1
 ```
 
-This invokes PyInstaller using `CompProgGame.spec`, bundling the
-`assets/` directory and producing a one-file windowed executable.
+It invokes PyInstaller using `CompProgGame.spec` and produces
+`dist/CompProgGame.exe`.
 
-Output:
+---
 
-- `dist/CompProgGame.exe`
+## Regenerating sprite assets
 
-The build also leaves intermediate files under `build/` which can be
-deleted safely.
+All Hex Colony building, overlay, person, and enemy sprites are
+procedurally generated from the drawing code under
+[`src/compprog_pygame/games/hex_colony/render_buildings.py`](src/compprog_pygame/games/hex_colony/render_buildings.py)
+and friends. To regenerate every PNG under `assets/sprites/` from the
+current code (useful after tweaking a drawer):
+
+```powershell
+$env:PYTHONPATH = "src"; python -m compprog_pygame.games.hex_colony.generate_sprites
+```
+
+The generator covers all ~30 buildings (camp, house, habitat,
+woodcutter, quarry, gatherer, storage, refinery, farm, well, bridge,
+wall, turret, trap, tribal_camp, workshop, forge, assembler,
+research_center, chemical_plant, mining_machine, oil_drill,
+oil_refinery, pipe, fluid_tank, conveyor, solar_array, rocket_silo,
+ancient_tower) plus overlays, people, and enemies.
+
+PNGs can be hand-edited or replaced with custom pixel art at the same
+dimensions and the game will pick them up automatically (drawers fall
+back to procedural rendering only when the PNG is missing).
 
 ---
 
@@ -186,8 +246,12 @@ deleted safely.
 │           └── physics_tetris/   # Small physics-based Tetris variant
 ├── tests/                        # pytest suite
 ├── tools/
-│   └── build.ps1                 # PyInstaller wrapper
-├── CompProgGame.spec             # PyInstaller spec
+│   ├── build.ps1                 # Legacy Windows-only PyInstaller wrapper
+│   ├── build_native.py           # Cross-platform single-file builder
+│   └── build_cross.py            # Trigger GitHub Actions build of both OSes
+├── .github/workflows/
+│   └── build-native.yml          # Windows + macOS build matrix
+├── CompProgGame.spec             # PyInstaller spec (used by build.ps1)
 ├── pyproject.toml                # Build & dependency metadata
 └── README.md
 ```

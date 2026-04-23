@@ -2592,8 +2592,12 @@ class World:
                 # ``cooled_off`` sorts False (=0) before True (=1),
                 # i.e. demands that have waited long enough win.
                 cooled_off = wait < FAIR_COOLDOWN
+                # ``id(...)`` tiebreakers keep the sort total-ordered
+                # without falling through to comparing Building
+                # instances (which don't define ``__lt__``).
                 candidates.append(
-                    (cooled_off, -wait, -score, sb, db, sres),
+                    (cooled_off, -wait, -score,
+                     id(sb), id(db), sb, db, sres),
                 )
 
         if not candidates:
@@ -2611,7 +2615,7 @@ class World:
         # unreachable supplier list.  ``tried_dst`` counts attempts.
         tried_dst: dict[int, int] = {}
         MAX_PER_DST = 2
-        for _co, _negw, _negs, best_src, best_dst, best_res in candidates:
+        for _co, _negw, _negs, _sid, _did, best_src, best_dst, best_res in candidates:
             dst_key = id(best_dst)
             if tried_dst.get(dst_key, 0) >= MAX_PER_DST:
                 continue

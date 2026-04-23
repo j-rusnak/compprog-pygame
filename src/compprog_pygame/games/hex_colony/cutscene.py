@@ -678,6 +678,10 @@ def run_cutscene(
     player can switch fullscreen / resize the window mid-cutscene
     without breaking the layout.
     """
+    # Local import so the cutscene module stays a leaf with no upward
+    # package dependencies.
+    from compprog_pygame.audio import music
+    music.play("cutscene")
     cutscene = IntroCutscene(screen.get_size())
     while not cutscene.done:
         dt = clock.tick(fps) / 1000.0

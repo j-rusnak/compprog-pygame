@@ -2,6 +2,7 @@
 
 import pygame
 
+from compprog_pygame.audio import music
 from compprog_pygame.settings import DEFAULT_SETTINGS
 
 # Import every game sub-package so they register with the game registry.
@@ -14,6 +15,10 @@ from compprog_pygame.home_screen import HomeScreen
 
 def main() -> None:
     pygame.init()
+    # Bring the audio mixer up early so the first music.play() at the
+    # home screen has zero latency.  Failures (e.g. headless CI) are
+    # logged and the game runs silently.
+    music.init()
     try:
         screen = pygame.display.set_mode(
             (DEFAULT_SETTINGS.width, DEFAULT_SETTINGS.height), pygame.RESIZABLE,
@@ -34,6 +39,7 @@ def main() -> None:
             # (it may have been resized) and loop back.
             screen = pygame.display.get_surface()
     finally:
+        music.shutdown()
         pygame.quit()
 
 

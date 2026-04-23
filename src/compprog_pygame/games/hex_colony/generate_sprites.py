@@ -178,11 +178,19 @@ def _generate_buildings() -> None:
     _save(s, "buildings", "chemical_plant.png")
 
     # Research Center is much taller than other buildings; render onto
-    # a larger canvas so the antenna/dish aren't clipped.
+    # a larger canvas so the antenna/dish aren't clipped, then crop to
+    # the visible content so the saved PNG isn't mostly transparent
+    # padding (which would make _try_sprite's width-based scaling
+    # render the building far smaller than intended).
     big_size = _SIZE * 2
     big_half = big_size // 2
     s = pygame.Surface((big_size, big_size), pygame.SRCALPHA)
     draw_research_center(s, big_half, big_half, _R, _Z)
+    bbox = s.get_bounding_rect()
+    if bbox.width > 0 and bbox.height > 0:
+        cropped = pygame.Surface((bbox.width, bbox.height), pygame.SRCALPHA)
+        cropped.blit(s, (0, 0), bbox)
+        s = cropped
     _save(s, "buildings", "research_center.png")
 
     # Mining / extraction.

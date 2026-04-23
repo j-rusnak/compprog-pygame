@@ -237,6 +237,10 @@ class HexColonyMenu:
 
     def run(self, screen: pygame.Surface, clock: pygame.time.Clock) -> MenuResult | None:
         """Block until the player clicks Play or presses Escape."""
+        from compprog_pygame.audio import music
+        # Re-assert the menu track in case the player just returned
+        # from a game; idempotent if already playing.
+        music.play("menu")
         while self.result is None and not self.quit:
             dt_ms = clock.tick(60)
             dt = dt_ms / 1000.0

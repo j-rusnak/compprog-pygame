@@ -1281,6 +1281,11 @@ class Renderer:
                     # visually overpowering its footprint.
                     big_r = int(r * 2.5 * 0.85)
                     drawer(surface, sx, sy + int(r * 0.35), big_r, zoom)
+                elif building.type == BuildingType.FARM:
+                    # Farms render slightly smaller than other
+                    # buildings so neighbouring fields don't visually
+                    # overlap.
+                    drawer(surface, sx, sy, max(2, int(r * 0.9)), zoom)
                 else:
                     drawer(surface, sx, sy, r, zoom)
 
@@ -1808,7 +1813,11 @@ class Renderer:
             elif btype == BuildingType.MINING_MACHINE:
                 draw_mining_machine(bld_surf, cx_local, cy_local, r, zoom)
             elif btype == BuildingType.FARM:
-                draw_farm(bld_surf, cx_local, cy_local, r, zoom)
+                # Match the placed-building 0.9x downscale.
+                draw_farm(
+                    bld_surf, cx_local, cy_local,
+                    max(2, int(r * 0.9)), zoom,
+                )
             elif btype == BuildingType.WELL:
                 draw_well(bld_surf, cx_local, cy_local, r, zoom)
             elif btype == BuildingType.WALL:

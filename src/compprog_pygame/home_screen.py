@@ -12,6 +12,7 @@ import random
 
 import pygame
 
+from compprog_pygame.audio import music
 from compprog_pygame.game_registry import GameInfo, all_games
 from compprog_pygame.games.hex_colony.strings import (
     HOME_HINT,
@@ -166,6 +167,9 @@ class HomeScreen:
     # ── Main loop ────────────────────────────────────────────────
 
     def run(self, screen: pygame.Surface, clock: pygame.time.Clock) -> GameInfo | None:
+        # Start (or keep playing) the menu theme.  No-op if already
+        # playing or if no menu.ogg exists yet.
+        music.play("menu")
         while not self.selected and not self.quit:
             dt_ms = clock.tick(60)
             dt = dt_ms / 1000.0

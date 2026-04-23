@@ -344,6 +344,12 @@ class Game:
     # ── Public entry point ───────────────────────────────────────
 
     def run(self, screen: pygame.Surface, clock: pygame.time.Clock) -> None:
+        # Switch from the cutscene/menu track to the gameplay track.
+        # Local import avoids a hard dependency from this heavyweight
+        # module on the audio framework.
+        from compprog_pygame.audio import music
+        music.play("gameplay")
+
         w, h = screen.get_size()
         self.camera = Camera(w, h)
         self._minimap.camera = self.camera
@@ -395,6 +401,11 @@ class Game:
         self, screen: pygame.Surface, clock: pygame.time.Clock, dt: float,
     ) -> None:
         assert self.camera is not None
+
+        # Advance the gameplay music playlist when the current track
+        # finishes.  Cheap no-op when no playlist is active.
+        from compprog_pygame.audio import music
+        music.tick()
 
         with self.perf.section("events"):
             for event in pygame.event.get():
