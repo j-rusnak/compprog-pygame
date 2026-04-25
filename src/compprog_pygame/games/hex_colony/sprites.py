@@ -46,9 +46,21 @@ SPRITE_DIR = ASSET_DIR / "sprites"
 
 
 def _ensure_dirs() -> None:
-    """Create sprite subdirectories if they don't exist."""
+    """Create sprite subdirectories if they don't exist.
+
+    No-op when running from a frozen build — the assets directory
+    lives inside the PyInstaller bundle and the dev-only generator
+    paths aren't relevant there.
+    """
+    import sys
+    if getattr(sys, "frozen", False):
+        return
     for sub in ("buildings", "overlays", "people", "cutscene"):
-        (SPRITE_DIR / sub).mkdir(parents=True, exist_ok=True)
+        try:
+            (SPRITE_DIR / sub).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # Read-only filesystem (e.g. shipped install dir) — fine.
+            pass
 
 
 class SpriteSheet:

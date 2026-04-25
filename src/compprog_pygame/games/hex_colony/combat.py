@@ -835,9 +835,14 @@ class CombatManager:
         # walking the whole O(buildings) list every frame.
         for b, kind in ctx["weapon_buildings"]:
             if kind == "TURRET":
+                # Wall-mounted turrets get a small range bonus from
+                # their elevated platform.
+                turret_range = params.TURRET_RANGE_HEXES
+                if getattr(b, "wall_mounted", False):
+                    turret_range += params.TURRET_WALL_RANGE_BONUS
                 self._fire_weapon(
                     world, b, size, dt, enemy_index,
-                    range_hex=params.TURRET_RANGE_HEXES,
+                    range_hex=turret_range,
                     damage=params.TURRET_DAMAGE,
                     reload=params.TURRET_RELOAD_SECONDS,
                     speed=params.TURRET_PROJECTILE_SPEED,

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+import sys
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,5 +50,32 @@ def hard_settings() -> GameSettings:
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-ASSET_DIR = PROJECT_ROOT / "assets"
+
+
+def _resolve_asset_dir() -> Path:
+    """Locate the ``assets/`` folder for both source runs and frozen builds.
+
+    PyInstaller one-file builds extract bundled data files to a temp
+    directory exposed as ``sys._MEIPASS``; ``--add-data assets;assets``
+    places them at ``<_MEIPASS>/assets``.  When running from source
+    (or as an editable install), the assets sit next to the
+    repository root at ``<PROJECT_ROOT>/assets``.
+    """
+    # Frozen / PyInstaller bundle.
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        bundled = Path(meipass) / "assets"
+        if bundled.is_dir():
+            return bundled
+    # Next to the executable (one-folder PyInstaller build).
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        sibling = exe_dir / "assets"
+        if sibling.is_dir():
+            return sibling
+    # Source / dev install.
+    return PROJECT_ROOT / "assets"
+
+
+ASSET_DIR = _resolve_asset_dir()
 DEFAULT_SETTINGS = GameSettings()

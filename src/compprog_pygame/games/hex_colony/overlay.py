@@ -409,6 +409,8 @@ def _gen_fiber_tile(
             )))
         return items
 
+    # Bushes spawn at ~60% of historic density.
+    n = max(1, int(round(n * 0.6)))
     for _ in range(n):
         ox = rng.uniform(-s * 0.44, s * 0.44)
         oy = rng.uniform(-s * 0.38, s * 0.38)

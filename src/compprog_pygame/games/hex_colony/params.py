@@ -1114,6 +1114,10 @@ BUILDING_STORAGE_TRAP: int = 0
 
 # Turret combat behaviour.
 TURRET_RANGE_HEXES: int = 4
+# Bonus range (in hexes) granted when a turret is mounted on top of a
+# Wall.  Walls give the turret elevation, so it can see and shoot
+# slightly further.
+TURRET_WALL_RANGE_BONUS: int = 1
 TURRET_DAMAGE: float = 12.0
 TURRET_RELOAD_SECONDS: float = 0.9
 TURRET_PROJECTILE_SPEED: float = 320.0  # px/sec

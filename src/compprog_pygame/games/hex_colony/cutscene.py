@@ -23,6 +23,7 @@ from typing import Callable
 import pygame
 
 from compprog_pygame.games.hex_colony.sprites import sprites
+from compprog_pygame.settings import ASSET_DIR
 
 
 # ── Dialog script ────────────────────────────────────────────────
@@ -761,16 +762,85 @@ def run_loading_screen(
 
     Returns ``False`` if the player quit, ``True`` otherwise.
     """
-    title_font = pygame.font.Font(None, 56)
-    sub_font = pygame.font.Font(None, 24)
-    pct_font = pygame.font.Font(None, 22)
-    title_surf = title_font.render(
-        "Generating world\u2026", True, (220, 225, 240),
-    )
+    sub_font = pygame.font.Font(None, 28)
+    pct_font = pygame.font.Font(None, 26)
+    status_font = pygame.font.Font(None, 22)
+
+    # ── Load and prepare the themed splash artwork ───────────────
+    splash_raw: pygame.Surface | None = None
+    try:
+        splash_raw = pygame.image.load(
+            str(ASSET_DIR / "sprites" / "repioneer_landscape.png")
+        ).convert_alpha()
+    except Exception:
+        splash_raw = None
+
+    splash_cache: dict[tuple[int, int], pygame.Surface] = {}
+
+    def _splash_for(target_w: int, target_h: int) -> pygame.Surface | None:
+        if splash_raw is None:
+            return None
+        # Fit inside target box, preserve aspect ratio.  Allow upscale
+        # up to 1.4× so smaller windows still look filled.
+        sw, sh = splash_raw.get_size()
+        scale = min(target_w / sw, target_h / sh)
+        scale = max(0.2, min(scale, 1.4))
+        size = (max(1, int(sw * scale)), max(1, int(sh * scale)))
+        cached = splash_cache.get(size)
+        if cached is not None:
+            return cached
+        surf = pygame.transform.smoothscale(splash_raw, size)
+        splash_cache[size] = surf
+        return surf
+
+    # ── Pre-rendered starfield (regenerated on resize) ───────────
+    star_cache: dict[tuple[int, int], pygame.Surface] = {}
+
+    def _starfield(w: int, h: int) -> pygame.Surface:
+        cached = star_cache.get((w, h))
+        if cached is not None:
+            return cached
+        surf = pygame.Surface((w, h)).convert()
+        # Vertical gradient: deep navy → near-black at top, hint of
+        # warm horizon at the bottom.  Mirrors the splash art palette.
+        for y in range(h):
+            t = y / max(1, h - 1)
+            r = int(8 + (24 - 8) * t)
+            g = int(10 + (18 - 10) * t)
+            b = int(22 + (40 - 22) * t)
+            pygame.draw.line(surf, (r, g, b), (0, y), (w, y))
+        # Sparse stars.
+        rng = _random.Random(0xCAFE)
+        n_stars = (w * h) // 4500
+        for _ in range(n_stars):
+            sx = rng.randint(0, w - 1)
+            sy = rng.randint(0, int(h * 0.7))
+            br = rng.randint(120, 230)
+            surf.set_at((sx, sy), (br, br, min(255, br + 20)))
+        # A handful of brighter twinklers.
+        for _ in range(max(6, n_stars // 40)):
+            sx = rng.randint(0, w - 1)
+            sy = rng.randint(0, int(h * 0.6))
+            pygame.draw.circle(surf, (220, 225, 240), (sx, sy), 1)
+            pygame.draw.circle(
+                surf, (90, 110, 160, 80), (sx, sy), 3, width=1,
+            )
+        star_cache[(w, h)] = surf
+        return surf
+
+    # ── Themed colours (match game UI gold/wood accents) ─────────
+    GOLD = (220, 180, 60)
+    GOLD_HI = (255, 215, 100)
+    WOOD = (60, 40, 26)
+    WOOD_HI = (110, 78, 48)
+    BAR_BG = (24, 18, 14)
+    BAR_FILL = (210, 150, 60)
+    BAR_FILL_HI = (255, 205, 110)
+    TEXT = (240, 230, 210)
+    TEXT_DIM = (180, 165, 135)
+
     elapsed = 0.0
     first_frame = True
-    # Smoothed progress: lerps toward the latest reported value so
-    # the bar moves smoothly even if the worker reports in chunks.
     smooth_p = 0.0
     while True:
         for event in pygame.event.get():
@@ -784,11 +854,29 @@ def run_loading_screen(
         # Draw BEFORE checking readiness so the player always sees at
         # least one frame of the loading screen.
         w, h = screen.get_size()
-        screen.fill((0, 0, 0))
-        screen.blit(
-            title_surf,
-            (w // 2 - title_surf.get_width() // 2, h // 2 - 90),
-        )
+
+        # 1. Starfield background (cached per resolution).
+        screen.blit(_starfield(w, h), (0, 0))
+
+        # 2. Splash artwork — sized to fill most of the upper area.
+        splash = _splash_for(int(w * 0.92), int(h * 0.7))
+        bar_w = min(640, int(w * 0.65))
+        bar_h = 28
+        if splash is not None:
+            sx = (w - splash.get_width()) // 2
+            # Lift the splash a touch above vertical centre so the
+            # progress bar has room beneath it.
+            sy = max(8, (h - splash.get_height() - bar_h - 80) // 2)
+            screen.blit(splash, (sx, sy))
+            bar_y = sy + splash.get_height() + 28
+        else:
+            # Fallback: draw a centred title if the splash failed.
+            fallback_font = pygame.font.Font(None, 72)
+            t_surf = fallback_font.render("RePioneer", True, GOLD_HI)
+            screen.blit(
+                t_surf, (w // 2 - t_surf.get_width() // 2, h // 2 - 100),
+            )
+            bar_y = h // 2 - 10
 
         # Determine target progress.
         if progress is not None:
@@ -806,47 +894,74 @@ def run_loading_screen(
         # Ease towards target.
         smooth_p += (target_p - smooth_p) * min(1.0, 8.0 * (1 / fps))
 
-        # Progress bar.
-        bar_w = min(560, int(w * 0.6))
-        bar_h = 22
+        # 3. Themed wood-frame progress bar.
         bar_x = (w - bar_w) // 2
-        bar_y = h // 2 - 10
-        # Frame.
-        pygame.draw.rect(
-            screen, (50, 60, 80),
-            (bar_x - 2, bar_y - 2, bar_w + 4, bar_h + 4),
-            border_radius=6,
+        # Outer wood frame with bevel.
+        frame_pad = 6
+        frame_rect = pygame.Rect(
+            bar_x - frame_pad, bar_y - frame_pad,
+            bar_w + frame_pad * 2, bar_h + frame_pad * 2,
         )
+        pygame.draw.rect(screen, WOOD, frame_rect, border_radius=8)
         pygame.draw.rect(
-            screen, (18, 22, 32),
-            (bar_x, bar_y, bar_w, bar_h),
-            border_radius=4,
+            screen, WOOD_HI, frame_rect, width=2, border_radius=8,
         )
+        # Inset gold rim.
+        rim_rect = frame_rect.inflate(-4, -4)
+        pygame.draw.rect(screen, GOLD, rim_rect, width=1, border_radius=6)
+        # Inner bar background.
+        bar_rect = pygame.Rect(bar_x, bar_y, bar_w, bar_h)
+        pygame.draw.rect(screen, BAR_BG, bar_rect, border_radius=4)
+
         # Fill.
         fill_w = int(bar_w * smooth_p)
         if fill_w > 0:
-            pygame.draw.rect(
-                screen, (90, 160, 230),
-                (bar_x, bar_y, fill_w, bar_h),
-                border_radius=4,
+            fill_rect = pygame.Rect(bar_x, bar_y, fill_w, bar_h)
+            pygame.draw.rect(screen, BAR_FILL, fill_rect, border_radius=4)
+            # Highlight along the top half for a polished bevel.
+            hi_rect = pygame.Rect(
+                bar_x, bar_y, fill_w, max(2, bar_h // 3),
             )
-            # Subtle highlight stripe along the top of the fill.
-            pygame.draw.rect(
-                screen, (140, 200, 255),
-                (bar_x, bar_y, fill_w, max(2, bar_h // 4)),
-                border_radius=4,
+            pygame.draw.rect(screen, BAR_FILL_HI, hi_rect, border_radius=4)
+            # Animated shimmer travelling across the fill.
+            shimmer_x = (
+                bar_x
+                + int((elapsed * 0.55) * bar_w) % max(1, bar_w + 80)
+                - 80
             )
+            if bar_x - 40 < shimmer_x < bar_x + fill_w:
+                shimmer = pygame.Surface((40, bar_h), pygame.SRCALPHA)
+                for i in range(40):
+                    a = int(120 * math.sin(math.pi * i / 40))
+                    pygame.draw.line(
+                        shimmer, (255, 240, 200, max(0, a)),
+                        (i, 0), (i, bar_h),
+                    )
+                # Clip to filled area only.
+                clip_w = min(40, bar_x + fill_w - shimmer_x)
+                if clip_w > 0:
+                    screen.blit(
+                        shimmer, (shimmer_x, bar_y),
+                        area=pygame.Rect(0, 0, clip_w, bar_h),
+                    )
 
-        # Percent label centred on the bar.
+        # 4. Percent label centred on the bar.
         pct_text = f"{int(round(smooth_p * 100))}%"
-        pct_surf = pct_font.render(pct_text, True, (230, 235, 245))
+        pct_surf = pct_font.render(pct_text, True, TEXT)
+        # Subtle drop shadow for readability over the fill.
+        shadow = pct_font.render(pct_text, True, (0, 0, 0))
+        screen.blit(
+            shadow,
+            (w // 2 - shadow.get_width() // 2 + 1,
+             bar_y + (bar_h - shadow.get_height()) // 2 + 1),
+        )
         screen.blit(
             pct_surf,
             (w // 2 - pct_surf.get_width() // 2,
              bar_y + (bar_h - pct_surf.get_height()) // 2),
         )
 
-        # Status label below the bar.
+        # 5. Animated status label below the bar.
         sub_text = ""
         if label is not None:
             try:
@@ -854,11 +969,23 @@ def run_loading_screen(
             except Exception:
                 sub_text = ""
         if not sub_text:
-            sub_text = "Carving rivers, scattering stones, planting forests\u2026"
-        sub_surf = sub_font.render(sub_text, True, (140, 150, 170))
+            sub_text = "Carving rivers, scattering stones, planting forests"
+        # Animated trailing dots so the player can see the screen is alive
+        # even when generation pauses on a single phase.
+        dot_count = int(elapsed * 2.0) % 4
+        sub_full = sub_text + ("." * dot_count)
+        sub_surf = sub_font.render(sub_full, True, TEXT_DIM)
         screen.blit(
             sub_surf,
-            (w // 2 - sub_surf.get_width() // 2, bar_y + bar_h + 16),
+            (w // 2 - sub_surf.get_width() // 2, bar_y + bar_h + 18),
+        )
+
+        # 6. Tiny status line: tagline at bottom edge.
+        tag = status_font.render(
+            "Survive  \u2022  Reclaim  \u2022  Rebuild", True, GOLD,
+        )
+        screen.blit(
+            tag, (w // 2 - tag.get_width() // 2, h - tag.get_height() - 14),
         )
 
         pygame.display.flip()

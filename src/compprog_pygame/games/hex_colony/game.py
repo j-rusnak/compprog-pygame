@@ -221,6 +221,7 @@ class Game:
         self._supply_priority_overlay = SupplyPriorityOverlay()
         self._tier_popup = TierPopup()
         self._tutorial = TutorialPanel()
+        self._tutorial.set_bottom_bar(self._bottom_bar)
         self.ui.add_panel(self._resource_bar)
         self.ui.add_panel(self._bottom_bar)
         self.ui.add_panel(self._building_info)
@@ -987,7 +988,18 @@ class Game:
         # Check existing building
         existing = tile.building
         _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.CONVEYOR}
-        if existing is not None:
+        # Special case: turrets may be mounted on top of a player Wall.
+        # The wall is preserved (it stays in world.buildings.buildings
+        # as a blocker / damage sponge); the turret takes ownership of
+        # the tile's ``tile.building`` slot and gains a small range
+        # bonus (see params.TURRET_WALL_RANGE_BONUS).
+        turret_on_wall = (
+            existing is not None
+            and self.build_mode == BuildingType.TURRET
+            and existing.type == BuildingType.WALL
+            and existing.faction == "SURVIVOR"
+        )
+        if existing is not None and not turret_on_wall:
             # Cannot build on top of (or replace) an AI building.
             if existing.faction != "SURVIVOR":
                 return False
@@ -1052,6 +1064,16 @@ class Game:
         building = self.world.buildings.place(
             self.build_mode, coord, footprint=footprint,
         )
+        # When stacking a turret on a wall, the wall stays in
+        # ``world.buildings.buildings`` (so it still blocks enemies and
+        # absorbs damage) but ``buildings.place`` overwrote the
+        # tile/_by_coord pointer to the turret — that's intentional.
+        # Tag the turret so the renderer + combat know to apply the
+        # wall-mount range bonus, and remember the wall for restore on
+        # demolish.
+        if turret_on_wall:
+            building.wall_mounted = True
+            building.under_wall = existing
         tile.building = building
         # Register the building on every footprint tile so clicks /
         # placement checks / renderer queries on those tiles all
@@ -1354,7 +1376,14 @@ class Game:
         # multi-tile buildings like the Research Center leave stale
         # ``tile.building`` refs on their footprint otherwise).
         footprint = tuple(building.footprint)
+        # Wall-mount restore: if a wall was preserved underneath this
+        # turret, capture it before demolish so we can re-seat it as
+        # the tile's resident building afterwards.
+        under_wall = getattr(building, "under_wall", None)
         self.world.demolish(building)
+        if under_wall is not None:
+            tile.building = under_wall
+            self.world.buildings._by_coord[coord] = under_wall
         # Restore the overlay pixel art (trees, ore crystals, fiber,
         # etc.) that was NaN-marked when the building was originally
         # placed on this tile.  Without this call, deleting a quarry
@@ -1678,6 +1707,20 @@ class Game:
                 return False
         _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.CONVEYOR}
         existing = tile.building
+        # If there's a turret, but it has an under_wall, treat as wall for placement
+        is_wall = (
+            existing is not None and (
+                (existing.type == BuildingType.WALL and existing.faction == "SURVIVOR") or
+                (existing.type == BuildingType.TURRET and getattr(existing, "under_wall", None) is not None)
+            )
+        )
+        # Only allow turret placement if there is a wall (direct or under turret) and no turret already at this coord
+        if self.build_mode == BuildingType.TURRET:
+            if is_wall:
+                # Disallow if a turret is already present
+                if existing.type == BuildingType.TURRET:
+                    return False
+                return True
         if existing is not None:
             if existing.type not in _PATH_LIKE:
                 return False

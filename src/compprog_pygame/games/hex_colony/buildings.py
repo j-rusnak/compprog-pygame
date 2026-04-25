@@ -244,6 +244,14 @@ class Building:
     health: float = 0.0
     # Turrets only: seconds remaining until the next shot may fire.
     weapon_cooldown: float = 0.0
+    # Turrets only: True when this turret was placed on top of a Wall
+    # tile.  Wall-mounted turrets get a small range bonus
+    # (``params.TURRET_WALL_RANGE_BONUS``) and visually keep the wall
+    # rendered underneath them.  ``under_wall`` is the Building
+    # instance for that wall, kept so that demolishing the turret can
+    # restore the wall as the tile's resident building.
+    wall_mounted: bool = False
+    under_wall: "Building | None" = None
     # Extra hex coords this building occupies beyond ``coord`` (its
     # anchor).  Most buildings are single-tile and leave this empty;
     # the Research Center occupies its anchor plus all 6 neighbours

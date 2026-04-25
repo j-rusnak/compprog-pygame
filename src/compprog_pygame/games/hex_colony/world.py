@@ -717,9 +717,18 @@ class World:
         determinism, not for any gameplay reason.
         """
         all_buildings = list(self.buildings.buildings)
-        by_coord: dict[HexCoord, Building] = {
-            b.coord: b for b in all_buildings
-        }
+        # Map every occupied tile (anchor + footprint) to its owning
+        # building.  Multi-tile buildings like the Research Center
+        # otherwise look isolated because their anchor's neighbours
+        # are their own footprint tiles, not other buildings — and
+        # the *outside* tiles that bridge the cluster to the rest of
+        # the colony are only adjacent to footprint tiles, never the
+        # anchor.
+        by_coord: dict[HexCoord, Building] = {}
+        for b in all_buildings:
+            by_coord[b.coord] = b
+            for fc in b.footprint:
+                by_coord[fc] = b
         visited: set[int] = set()
         components: list[list[Building]] = []
         for seed in all_buildings:
@@ -731,12 +740,19 @@ class World:
             while queue:
                 cur = queue.popleft()
                 comp.append(cur)
-                for nb in cur.coord.neighbors():
-                    nb_b = by_coord.get(nb)
-                    if nb_b is None or id(nb_b) in visited:
-                        continue
-                    visited.add(id(nb_b))
-                    queue.append(nb_b)
+                # Expand from every tile this building occupies so
+                # multi-tile buildings reach neighbours of their
+                # footprint, not just of the anchor.
+                tiles = (cur.coord, *cur.footprint)
+                for tile in tiles:
+                    for nb in tile.neighbors():
+                        nb_b = by_coord.get(nb)
+                        if nb_b is None or id(nb_b) in visited:
+                            continue
+                        if nb_b is cur:
+                            continue
+                        visited.add(id(nb_b))
+                        queue.append(nb_b)
             components.append(comp)
         return components
 

@@ -53,7 +53,7 @@ def draw_tree(
     _TREE_STYLE_SCALE = {
         "round": 3.0,
         "conifer": 1.8,
-        "canopy": 2.0 / 3.0,
+        "canopy": (2.0 / 3.0) * 1.5,
     }
     _TREE_SCALE = _TREE_STYLE_SCALE.get(item.style, 2.0)
     if _try_overlay_sprite(
@@ -157,9 +157,14 @@ def draw_bush(
     surface: pygame.Surface, item: OverlayBush,
     sx: float, sy: float, z: float, iz: int,
 ) -> None:
-    if _try_overlay_sprite(surface, "overlays/bush", sx, sy, z, item.radius * 3, item.radius * 3):
+    # Bushes render at 2.5x their procedural size for better visibility.
+    _BUSH_SCALE = 2.5
+    if _try_overlay_sprite(
+        surface, "overlays/bush", sx, sy, z,
+        item.radius * 2 * _BUSH_SCALE, item.radius * 2 * _BUSH_SCALE,
+    ):
         return
-    br = max(2, int(item.radius * z))
+    br = max(2, int(item.radius * z * _BUSH_SCALE))
     # Dark outline for contrast against grass
     pygame.draw.circle(surface, _darken(item.color, 0.7), (int(sx), int(sy)), br + max(1, iz))
     pygame.draw.circle(surface, item.color, (int(sx), int(sy)), br)

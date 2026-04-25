@@ -110,8 +110,10 @@ from compprog_pygame.games.hex_colony.sprites import sprites
 # Load sprite assets at import time
 sprites.load_all()
 
-# Building types that collect resources (show range ring)
-_COLLECTION_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER, BuildingType.MINING_MACHINE, BuildingType.OIL_DRILL}
+# Building types that collect resources (show range ring).  The
+# default ring radius is 2 hexes; turrets use ``params.TURRET_RANGE_HEXES``
+# (with a ``+TURRET_WALL_RANGE_BONUS`` boost when wall-mounted).
+_COLLECTION_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER, BuildingType.MINING_MACHINE, BuildingType.OIL_DRILL, BuildingType.TURRET}
 
 # Sentinel used by per-frame caches to distinguish "not yet looked up"
 # from "looked up and found None".
@@ -236,8 +238,18 @@ class Renderer:
     @graphics_quality.setter
     def graphics_quality(self, value: str) -> None:
         if value != self._graphics_quality:
+            was_high = self._graphics_quality == "high"
+            now_high = value == "high"
             self._graphics_quality = value
             self._tile_layer = None  # force rebuild
+            # FIBER_PATCH blends into the grass family only on "high".
+            # When we cross that boundary, drop the blend caches so
+            # tile colours get recomputed with the new category map.
+            if was_high != now_high:
+                self._first_pass_colors.clear()
+                self._blended_colors.clear()
+                self._edge_colors.clear()
+                self._cross_cat.clear()
 
     # ── Cache helpers ────────────────────────────────────────────
 
@@ -299,7 +311,11 @@ class Renderer:
             # Range ring for selected collection buildings
             building = world.buildings.at(self.selected_hex)
             if building is not None and building.type in _COLLECTION_BUILDINGS:
-                self._draw_range_ring(surface, self.selected_hex, camera, world.settings.hex_size)
+                radius = self._range_ring_radius(building.type, building)
+                self._draw_range_ring(
+                    surface, self.selected_hex, camera,
+                    world.settings.hex_size, radius,
+                )
 
     # ── Data preparation ─────────────────────────────────────────
 
@@ -509,6 +525,21 @@ class Renderer:
             max(0, min(255, int(base[2] + var * 0.6))),
         )
 
+    def _terrain_cat(self, terrain) -> int:
+        """Return the blending category for a terrain.
+
+        On "high" graphics quality, FIBER_PATCH is folded into the
+        grass family (category 0) so it blends seamlessly with grass
+        and forest tiles.  On lower quality settings it keeps its own
+        category (3), giving it a clearer hard outline for readability.
+        """
+        if terrain is None:
+            return 0
+        cat = _TERRAIN_CAT.get(terrain, 0)
+        if self._graphics_quality == "high" and terrain is Terrain.FIBER_PATCH:
+            return 0
+        return cat
+
     def _compute_first_pass(self, coord: HexCoord, world: World) -> None:
         """Recompute the first-pass blend for one tile."""
         grid = world.grid
@@ -518,8 +549,8 @@ class Renderer:
             self._first_pass_colors.pop(coord, None)
             return
         base = self._tile_base_color(tile, mtn)
-        my_cat = _TERRAIN_CAT.get(
-            tile.underlying_terrain if tile.underlying_terrain is not None else tile.terrain, 0
+        my_cat = self._terrain_cat(
+            tile.underlying_terrain if tile.underlying_terrain is not None else tile.terrain
         )
         nb_r = nb_g = nb_b = 0
         nb_count = 0
@@ -528,8 +559,8 @@ class Renderer:
             nb_tile = grid.get(nb_coord)
             if nb_tile is None:
                 continue
-            nb_cat = _TERRAIN_CAT.get(
-                nb_tile.underlying_terrain if nb_tile.underlying_terrain is not None else nb_tile.terrain, 0
+            nb_cat = self._terrain_cat(
+                nb_tile.underlying_terrain if nb_tile.underlying_terrain is not None else nb_tile.terrain
             )
             if my_cat != nb_cat:
                 if nb_cat == 1 and my_cat != 1:
@@ -573,8 +604,8 @@ class Renderer:
             self._blended_colors.pop(coord, None)
             return
         base = first_pass[coord]
-        my_cat = _TERRAIN_CAT.get(
-            tile.underlying_terrain if tile.underlying_terrain is not None else tile.terrain, 0
+        my_cat = self._terrain_cat(
+            tile.underlying_terrain if tile.underlying_terrain is not None else tile.terrain
         )
         _SMOOTH2 = 0.30
         nb_r = nb_g = nb_b = 0
@@ -584,8 +615,8 @@ class Renderer:
             if nb_c is None:
                 continue
             nb_tile = grid.get(nb_coord)
-            if nb_tile is not None and _TERRAIN_CAT.get(
-                nb_tile.underlying_terrain if nb_tile.underlying_terrain is not None else nb_tile.terrain, 0
+            if nb_tile is not None and self._terrain_cat(
+                nb_tile.underlying_terrain if nb_tile.underlying_terrain is not None else nb_tile.terrain
             ) != my_cat:
                 continue
             nb_r += nb_c[0]; nb_g += nb_c[1]; nb_b += nb_c[2]
@@ -610,8 +641,8 @@ class Renderer:
             self._edge_colors.pop(coord, None)
             self._cross_cat.pop(coord, None)
             return
-        my_cat = _TERRAIN_CAT.get(
-            tile.underlying_terrain if tile.underlying_terrain is not None else tile.terrain, 0
+        my_cat = self._terrain_cat(
+            tile.underlying_terrain if tile.underlying_terrain is not None else tile.terrain
         )
         eb = _EDGE_BLEND
         eb1 = 1.0 - eb
@@ -621,9 +652,9 @@ class Renderer:
             nc = bc.get(nb_coord)
             if nc is not None:
                 nb_tile = grid.get(nb_coord)
-                nb_cat = _TERRAIN_CAT.get(
-                    (nb_tile.underlying_terrain if nb_tile.underlying_terrain is not None else nb_tile.terrain) if nb_tile else None, my_cat
-                )
+                nb_cat = self._terrain_cat(
+                    (nb_tile.underlying_terrain if nb_tile.underlying_terrain is not None else nb_tile.terrain) if nb_tile else None
+                ) if nb_tile else my_cat
                 if my_cat != nb_cat:
                     edge_cols.append(cc)
                     cross_flags.append(2)
@@ -1159,8 +1190,23 @@ class Renderer:
                           building.coord.q, building.coord.r)
 
         # Walls pass: walls connect only to other walls
-        for building in world.buildings.by_type(BuildingType.WALL):
-            wx, wy = self._get_pixel(building.coord, size)
+        # Also draw walls that are "under_wall" for a turret at the same coord
+        wall_coords = {w.coord for w in world.buildings.by_type(BuildingType.WALL)}
+        # Add any wall that is under a turret
+        for t in world.buildings.by_type(BuildingType.TURRET):
+            if getattr(t, "under_wall", None) is not None:
+                wall_coords.add(t.coord)
+        for coord in wall_coords:
+            # Find the wall building (either direct or under a turret)
+            wall = world.buildings.at(coord)
+            if wall is None or wall.type != BuildingType.WALL:
+                # Try to get from turret's under_wall
+                turret = next((b for b in world.buildings.by_type(BuildingType.TURRET) if b.coord == coord), None)
+                if turret is not None and getattr(turret, "under_wall", None) is not None:
+                    wall = turret.under_wall
+            if wall is None:
+                continue
+            wx, wy = self._get_pixel(coord, size)
             sx = (wx - cam_x) * zoom + half_sw
             sy = (wy - cam_y) * zoom + half_sh
             if sx < -margin or sx > sw + margin or sy < -margin or sy > sh + margin:
@@ -1170,15 +1216,21 @@ class Renderer:
                 pygame.draw.circle(surface, (160, 155, 145), (int(sx), int(sy)), max(1, r))
                 continue
             nb_positions_w: list[tuple[float, float]] = []
-            for nb_coord in building.coord.neighbors():
+            for nb_coord in coord.neighbors():
+                # Check for wall or wall under turret at neighbor
                 nb_building = world.buildings.at(nb_coord)
-                if nb_building is not None and nb_building.type == BuildingType.WALL:
+                is_wall = nb_building is not None and nb_building.type == BuildingType.WALL
+                is_wall_under_turret = False
+                if nb_building is not None and nb_building.type == BuildingType.TURRET:
+                    if getattr(nb_building, "under_wall", None) is not None:
+                        is_wall_under_turret = True
+                if is_wall or is_wall_under_turret:
                     nwx, nwy = self._get_pixel(nb_coord, size)
                     nsx = (nwx - cam_x) * zoom + half_sw
                     nsy = (nwy - cam_y) * zoom + half_sh
                     nb_positions_w.append((nsx, nsy))
             draw_wall(surface, sx, sy, r, zoom, nb_positions_w,
-                      building.coord.q, building.coord.r)
+                      coord.q, coord.r)
 
         # Pipes pass: pipes connect to other pipes and to fluid-capable
         # buildings (drills, refineries, chemical plants, tanks, silos).
@@ -1867,17 +1919,60 @@ class Renderer:
             (int(sx) - gw // 2, int(sy) - gh // 2),
         )
 
-        # Range ring for collection buildings (only when valid)
+        # Range ring for collection buildings (only when valid).
+        # For turrets, treat a wall-under-turret as a valid wall for ghost/range ring.
+        # Always show range ring for valid ghost, for all buildings with a range
         if self.ghost_valid and btype in _COLLECTION_BUILDINGS:
-            self._draw_range_ring(surface, coord, camera, size)
+            ring_radius = 2
+            if btype == BuildingType.TURRET:
+                tile = world.grid.get(coord)
+                wall_present = False
+                if tile is not None:
+                    bld = tile.building
+                    if bld is not None:
+                        if bld.type == BuildingType.WALL and bld.faction == "SURVIVOR":
+                            wall_present = True
+                        elif bld.type == BuildingType.TURRET and getattr(bld, "under_wall", None) is not None:
+                            wall_present = True
+                ghost_under = world.buildings.at(coord)
+                ring_radius = self._range_ring_radius(btype, ghost_under if wall_present else None)
+            else:
+                ghost_under = world.buildings.at(coord)
+                ring_radius = self._range_ring_radius(btype, ghost_under)
+            self._draw_range_ring(surface, coord, camera, size, ring_radius)
 
     # ── Resource collection range ring ───────────────────────────
 
+    def _range_ring_radius(
+        self, btype: BuildingType, building: "Building | None" = None,
+    ) -> int:
+        """Return the ring radius (in hexes) for ``btype``.
+
+        Most collection buildings use the default 2-hex radius;
+        turrets use ``params.TURRET_RANGE_HEXES`` and gain
+        ``TURRET_WALL_RANGE_BONUS`` when ``building`` is wall-mounted
+        (or, in ghost mode, when the underlying tile already holds a
+        Wall).
+        """
+        from compprog_pygame.games.hex_colony import params as _params
+        if btype == BuildingType.TURRET:
+            radius = _params.TURRET_RANGE_HEXES
+            wall_mount = False
+            if building is not None:
+                if building.type == BuildingType.WALL:
+                    wall_mount = True
+                elif getattr(building, "wall_mounted", False):
+                    wall_mount = True
+            if wall_mount:
+                radius += _params.TURRET_WALL_RANGE_BONUS
+            return radius
+        return 2
+
     def _draw_range_ring(
         self, surface: pygame.Surface, center: HexCoord,
-        camera: Camera, size: int,
+        camera: Camera, size: int, radius: int = 2,
     ) -> None:
-        """Draw a white pulsing outline around all hexes within 2-tile radius."""
+        """Draw a white pulsing outline around all hexes within ``radius``."""
         zoom = camera.zoom
         cam_x, cam_y = camera.x, camera.y
         sw, sh = surface.get_size()
@@ -1886,13 +1981,13 @@ class Renderer:
         pulse = 0.6 + 0.4 * math.sin(pygame.time.get_ticks() / 250)
         ring_color = (int(255 * pulse), int(255 * pulse), int(255 * pulse))
 
-
-        # Collect all hex coords within radius 2
+        # Collect all hex coords within ``radius`` of ``center``.
         ring_coords: list[HexCoord] = []
-        for dq in range(-2, 3):
-            for dr in range(-2, 3):
+        max_dist = radius * 2  # hex distance threshold (|q|+|r|+|s|)/2 <= radius
+        for dq in range(-radius, radius + 1):
+            for dr in range(-radius, radius + 1):
                 ds = -dq - dr
-                if abs(dq) + abs(dr) + abs(ds) <= 4:  # hex distance <= 2
+                if abs(dq) + abs(dr) + abs(ds) <= max_dist:
                     ring_coords.append(HexCoord(center.q + dq, center.r + dr))
 
         # Find outer edges: edges of ring hexes that don't border another ring hex
