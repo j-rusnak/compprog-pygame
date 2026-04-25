@@ -275,6 +275,32 @@ class CombatManager:
             else:
                 bucket.append(e)
 
+        # 4) Multi-source BFS distance field: for every walkable
+        # non-blocker hex, the minimum hex-step distance to *any*
+        # blocker via walkable tiles.  Used as the A* heuristic for
+        # enemy retargeting; gives O(1) lookup instead of the previous
+        # O(blockers) ``min`` over every blocker per A* node, which was
+        # the dominant cost of ``w.combat`` in long games (perf log
+        # showed it growing to >800ms/frame after 2h with many built
+        # structures).  Cost here is O(|walkable_coords|) per tick,
+        # which is bounded by the map size.
+        blocker_dist: dict[HexCoord, int] = {}
+        if blocker_coords:
+            queue: deque[HexCoord] = deque()
+            for bc in blocker_coords:
+                blocker_dist[bc] = 0
+                queue.append(bc)
+            while queue:
+                cur = queue.popleft()
+                d = blocker_dist[cur] + 1
+                for nb in cur.neighbors():
+                    if nb in blocker_dist:
+                        continue
+                    if nb not in valid_coords:
+                        continue
+                    blocker_dist[nb] = d
+                    queue.append(nb)
+
         return {
             "valid_coords": valid_coords,
             "blocker_coords": blocker_coords,
@@ -283,6 +309,7 @@ class CombatManager:
             "weapon_buildings": weapon_buildings,
             "enemy_index": enemy_index,
             "enemy_by_id": enemy_by_id,
+            "blocker_dist": blocker_dist,
         }
 
     def _range_offsets_for(self, range_hex: int) -> list[tuple[int, int]]:
@@ -388,6 +415,7 @@ class CombatManager:
         blocker_targets: list[Building] = ctx["blocker_targets"]
         blocker_coords: set[HexCoord] = ctx["blocker_coords"]
         blocker_by_coord: dict[HexCoord, Building] = ctx["blocker_by_coord"]
+        blocker_dist: dict[HexCoord, int] = ctx["blocker_dist"]
         valid_coords: set[HexCoord] = ctx["valid_coords"]
         # Per-tick budget of expensive retargets (A* + scan).  The rest
         # are deferred to the next tick by leaving their timer at <= 0
@@ -420,6 +448,7 @@ class CombatManager:
                 self._update_enemy_target(
                     world, enemy, blocker_targets,
                     valid_coords, blocker_coords,
+                    blocker_by_coord, blocker_dist,
                 )
                 if enemy.path or enemy.target_building_id != 0:
                     enemy.retarget_timer = retarget_ok
@@ -439,7 +468,9 @@ class CombatManager:
     def _update_enemy_target(self, world: "World", enemy: Enemy,
                              blocker_targets: list[Building],
                              valid_coords: set[HexCoord],
-                             blocker_coords: set[HexCoord]) -> None:
+                             blocker_coords: set[HexCoord],
+                             blocker_by_coord: dict[HexCoord, Building],
+                             blocker_dist: dict[HexCoord, int]) -> None:
         """A* from the enemy toward the nearest *reachable* SURVIVOR
         blocker.
 
@@ -463,9 +494,6 @@ class CombatManager:
             enemy.target_coord = None
             return
 
-        blocker_by_coord: dict[HexCoord, Building] = {
-            b.coord: b for b in blocker_targets
-        }
         priority_idx = params.ENEMY_TARGET_PRIORITY_INDEX
         fallback = len(priority_idx)
 
@@ -492,19 +520,24 @@ class CombatManager:
             )
             return
 
-        # Multi-target A*.  Heuristic = min hex distance to any blocker
-        # minus one (we only need to reach an adjacent tile).
-        blocker_list = list(blocker_by_coord.keys())
+        # Multi-target A*.  Heuristic = pre-computed multi-source BFS
+        # distance from each tile to the nearest reachable blocker
+        # (built once per tick in ``_build_tick_context``).  This used
+        # to be ``min over blocker_list of c.distance(bc)`` per node,
+        # which scaled O(blockers) per A* expansion and dominated
+        # ``w.combat`` once the player had built ~hundreds of
+        # structures (perf logs showed >800ms/frame on long sessions).
+        # An unreachable tile (or one outside the BFS) defaults to
+        # raw hex distance to the start, which is still admissible.
+        BIG = 1_000_000
 
         def heuristic(c: HexCoord) -> int:
-            best = 1_000_000
-            for bc in blocker_list:
-                d = c.distance(bc)
-                if d < best:
-                    best = d
-                    if best <= 1:
-                        return 0
-            return best - 1 if best > 0 else 0
+            d = blocker_dist.get(c)
+            if d is None:
+                return BIG
+            # ``blocker_dist[c]`` is steps from c to a blocker tile;
+            # the goal is "adjacent to a blocker", so subtract one.
+            return d - 1 if d > 0 else 0
 
         max_depth = int(params.ENEMY_PATHFIND_MAX_DEPTH)
         open_heap: list[tuple[int, int, HexCoord]] = []

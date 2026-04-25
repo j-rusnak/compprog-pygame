@@ -77,6 +77,15 @@ def build_native(
     sep = ";" if platform.system() == "Windows" else ":"
     add_data = f"{ASSETS_DIR}{sep}assets"
 
+    # Pick the right icon format for the host (PyInstaller wants .ico
+    # on Windows, .icns on macOS).  Linux builds skip the flag.
+    icon_path: Path | None = None
+    system = platform.system()
+    if system == "Windows":
+        icon_path = ASSETS_DIR / "icon.ico"
+    elif system == "Darwin":
+        icon_path = ASSETS_DIR / "icon.icns"
+
     cmd = [
         python, "-m", "PyInstaller",
         "--noconfirm",
@@ -89,6 +98,8 @@ def build_native(
         "--collect-submodules", "compprog_pygame",
         str(ENTRY_POINT),
     ]
+    if icon_path is not None and icon_path.exists():
+        cmd[-1:-1] = ["--icon", str(icon_path)]
     if clean:
         cmd.insert(3, "--clean")
 
@@ -96,7 +107,6 @@ def build_native(
     subprocess.run(cmd, check=True, cwd=PROJECT_ROOT)
 
     dist_dir = PROJECT_ROOT / "dist"
-    system = platform.system()
     if system == "Windows":
         artifact = dist_dir / f"{name}.exe"
     elif system == "Darwin":

@@ -19,6 +19,7 @@ try {
         --onefile `
         --windowed `
         --name $Name `
+        --icon assets/icon.ico `
         --add-data "assets;assets" `
         src/compprog_pygame/__main__.py
 }
