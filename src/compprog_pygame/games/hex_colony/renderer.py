@@ -1134,13 +1134,22 @@ class Renderer:
             # under it would poke out from behind the sprite.
             BuildingType.RESEARCH_CENTER,
         }
+        # Wall-mounted turrets sit on top of a wall and should behave
+        # like walls for path connectivity — no implicit path disc and
+        # they should not trigger neighbours to grow one either.
+        def _is_wall_mounted_turret(b) -> bool:
+            return (b.type == BuildingType.TURRET
+                    and getattr(b, "under_wall", None) is not None)
         for building in world.buildings.buildings:
             if building.type in _IMPLICIT_PATH_SKIP:
+                continue
+            if _is_wall_mounted_turret(building):
                 continue
             for nb_coord in building.coord.neighbors():
                 nb_building = world.buildings.at(nb_coord)
                 if (nb_building is not None
-                        and nb_building.type not in _IMPLICIT_PATH_SKIP):
+                        and nb_building.type not in _IMPLICIT_PATH_SKIP
+                        and not _is_wall_mounted_turret(nb_building)):
                     buildings_needing_path.add(building.coord)
                     break
         path_buildings = (
@@ -1168,6 +1177,10 @@ class Renderer:
                 if nb_building is None:
                     continue
                 if nb_building.type == BuildingType.PIPE:
+                    continue
+                # Wall-mounted turrets behave like walls — paths
+                # should not extend a connector band to them.
+                if _is_wall_mounted_turret(nb_building):
                     continue
                 nwx, nwy = self._get_pixel(nb_coord, size)
                 nsx = (nwx - cam_x) * zoom + half_sw

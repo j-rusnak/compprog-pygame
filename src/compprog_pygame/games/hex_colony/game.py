@@ -1695,14 +1695,14 @@ class Game:
         if (self.build_mode == BuildingType.OIL_DRILL
                 and tile.terrain != Terrain.OIL_DEPOSIT):
             return False
-        # Tech tree gate
-        if not self.tech_tree.is_building_unlocked(self.build_mode):
+        # Tech tree gate (bypassed in god mode)
+        if not self.god_mode and not self.tech_tree.is_building_unlocked(self.build_mode):
             return False
-        # Tier gate
-        if not self.tier_tracker.is_building_unlocked(self.build_mode):
+        # Tier gate (bypassed in god mode)
+        if not self.god_mode and not self.tier_tracker.is_building_unlocked(self.build_mode):
             return False
-        # Building inventory check (skip in sandbox)
-        if not self.sandbox:
+        # Building inventory check (skip in sandbox or god mode)
+        if not self.sandbox and not self.god_mode:
             if self.world.building_inventory[self.build_mode] < 1:
                 return False
         _PATH_LIKE = {BuildingType.PATH, BuildingType.BRIDGE, BuildingType.CONVEYOR}
