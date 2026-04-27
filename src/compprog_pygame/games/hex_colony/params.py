@@ -1338,6 +1338,14 @@ ENEMY_TARGET_PRIORITY_INDEX: dict[str, int] = {
 # the per-call cost is reasonable.
 ENEMY_RETARGET_BUDGET_PER_TICK: int = 20
 
+# Maximum number of *phase-2* retargets per simulation tick.  Phase 2
+# is the wall-passable A* fallback used when an enemy can't find any
+# wall-free path to a target \u2014 it adds high-cost edges that drag
+# out A* exploration, so it's substantially more expensive than the
+# common phase-1 search.  Capping it keeps frames from spiking when
+# many enemies are simultaneously walled in.
+ENEMY_PHASE2_BUDGET_PER_TICK: int = 4
+
 # How often (sim seconds) the world refreshes its "starved /
 # unreachable" caches.  Visible in the renderer as the dim/red overlay
 # on isolated buildings — humans don't notice update lag below ~2 s.

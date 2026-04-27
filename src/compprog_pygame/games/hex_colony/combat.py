@@ -200,6 +200,14 @@ class CombatManager:
             if self.next_periodic_wave_in <= 0.0:
                 self.spawn_periodic_wave(world)
 
+        # Nothing to simulate? Skip the (potentially expensive)
+        # per-tick context build entirely.  Pre-awakening worlds spend
+        # all their time in this branch, and the BFS distance field
+        # over the whole walkable map was the main culprit behind the
+        # "lag on world load" reports.
+        if not self.enemies and not self.projectiles:
+            return
+
         # Build all per-tick caches in one place so every sub-tick can
         # read from O(1)-friendly data structures instead of repeating
         # O(buildings) / O(enemies) scans.
@@ -283,14 +291,14 @@ class CombatManager:
             else:
                 bucket.append(e)
 
-        # 4) Multi-source BFS distance field used as the A* heuristic.
-        # Source set = real (non-wall) targets.  Walls are treated as
-        # passable at unit cost in this BFS, which keeps the heuristic
-        # admissible (real A* assigns wall hexes a *higher* per-step
-        # cost equal to the wall's break-time-in-hex-steps; the BFS
-        # underestimates that cost so h \u2264 true cost holds).  Tiles
-        # not in this map are unreachable through the relaxed graph
-        # and fall back to raw hex distance in ``heuristic``.
+        # 4) Multi-source BFS distance field used as the A* heuristic
+        # for the (common) walls-solid pathfinding phase.  Source set
+        # = real (non-wall) targets; walls and other real targets act
+        # as obstacles.  This gives an admissible heuristic for
+        # ``_update_enemy_target`` phase 1 (walls solid) and is
+        # ignored by phase 2 (walls passable, which uses a raw hex
+        # distance heuristic instead).  Cost is O(|walkable_coords|)
+        # per tick, bounded by the map size.
         target_dist: dict[HexCoord, int] = {}
         if target_coords:
             queue: deque[HexCoord] = deque()
@@ -305,11 +313,9 @@ class CombatManager:
                         continue
                     if nb not in valid_coords:
                         continue
-                    # Real (non-wall) blocker tiles other than the
-                    # source set act as solid obstacles for the
-                    # heuristic flood (you can't path *through* a
-                    # turret to reach the camp behind it).
-                    if nb in target_coords:
+                    # Walls and other real targets block the heuristic
+                    # flood (matching phase-1 A* semantics).
+                    if nb in wall_coords or nb in target_coords:
                         continue
                     target_dist[nb] = d
                     queue.append(nb)
@@ -484,7 +490,7 @@ class CombatManager:
                     world, enemy, blocker_targets,
                     valid_coords, blocker_coords, wall_coords,
                     target_coords, blocker_by_coord, target_dist,
-                    wall_step_cost,
+                    wall_step_cost, ctx,
                 )
                 if enemy.path or enemy.target_building_id != 0:
                     enemy.retarget_timer = retarget_ok
@@ -509,26 +515,31 @@ class CombatManager:
                              target_coords: set[HexCoord],
                              blocker_by_coord: dict[HexCoord, Building],
                              target_dist: dict[HexCoord, int],
-                             wall_step_cost: int) -> None:
+                             wall_step_cost: int,
+                             ctx: dict) -> None:
         """A* from the enemy toward the nearest *reachable* SURVIVOR
-        target building.
+        target building, with walls handled lazily.
 
-        The graph is the walkable grid plus walls; walls cost
-        ``wall_step_cost`` hex-steps to traverse (the time it takes
-        the enemy to break one wall, expressed in hex-step
-        equivalents).  Real targets (camps, habitats, factories,
-        turrets) remain solid \u2014 the goal test is "current tile is
-        adjacent to a real target" so the enemy stops one hex away
-        and attacks.  Net effect: enemies route around walls when the
-        detour is cheap, and break through them only when the detour
-        cost exceeds the wall-break cost \u2014 exactly the player's
-        intuition.
+        Two phases:
 
-        The heuristic is a pre-computed multi-source BFS distance to
-        the nearest real target with walls treated as cost-1 (built
-        once per tick by ``_build_tick_context``).  Because the BFS
-        underestimates the true wall-traversal cost, the heuristic
-        stays admissible and A* still produces optimal paths.
+        1. **Walls-solid A***  (the common case).  Walls block
+           movement; the heuristic is the pre-computed BFS distance
+           to a real target.  This is the same fast search the combat
+           system has used for a long time, and it succeeds whenever
+           there is *any* wall-free path to a target \u2014 the player's
+           outer ring of walls is bypassed by going around.
+
+        2. **Walls-passable A***  (fallback).  Only runs if phase 1
+           found nothing.  Walls cost ``wall_step_cost`` hex-steps to
+           traverse; the heuristic is raw hex distance to any target
+           (admissible and tight, so A* converges quickly).  This
+           handles the case where the player has fully surrounded a
+           target with walls \u2014 the enemy correctly decides to break
+           through the *cheapest* wall ring.
+
+        Net effect: enemies route around walls when there is *any*
+        detour, and break through them only when the detour is
+        impossible \u2014 which matches the player's intuition.
         """
         if not blocker_targets:
             enemy.target_building_id = 0
@@ -538,12 +549,12 @@ class CombatManager:
 
         priority_idx = params.ENEMY_TARGET_PRIORITY_INDEX
         fallback = len(priority_idx)
+        start = enemy.coord
 
         # Edge case: enemy is already adjacent to (or standing on) a
         # *real* target.  Walls are skipped here because we'd rather
         # ignore them and let the A* below decide whether to break
         # through to something better.
-        start = enemy.coord
         adj_target: Building | None = None
         adj_key: tuple[int, int] | None = None
         on_b = blocker_by_coord.get(start)
@@ -568,77 +579,94 @@ class CombatManager:
             )
             return
 
+        max_depth = int(params.ENEMY_PATHFIND_MAX_DEPTH)
+
+        # Phase 1: walls solid.  Heuristic = pre-computed BFS distance.
         BIG = 1_000_000
 
-        def heuristic(c: HexCoord) -> int:
+        def h_phase1(c: HexCoord) -> int:
             d = target_dist.get(c)
             if d is None:
                 return BIG
-            # ``target_dist[c]`` is steps from c to a target tile via
-            # the walls-passable BFS; goal is "adjacent to a target",
-            # so subtract one.
             return d - 1 if d > 0 else 0
 
-        max_depth = int(params.ENEMY_PATHFIND_MAX_DEPTH)
-        open_heap: list[tuple[int, int, HexCoord]] = []
-        tie = 0
-        heapq.heappush(open_heap, (heuristic(start), tie, start))
-        g_score: dict[HexCoord, int] = {start: 0}
-        prev: dict[HexCoord, HexCoord] = {}
-        found_endpoint: HexCoord | None = None
-        found_target: Building | None = None
-        expanded = 0
-        while open_heap:
-            _, _, cur = heapq.heappop(open_heap)
-            cur_g = g_score[cur]
-            # Goal test: adjacent to any *real* target (walls don't
-            # count \u2014 they aren't worth attacking on their own).
-            best_adj: Building | None = None
-            best_adj_key: tuple[int, int] | None = None
-            for nb in cur.neighbors():
-                if nb not in target_coords:
-                    continue
-                b = blocker_by_coord.get(nb)
-                if b is None:
-                    continue
-                k = (0, priority_idx.get(b.type.name, fallback))
-                if best_adj_key is None or k < best_adj_key:
-                    best_adj, best_adj_key = b, k
-            if best_adj is not None:
-                found_endpoint = cur
-                found_target = best_adj
-                break
-            expanded += 1
-            if expanded > max_depth:
-                break
-            for nb in cur.neighbors():
-                if nb not in valid_coords:
-                    continue
-                if nb in target_coords:
-                    # Real targets are solid \u2014 picked up by the
-                    # goal test above when we're adjacent.
-                    continue
-                # Walls are passable but expensive (== break time in
-                # hex-step equivalents).  Other tiles cost 1.
-                step_cost = wall_step_cost if nb in wall_coords else 1
-                tentative = cur_g + step_cost
-                old = g_score.get(nb)
-                if old is not None and tentative >= old:
-                    continue
-                g_score[nb] = tentative
-                prev[nb] = cur
-                tie += 1
-                heapq.heappush(
-                    open_heap,
-                    (tentative + heuristic(nb), tie, nb),
+        # Skip phase 1 entirely if the BFS didn't reach the enemy:
+        # there is *no* wall-free path, so we'd just thrash A* up to
+        # ``max_depth`` for nothing before falling through to phase 2.
+        if start in target_dist:
+            found_target, found_endpoint, prev = self._astar(
+                start=start,
+                valid_coords=valid_coords,
+                target_coords=target_coords,
+                blocker_by_coord=blocker_by_coord,
+                priority_idx=priority_idx,
+                fallback=fallback,
+                heuristic=h_phase1,
+                max_depth=max_depth,
+                wall_coords=wall_coords,
+                wall_step_cost=None,  # walls solid in phase 1
+            )
+        else:
+            found_target, found_endpoint, prev = None, None, {}
+
+        # Phase 2: walls passable, but only if phase 1 turned up
+        # nothing.  Heuristic = pre-computed multi-source BFS distance
+        # to a real target *with walls treated as cost-1*.  This is
+        # admissible (true wall cost is wall_step_cost \u2265 1) and
+        # gives us O(1) per-node lookups instead of an O(targets)
+        # ``min`` over every target per node \u2014 which used to cost
+        # ~30ms per retarget and dominated frames once enemies got
+        # walled in.  Built lazily on first phase-2 use per tick so
+        # the common case (phase 1 succeeds) pays nothing.
+        if found_target is None:
+            if not target_coords:
+                self._set_wander_step(world, enemy, valid_coords,
+                                      blocker_coords)
+                return
+            # Per-tick budget for phase-2 retargets.  Phase 2 is
+            # significantly more expensive than phase 1 (walls add
+            # high-cost edges that drag out A* exploration), so we
+            # cap how many enemies can run it on the same tick.  The
+            # overflow simply waits one retarget interval.
+            phase2_used = ctx.get("phase2_used", 0)
+            phase2_budget = int(getattr(
+                params, "ENEMY_PHASE2_BUDGET_PER_TICK", 4,
+            ))
+            if phase2_used >= phase2_budget:
+                self._set_wander_step(world, enemy, valid_coords,
+                                      blocker_coords)
+                return
+            ctx["phase2_used"] = phase2_used + 1
+            target_dist_passable = ctx.get("target_dist_passable")
+            if target_dist_passable is None:
+                target_dist_passable = self._build_passable_dist(
+                    target_coords, valid_coords,
                 )
+                ctx["target_dist_passable"] = target_dist_passable
+
+            def h_phase2(c: HexCoord) -> int:
+                d = target_dist_passable.get(c)
+                if d is None:
+                    return BIG
+                return d - 1 if d > 0 else 0
+
+            found_target, found_endpoint, prev = self._astar(
+                start=start,
+                valid_coords=valid_coords,
+                target_coords=target_coords,
+                blocker_by_coord=blocker_by_coord,
+                priority_idx=priority_idx,
+                fallback=fallback,
+                heuristic=h_phase2,
+                max_depth=max_depth // 4,
+                wall_coords=wall_coords,
+                wall_step_cost=wall_step_cost,
+            )
 
         if found_target is None or found_endpoint is None:
             # Nothing in range — wander toward the map centre / camp
             # so the enemy doesn't sit at its spawn forever waiting
-            # for a building to come within A* horizon.  We pick the
-            # walkable neighbour that most reduces hex-distance to the
-            # fallback target.
+            # for a building to come within A* horizon.
             self._set_wander_step(world, enemy, valid_coords,
                                   blocker_coords)
             return
@@ -662,6 +690,111 @@ class CombatManager:
             enemy.next_target_px, enemy.next_target_py = (
                 hex_to_pixel(enemy.coord, world.settings.hex_size)
             )
+
+    def _build_passable_dist(
+        self,
+        target_coords: set[HexCoord],
+        valid_coords: set[HexCoord],
+    ) -> dict[HexCoord, int]:
+        """Multi-source BFS distance to nearest real target with walls
+        treated as cost-1 (passable).  Used as the phase-2 A*
+        heuristic.  ``target_coords`` are the source set; the BFS
+        spreads through every walkable hex (including walls).  Cost
+        is O(|walkable_coords|).
+        """
+        dist: dict[HexCoord, int] = {}
+        if not target_coords:
+            return dist
+        queue: deque[HexCoord] = deque()
+        for tc in target_coords:
+            dist[tc] = 0
+            queue.append(tc)
+        while queue:
+            cur = queue.popleft()
+            d = dist[cur] + 1
+            for nb in cur.neighbors():
+                if nb in dist:
+                    continue
+                if nb not in valid_coords:
+                    continue
+                if nb in target_coords:
+                    continue  # other targets are solid in the heuristic
+                dist[nb] = d
+                queue.append(nb)
+        return dist
+
+    def _astar(
+        self,
+        *,
+        start: HexCoord,
+        valid_coords: set[HexCoord],
+        target_coords: set[HexCoord],
+        blocker_by_coord: dict[HexCoord, Building],
+        priority_idx: dict[str, int],
+        fallback: int,
+        heuristic,
+        max_depth: int,
+        wall_coords: set[HexCoord],
+        wall_step_cost: int | None,
+    ) -> tuple["Building | None", "HexCoord | None", dict[HexCoord, HexCoord]]:
+        """Single A* search.  ``wall_step_cost=None`` means walls are
+        solid (treated like real targets); a non-None integer means
+        walls are passable at that per-step cost.  Returns
+        ``(target, endpoint, prev_map)`` where the path can be
+        reconstructed by walking ``prev_map`` from ``endpoint``.
+        """
+        open_heap: list[tuple[int, int, HexCoord]] = []
+        tie = 0
+        heapq.heappush(open_heap, (heuristic(start), tie, start))
+        g_score: dict[HexCoord, int] = {start: 0}
+        prev: dict[HexCoord, HexCoord] = {}
+        expanded = 0
+        while open_heap:
+            _, _, cur = heapq.heappop(open_heap)
+            cur_g = g_score[cur]
+            # Goal test: adjacent to any *real* target (walls don't
+            # count \u2014 they aren't worth attacking on their own).
+            best_adj: Building | None = None
+            best_adj_key: tuple[int, int] | None = None
+            for nb in cur.neighbors():
+                if nb not in target_coords:
+                    continue
+                b = blocker_by_coord.get(nb)
+                if b is None:
+                    continue
+                k = (0, priority_idx.get(b.type.name, fallback))
+                if best_adj_key is None or k < best_adj_key:
+                    best_adj, best_adj_key = b, k
+            if best_adj is not None:
+                return best_adj, cur, prev
+            expanded += 1
+            if expanded > max_depth:
+                break
+            for nb in cur.neighbors():
+                if nb not in valid_coords:
+                    continue
+                if nb in target_coords:
+                    # Real targets are solid \u2014 picked up by the goal
+                    # test above when we're adjacent.
+                    continue
+                if nb in wall_coords:
+                    if wall_step_cost is None:
+                        continue  # phase 1: walls block movement
+                    step_cost = wall_step_cost
+                else:
+                    step_cost = 1
+                tentative = cur_g + step_cost
+                old = g_score.get(nb)
+                if old is not None and tentative >= old:
+                    continue
+                g_score[nb] = tentative
+                prev[nb] = cur
+                tie += 1
+                heapq.heappush(
+                    open_heap,
+                    (tentative + heuristic(nb), tie, nb),
+                )
+        return None, None, prev
 
     def _set_wander_step(self, world: "World", enemy: Enemy,
                          valid_coords: set[HexCoord],
