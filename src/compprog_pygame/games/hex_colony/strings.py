@@ -553,6 +553,16 @@ TUTORIAL_STEPS: list[dict[str, object]] = [
         ],
     },
     {
+        "id": "build_quarry",
+        "title": "Build a Quarry",
+        "lines": [
+            "Stone is needed for most early buildings.",
+            "Place a Quarry on a tile next to a mountain",
+            "or stone deposit \u2014 it will harvest from",
+            "every adjacent rocky tile.",
+        ],
+    },
+    {
         "id": "build_habitat",
         "title": "Build a Habitat",
         "lines": [

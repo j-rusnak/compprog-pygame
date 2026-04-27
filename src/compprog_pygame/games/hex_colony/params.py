@@ -1150,7 +1150,7 @@ BUILDING_MAX_HEALTH: dict[str, float] = {
     "HOUSE":           80.0,
     "PATH":            30.0,
     "BRIDGE":          40.0,
-    "WALL":            220.0,    # walls are the player's primary blocker
+    "WALL":            1000.0,    # walls are the player's primary blocker
     "WOODCUTTER":      70.0,
     "QUARRY":          80.0,
     "GATHERER":        70.0,
@@ -1305,6 +1305,15 @@ ENEMY_BUILDING_BLOCKERS: frozenset[str] = frozenset({
     "TURRET", "CHEMICAL_PLANT", "SOLAR_ARRAY", "ROCKET_SILO",
     "OIL_DRILL", "OIL_REFINERY", "FLUID_TANK",
 })
+
+# Subset of blockers that an enemy will *consider breaking through*
+# rather than treating as an immutable wall during pathfinding.  A*
+# may step onto a wall hex at a higher cost equal to the time to
+# break it (in hex-step equivalents); if going around is cheaper the
+# enemy still goes around.  This is the only set of blockers that
+# enemies should not actively prefer to attack \u2014 they are pure
+# defensive infrastructure, never the *goal*.
+ENEMY_PATHABLE_WALL_TYPES: frozenset[str] = frozenset({"WALL"})
 
 # Building types enemies actively prefer to attack — they pick the
 # CLOSEST blocker to walk toward, but ties are broken by this

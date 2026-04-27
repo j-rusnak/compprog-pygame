@@ -152,6 +152,30 @@ def trigger_and_download(*, wait: bool = True, ref: str | None = None) -> None:
         )
 
     print(f"Using GitHub CLI: {gh}")
+
+    # Snapshot the most recent run id *before* triggering so we can
+    # tell the new run apart from prior ones.  Without this,
+    # ``gh run list`` can race and return a stale run that completed
+    # earlier (we'd then watch / download the wrong thing).
+    import json
+    pre_list_cmd = [
+        gh, "run", "list",
+        "--workflow", WORKFLOW_FILE,
+        "--limit", "1",
+        "--json", "databaseId",
+    ]
+    if ref:
+        pre_list_cmd.extend(["--branch", ref])
+    try:
+        pre = subprocess.run(
+            pre_list_cmd, check=True, cwd=PROJECT_ROOT,
+            capture_output=True, text=True,
+        )
+        prev_runs = json.loads(pre.stdout)
+        previous_id = str(prev_runs[0]["databaseId"]) if prev_runs else None
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        previous_id = None
+
     if ref:
         print(f"Triggering workflow '{WORKFLOW_FILE}' on ref '{ref}'…")
         subprocess.run(
@@ -169,25 +193,43 @@ def trigger_and_download(*, wait: bool = True, ref: str | None = None) -> None:
         print("Workflow triggered.  Check progress with: gh run watch")
         return
 
-    print("Waiting for the most recent run to start…")
-    # Get the most recent run id for this workflow on the chosen branch.
+    print("Waiting for the new run to appear…")
     list_cmd = [
         gh, "run", "list",
         "--workflow", WORKFLOW_FILE,
-        "--limit", "1",
-        "--json", "databaseId",
+        "--limit", "5",
+        "--json", "databaseId,status",
     ]
     if ref:
         list_cmd.extend(["--branch", ref])
-    result = subprocess.run(
-        list_cmd,
-        check=True, cwd=PROJECT_ROOT, capture_output=True, text=True,
-    )
-    import json
-    runs = json.loads(result.stdout)
-    if not runs:
-        sys.exit("No workflow runs found after triggering.")
-    run_id = str(runs[0]["databaseId"])
+
+    import time
+    run_id: str | None = None
+    deadline = time.monotonic() + 60.0  # wait up to 60s for the dispatch
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            list_cmd, check=True, cwd=PROJECT_ROOT,
+            capture_output=True, text=True,
+        )
+        runs = json.loads(result.stdout)
+        # Pick the newest run whose id differs from the pre-trigger
+        # snapshot.  ``gh run list`` returns newest-first, so the
+        # first entry that isn't ``previous_id`` is the one we just
+        # kicked off.
+        for r in runs:
+            rid = str(r["databaseId"])
+            if rid != previous_id:
+                run_id = rid
+                break
+        if run_id is not None:
+            break
+        time.sleep(2.0)
+
+    if run_id is None:
+        sys.exit(
+            "Timed out waiting for the new workflow run to appear.  "
+            "Check the Actions tab manually."
+        )
 
     print(f"Watching run {run_id}…")
     subprocess.run(
@@ -195,12 +237,32 @@ def trigger_and_download(*, wait: bool = True, ref: str | None = None) -> None:
         check=True, cwd=PROJECT_ROOT,
     )
 
+    # Clear any stale per-artifact directories so ``gh run download``
+    # doesn't refuse to overwrite existing files (it errors out
+    # instead of clobbering).  We only delete the artifact folders
+    # this script produces, never anything else.
     DOWNLOAD_DIR.mkdir(exist_ok=True)
+    for sub in ("CompProgGame-windows", "CompProgGame-macos"):
+        target = DOWNLOAD_DIR / sub
+        if target.exists():
+            shutil.rmtree(target)
+
     print(f"Downloading artifacts into {DOWNLOAD_DIR}…")
-    subprocess.run(
-        [gh, "run", "download", run_id, "--dir", str(DOWNLOAD_DIR)],
-        check=True, cwd=PROJECT_ROOT,
-    )
+    # ``--clobber`` (added in gh 2.40+) overwrites instead of failing
+    # when destination files exist.  Pass it for forward-compat in
+    # case the cleanup above misses a file (e.g. user added one).
+    download_cmd = [
+        gh, "run", "download", run_id,
+        "--dir", str(DOWNLOAD_DIR),
+    ]
+    try:
+        subprocess.run(
+            [*download_cmd, "--clobber"],
+            check=True, cwd=PROJECT_ROOT,
+        )
+    except subprocess.CalledProcessError:
+        # Older gh without --clobber — fall back to the plain form.
+        subprocess.run(download_cmd, check=True, cwd=PROJECT_ROOT)
     print(f"\nDone. Artifacts available under: {DOWNLOAD_DIR}")
 
 

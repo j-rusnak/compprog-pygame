@@ -507,6 +507,12 @@ class Game:
                         "current_tier_level": self.tier_tracker.current_tier,
                         "time_in_tier": self._time_in_current_tier,
                     })
+                    # Suggestion ghost — translucent in-world preview
+                    # for build hints.  Cleared if no step is active
+                    # or no ghost target was returned.
+                    self.renderer.tutorial_ghost = (
+                        self._tutorial.current_ghost(self.world)
+                    )
         self.camera.update(dt)
         # Re-sync mouse-drag camera to the latest cursor position
         # right before render.  MOUSEMOTION events delivered earlier

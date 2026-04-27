@@ -14,6 +14,11 @@ from typing import TYPE_CHECKING, Callable
 import pygame
 
 from compprog_pygame.games.hex_colony.buildings import BuildingType
+from compprog_pygame.games.hex_colony.hex_grid import (
+    HEX_DIRECTIONS,
+    HexCoord,
+    Terrain,
+)
 from compprog_pygame.games.hex_colony.resources import Resource
 from compprog_pygame.games.hex_colony.ui import (
     Fonts,
@@ -64,6 +69,11 @@ class _TutorialStep:
     # subtab → pick card).  Returns None when nothing should be
     # highlighted right now.
     arrow_fn: Callable[["BottomBar"], pygame.Rect | None] | None = None
+    # Optional callable returning ``(building_type, hex_coord)`` for
+    # an in-world translucent ghost suggesting *where* to build.
+    # Re-evaluated each frame so the suggestion can move as the
+    # player explores.  Returns None to skip the ghost this frame.
+    ghost_fn: Callable[["World"], "tuple[BuildingType, HexCoord] | None"] | None = None
 
 
 def _has_building_count(world: "World", btype: BuildingType, n: int = 1) -> bool:
@@ -139,6 +149,11 @@ def _text(step_id: str) -> tuple[str, list[str]]:
 # immediately instead of after the default delay.  Used for tightly
 # paired hints (housing → tier goal).
 _INSTANT_FOLLOWUP: set[str] = {"build_habitat"}
+# How long (real seconds) a cached ghost/trigger result remains
+# valid.  Suggestions only need to refresh a couple of times per
+# second, so caching avoids an O(N) BFS on every frame.
+_GHOST_CACHE_TTL = 0.5
+_LINGER_TRIGGER_CACHE_TTL = 0.25
 
 
 # ── Arrow target helpers ─────────────────────────────────────────
@@ -222,6 +237,129 @@ def _arrow_pick_building(
     return _building_card_rect(bb, btype)
 
 
+# ── Ghost target helpers ─────────────────────────────────────────
+#
+# These pick a "good" hex tile to suggest the player place the next
+# building on.  We anchor the search on the player's first CAMP and
+# fan outward in BFS order until a tile passing the predicate turns
+# up — that way the ghost lands on the *closest* sensible spot rather
+# than something on the far side of the map.
+
+_GHOST_SEARCH_RADIUS = 12
+
+
+def _camp_coord(world: "World") -> "HexCoord | None":
+    camps = list(world.buildings.by_type(BuildingType.CAMP))
+    if not camps:
+        return None
+    return camps[0].coord
+
+
+def _bfs_find_tile(
+    world: "World",
+    start: "HexCoord",
+    predicate: Callable[[object], bool],
+    max_radius: int = _GHOST_SEARCH_RADIUS,
+) -> "HexCoord | None":
+    """Return the closest hex to ``start`` whose tile satisfies ``predicate``."""
+    visited: set[HexCoord] = {start}
+    frontier: list[HexCoord] = [start]
+    for _ in range(max_radius):
+        next_frontier: list[HexCoord] = []
+        for c in frontier:
+            tile = world.grid.get(c)
+            if tile is not None and predicate(tile):
+                return c
+            for dq, dr in HEX_DIRECTIONS:
+                nc = HexCoord(c.q + dq, c.r + dr)
+                if nc in visited:
+                    continue
+                visited.add(nc)
+                next_frontier.append(nc)
+        frontier = next_frontier
+        if not frontier:
+            break
+    return None
+
+
+def _ghost_target_gatherer(world: "World") -> "tuple[BuildingType, HexCoord] | None":
+    if _has_building_count(world, BuildingType.GATHERER):
+        return None
+    start = _camp_coord(world)
+    if start is None:
+        return None
+    coord = _bfs_find_tile(
+        world, start,
+        lambda t: t.terrain == Terrain.FIBER_PATCH and t.building is None,
+    )
+    if coord is None:
+        # Fall back to any empty grass tile.
+        coord = _bfs_find_tile(
+            world, start,
+            lambda t: t.terrain == Terrain.GRASS and t.building is None,
+        )
+    return (BuildingType.GATHERER, coord) if coord is not None else None
+
+
+def _ghost_target_woodcutter(world: "World") -> "tuple[BuildingType, HexCoord] | None":
+    if _has_building_count(world, BuildingType.WOODCUTTER):
+        return None
+    start = _camp_coord(world)
+    if start is None:
+        return None
+    coord = _bfs_find_tile(
+        world, start,
+        lambda t: t.terrain in (Terrain.FOREST, Terrain.DENSE_FOREST)
+        and t.building is None,
+    )
+    return (BuildingType.WOODCUTTER, coord) if coord is not None else None
+
+
+def _has_rocky_neighbour(world: "World", coord: "HexCoord") -> bool:
+    """True if any neighbouring hex is mountain or stone-bearing."""
+    rocky = (Terrain.MOUNTAIN, Terrain.STONE_DEPOSIT)
+    for dq, dr in HEX_DIRECTIONS:
+        nb = world.grid.get(HexCoord(coord.q + dq, coord.r + dr))
+        if nb is not None and nb.terrain in rocky:
+            return True
+    return False
+
+
+def _ghost_target_quarry(world: "World") -> "tuple[BuildingType, HexCoord] | None":
+    if _has_building_count(world, BuildingType.QUARRY):
+        return None
+    start = _camp_coord(world)
+    if start is None:
+        return None
+    # Quarries can't be built on mountain/stone themselves \u2014 they
+    # mine *adjacent* rocky tiles.  Find the closest empty grass
+    # tile that touches a mountain or stone deposit.
+    coord = _bfs_find_tile(
+        world, start,
+        lambda t: (
+            t.terrain == Terrain.GRASS
+            and t.building is None
+            and _has_rocky_neighbour(world, t.coord)
+        ),
+    )
+    return (BuildingType.QUARRY, coord) if coord is not None else None
+
+
+def _ghost_target_habitat(world: "World") -> "tuple[BuildingType, HexCoord] | None":
+    if _has_building_count(world, BuildingType.HABITAT):
+        return None
+    start = _camp_coord(world)
+    if start is None:
+        return None
+    # Prefer an empty grass tile adjacent to existing infrastructure
+    # (the camp itself works fine as a proxy).
+    coord = _bfs_find_tile(
+        world, start,
+        lambda t: t.terrain == Terrain.GRASS and t.building is None,
+    )
+    return (BuildingType.HABITAT, coord) if coord is not None else None
+
+
 TUTORIAL_STEPS: list[_TutorialStep] = [
     _TutorialStep(
         id="welcome",
@@ -249,6 +387,7 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
         arrow_fn=lambda bb: _arrow_pick_building(
             bb, BUILDING_CATEGORY_NAMES[2], BuildingType.GATHERER,
         ),
+        ghost_fn=_ghost_target_gatherer,
     ),
     _TutorialStep(
         id="connect_paths",
@@ -280,6 +419,24 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
             and not _has_building_count(w, BuildingType.WOODCUTTER)
         ),
         after="food_producing",
+        arrow_fn=lambda bb: _arrow_pick_building(
+            bb, BUILDING_CATEGORY_NAMES[2], BuildingType.WOODCUTTER,
+        ),
+        ghost_fn=_ghost_target_woodcutter,
+    ),
+    _TutorialStep(
+        id="build_quarry",
+        title=_text("build_quarry")[0],
+        lines=_text("build_quarry")[1],
+        trigger=lambda w, ctx: (
+            _has_building_count(w, BuildingType.WOODCUTTER)
+            and not _has_building_count(w, BuildingType.QUARRY)
+        ),
+        after="build_woodcutter",
+        arrow_fn=lambda bb: _arrow_pick_building(
+            bb, BUILDING_CATEGORY_NAMES[2], BuildingType.QUARRY,
+        ),
+        ghost_fn=_ghost_target_quarry,
     ),
     _TutorialStep(
         id="build_habitat",
@@ -290,6 +447,10 @@ TUTORIAL_STEPS: list[_TutorialStep] = [
             and not _has_building_count(w, BuildingType.HABITAT)
         ),
         after="build_woodcutter",
+        arrow_fn=lambda bb: _arrow_pick_building(
+            bb, BUILDING_CATEGORY_NAMES[1], BuildingType.HABITAT,
+        ),
+        ghost_fn=_ghost_target_habitat,
     ),
     _TutorialStep(
         id="tier_goal",
@@ -540,9 +701,72 @@ class TutorialPanel(Panel):
         # still has a non-None target.  These keep pointing at the UI
         # until the player completes the action they describe.
         self._lingering_arrows: list[_TutorialStep] = []
+        # Cache for ``current_ghost`` so the BFS-based ghost helpers
+        # don't run on every frame.  Maps ``id(step)`` to (timestamp,
+        # result).  Entries older than ``_GHOST_CACHE_TTL`` are stale.
+        self._ghost_cache: dict[int, "tuple[float, tuple[BuildingType, HexCoord] | None]"] = {}
+        # Cache for the lingering-step trigger re-eval in ``draw`` so
+        # we don't run building scans on every frame.
+        self._linger_trigger_cache: dict[int, "tuple[float, bool]"] = {}
 
     def set_bottom_bar(self, bb: "BottomBar") -> None:
         self._bottom_bar = bb
+
+    def _cached_ghost_target(
+        self, step: "_TutorialStep", world: "World",
+    ) -> "tuple[BuildingType, HexCoord] | None":
+        """Return ``step.ghost_fn(world)`` with a short-lived cache."""
+        if step.ghost_fn is None:
+            return None
+        now = self._arrow_time
+        cached = self._ghost_cache.get(id(step))
+        if cached is not None and now - cached[0] < _GHOST_CACHE_TTL:
+            return cached[1]
+        try:
+            target = step.ghost_fn(world)
+        except Exception:
+            target = None
+        self._ghost_cache[id(step)] = (now, target)
+        return target
+
+    def _cached_linger_trigger(
+        self, step: "_TutorialStep", world: "World",
+    ) -> bool:
+        """Cached version of ``step.trigger`` for the lingering loop."""
+        now = self._arrow_time
+        cached = self._linger_trigger_cache.get(id(step))
+        if cached is not None and now - cached[0] < _LINGER_TRIGGER_CACHE_TTL:
+            return cached[1]
+        try:
+            result = bool(step.trigger(world, {"dt": 0.0}))
+        except Exception:
+            result = True  # be conservative: keep the step alive
+        self._linger_trigger_cache[id(step)] = (now, result)
+        return result
+
+    def current_ghost(
+        self, world: "World",
+    ) -> "tuple[BuildingType, HexCoord] | None":
+        """Return the in-world building suggestion for the active step.
+
+        Looks at the current step first, then any lingering steps
+        whose tooltip was dismissed but whose action is still pending.
+        Uses ``_cached_ghost_target`` so the BFS only runs a couple
+        of times per second.
+        """
+        if not self.active:
+            return None
+        if self._current_step is not None and self._current_step.ghost_fn is not None:
+            target = self._cached_ghost_target(self._current_step, world)
+            if target is not None:
+                return target
+        for step in self._lingering_arrows:
+            if step is self._current_step or step.ghost_fn is None:
+                continue
+            target = self._cached_ghost_target(step, world)
+            if target is not None:
+                return target
+        return None
 
     def layout(self, screen_w: int, screen_h: int) -> None:
         self._screen_w = screen_w
@@ -556,6 +780,24 @@ class TutorialPanel(Panel):
         self._arrow_time += ctx.get("dt", 1 / 60)
         if not self.active:
             return
+        # Auto-dismiss action-gated steps the moment the player
+        # completes the action.  An "action-gated" step is one that
+        # points the player at a specific build (has an ``arrow_fn``
+        # or ``ghost_fn``); once its trigger stops firing we know
+        # the building was placed, so we drop the panel + arrow +
+        # ghost without waiting for the user to click "Got it".
+        if self._visible and self._current_step is not None:
+            cs = self._current_step
+            if cs.arrow_fn is not None or cs.ghost_fn is not None:
+                try:
+                    still_needed = bool(cs.trigger(world, ctx))
+                except Exception:
+                    still_needed = True
+                if not still_needed:
+                    self.dismiss()
+                    # Skip the post-dismiss cooldown so the next hint
+                    # can fire on the very next frame.
+                    self._cooldown = 0.0
         if self._visible:
             return  # already showing something
         if self._cooldown > 0:
@@ -566,20 +808,32 @@ class TutorialPanel(Panel):
         for step in TUTORIAL_STEPS:
             if step.id in self._dismissed:
                 continue
-            if step.after is not None and step.after not in self._dismissed:
-                # Only block while the earlier step is still applicable
-                # (its trigger currently fires).  Once the earlier step
-                # becomes irrelevant — e.g. the player skipped past it
-                # — this step should still eventually appear.
+            if step.after is not None:
                 prev = steps_by_id.get(step.after)
-                prev_applicable = False
                 if prev is not None:
                     try:
                         prev_applicable = bool(prev.trigger(world, ctx))
                     except Exception:
                         prev_applicable = False
-                if prev_applicable:
-                    continue
+                    prev_action_gated = (
+                        prev.arrow_fn is not None or prev.ghost_fn is not None
+                    )
+                    if prev_action_gated:
+                        # Action-gated predecessors must have their
+                        # action *completed* (trigger stopped firing)
+                        # before the next hint can appear \u2014 clicking
+                        # "Got it" alone is not enough.
+                        if prev_applicable:
+                            continue
+                    else:
+                        # Non-action predecessors (info-only panels)
+                        # unblock either when dismissed by the user
+                        # or when their trigger goes False naturally.
+                        if (
+                            step.after not in self._dismissed
+                            and prev_applicable
+                        ):
+                            continue
             try:
                 if step.trigger(world, ctx):
                     self._current_step = step
@@ -595,9 +849,12 @@ class TutorialPanel(Panel):
             self._dismissed.add(dismissed_id)
             # Keep the arrow alive after dismiss so the player still
             # has something to follow until they complete the click
-            # path the tooltip described.
+            # path the tooltip described.  Steps with only a
+            # ``ghost_fn`` (in-world suggestion) also linger so the
+            # ghost stays visible until the building is placed.
             if (
-                self._current_step.arrow_fn is not None
+                (self._current_step.arrow_fn is not None
+                 or self._current_step.ghost_fn is not None)
                 and self._current_step not in self._lingering_arrows
             ):
                 self._lingering_arrows.append(self._current_step)
@@ -620,14 +877,29 @@ class TutorialPanel(Panel):
                 if step is self._current_step:
                     still_active.append(step)
                     continue
-                try:
-                    target = step.arrow_fn(self._bottom_bar)  # type: ignore[misc]
-                except Exception:
-                    target = None
-                if target is None:
-                    continue  # action complete \u2014 drop this arrow
+                # If the step's trigger no longer fires, the player
+                # has completed the action it was nagging about \u2014
+                # drop both arrow and ghost.
+                if not self._cached_linger_trigger(step, world):
+                    continue
+                # Arrow may be None for ghost-only lingering steps.
+                target = None
+                if step.arrow_fn is not None:
+                    try:
+                        target = step.arrow_fn(self._bottom_bar)
+                    except Exception:
+                        target = None
+                # Keep the step alive if either the arrow or its
+                # ghost still has a live target.
+                ghost_alive = (
+                    step.ghost_fn is not None
+                    and self._cached_ghost_target(step, world) is not None
+                )
+                if target is None and not ghost_alive:
+                    continue  # action complete \u2014 drop this step
                 still_active.append(step)
-                self._draw_arrow(surface, target)
+                if target is not None:
+                    self._draw_arrow(surface, target)
             self._lingering_arrows = still_active
 
         if not self._visible or self._current_step is None:
@@ -750,12 +1022,16 @@ class TutorialPanel(Panel):
         self.rect = panel_rect
 
         # Darken the rest of the screen so the modal really reads as
-        # "read me before moving on".
-        dim = pygame.Surface(
-            (self._screen_w, self._screen_h), pygame.SRCALPHA,
-        )
-        dim.fill((0, 0, 0, 130))
-        surface.blit(dim, (0, 0))
+        # "read me before moving on" — *unless* the step also has a
+        # ``ghost_fn`` suggesting an in-world placement.  In that
+        # case we want the player to see the ghost behind the panel,
+        # so we skip the dim entirely.
+        if step.ghost_fn is None:
+            dim = pygame.Surface(
+                (self._screen_w, self._screen_h), pygame.SRCALPHA,
+            )
+            dim.fill((0, 0, 0, 130))
+            surface.blit(dim, (0, 0))
 
         draw_panel_bg(surface, panel_rect, accent_edge="top")
         pygame.draw.rect(

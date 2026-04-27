@@ -200,6 +200,14 @@ class Renderer:
         self.ghost_coord: HexCoord | None = None  # snapped hex coord
         self.ghost_valid: bool = False  # whether placement is valid
 
+        # Tutorial-driven ghost preview: a translucent pulsing
+        # building drawn in-world to *suggest* a placement to the
+        # player.  Distinct from ``ghost_building``/``ghost_coord``
+        # which represent the player's own cursor preview while in
+        # build mode.
+        self.tutorial_ghost: tuple[BuildingType, HexCoord] | None = None
+        self._tutorial_ghost_time: float = 0.0
+
         # Glowing-green chain placement preview for paths
         self.path_preview: list[HexCoord] = []
 
@@ -306,6 +314,19 @@ class Renderer:
             self._draw_path_preview(surface, camera, world.settings.hex_size)
         if self.ghost_building is not None and self.ghost_coord is not None:
             self._draw_ghost_building(surface, world, camera)
+        if self.tutorial_ghost is not None:
+            self._tutorial_ghost_time += dt
+            tg_btype, tg_coord = self.tutorial_ghost
+            # Suppress the suggestion when the player is already
+            # previewing the same building under their cursor —
+            # otherwise we double-draw on top of their ghost.
+            if not (
+                self.ghost_building == tg_btype
+                and self.ghost_coord == tg_coord
+            ):
+                self._draw_tutorial_ghost(
+                    surface, world, camera, tg_btype, tg_coord,
+                )
         if self.selected_hex is not None:
             self._draw_hex_highlight(surface, self.selected_hex, camera, world.settings.hex_size)
             # Range ring for selected collection buildings
@@ -1953,6 +1974,104 @@ class Renderer:
                 ghost_under = world.buildings.at(coord)
                 ring_radius = self._range_ring_radius(btype, ghost_under)
             self._draw_range_ring(surface, coord, camera, size, ring_radius)
+
+    # ── Tutorial ghost preview ───────────────────────────────────
+
+    def _draw_tutorial_ghost(
+        self,
+        surface: pygame.Surface,
+        world: World,
+        camera: Camera,
+        btype: BuildingType,
+        coord: HexCoord,
+    ) -> None:
+        """Draw a translucent pulsing building suggested by the tutorial.
+
+        Uses the same per-building drawer as ``_draw_ghost_building``
+        for the small set of early-game buildings the tutorial points
+        at.  Tinted green and alpha-pulsed so it reads as a hint
+        rather than the player's own placement preview.
+        """
+        size = world.settings.hex_size
+        zoom = camera.zoom
+        sw, sh = surface.get_size()
+        wx, wy = self._get_pixel(coord, size)
+        sx = (wx - camera.x) * zoom + sw * 0.5
+        sy = (wy - camera.y) * zoom + sh * 0.5
+        r = int(size * 0.75 * zoom)
+        if r < 2:
+            return
+
+        bld_size = r * 4
+        bld_surf = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)
+        cx_local = bld_size // 2
+        cy_local = bld_size // 2
+
+        # Only the buildings the tutorial actually suggests are
+        # supported here.  Anything else falls back to a hex outline.
+        if btype == BuildingType.GATHERER:
+            draw_gatherer(bld_surf, cx_local, cy_local, r, zoom)
+        elif btype == BuildingType.WOODCUTTER:
+            draw_woodcutter(bld_surf, cx_local, cy_local, r, zoom)
+        elif btype == BuildingType.HABITAT:
+            draw_habitat(bld_surf, cx_local, cy_local, r, zoom)
+        elif btype == BuildingType.HOUSE:
+            draw_house(bld_surf, cx_local, cy_local, r, zoom)
+        elif btype == BuildingType.QUARRY:
+            draw_quarry(bld_surf, cx_local, cy_local, r, zoom)
+        else:
+            # Generic hint: just a hex outline so the tile is obvious.
+            corners = self._get_corners(coord, wx, wy, size)
+            pts = [
+                ((cx - camera.x) * zoom + sw * 0.5,
+                 (cy - camera.y) * zoom + sh * 0.5)
+                for cx, cy in corners
+            ]
+            pulse = 0.5 + 0.5 * math.sin(self._tutorial_ghost_time * 4.0)
+            pygame.draw.polygon(
+                surface, (120, 230, 140), pts, max(2, int(3 * zoom))
+            )
+            del pulse  # not used in fallback path
+            return
+
+        # Green tint to distinguish from the player's own ghost.
+        green_tint = pygame.Surface((bld_size, bld_size), pygame.SRCALPHA)
+        green_tint.fill((140, 255, 160, 255))
+        bld_surf.blit(green_tint, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+
+        # Pulse alpha 70 \u2194 160 at ~0.5 Hz so it breathes gently.
+        pulse = 0.5 + 0.5 * math.sin(self._tutorial_ghost_time * 3.2)
+        bld_surf.set_alpha(int(70 + pulse * 90))
+
+        gw, gh = bld_surf.get_size()
+        surface.blit(
+            bld_surf, (int(sx) - gw // 2, int(sy) - gh // 2),
+        )
+
+        # Pulsing hex outline underneath so the target tile itself is
+        # unambiguous even when zoomed out.
+        corners = self._get_corners(coord, wx, wy, size)
+        pts = [
+            ((cx - camera.x) * zoom + sw * 0.5,
+             (cy - camera.y) * zoom + sh * 0.5)
+            for cx, cy in corners
+        ]
+        ring_alpha = int(120 + pulse * 100)
+        ring_color = (140, 255, 160)
+        outline_w = max(2, int(2.5 * zoom))
+        # Draw to a temp surface so the outline can be alpha-blended.
+        x_min = int(min(p[0] for p in pts)) - outline_w
+        y_min = int(min(p[1] for p in pts)) - outline_w
+        x_max = int(max(p[0] for p in pts)) + outline_w
+        y_max = int(max(p[1] for p in pts)) + outline_w
+        ow = max(1, x_max - x_min)
+        oh = max(1, y_max - y_min)
+        ring_surf = pygame.Surface((ow, oh), pygame.SRCALPHA)
+        local_pts = [(p[0] - x_min, p[1] - y_min) for p in pts]
+        pygame.draw.polygon(
+            ring_surf, (*ring_color, ring_alpha), local_pts, outline_w,
+        )
+        surface.blit(ring_surf, (x_min, y_min))
 
     # ── Resource collection range ring ───────────────────────────
 

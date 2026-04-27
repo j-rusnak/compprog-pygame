@@ -243,9 +243,12 @@ class CombatManager:
 
         # 2) Blockers + weapon-bearing buildings in a single pass.
         blocker_set = params.ENEMY_BUILDING_BLOCKERS
+        wall_set = params.ENEMY_PATHABLE_WALL_TYPES
         blocker_targets: list[Building] = []
         blocker_coords: set[HexCoord] = set()
         blocker_by_coord: dict[HexCoord, Building] = {}
+        wall_coords: set[HexCoord] = set()
+        target_coords: set[HexCoord] = set()  # blockers minus walls
         weapon_buildings: list[tuple[Building, str]] = []
         TURRET = BuildingType.TURRET
         CAMP = BuildingType.CAMP
@@ -253,10 +256,15 @@ class CombatManager:
             if b.faction != "SURVIVOR":
                 continue
             btype = b.type
-            if btype.name in blocker_set:
+            tname = btype.name
+            if tname in blocker_set:
                 blocker_targets.append(b)
                 blocker_coords.add(b.coord)
                 blocker_by_coord[b.coord] = b
+                if tname in wall_set:
+                    wall_coords.add(b.coord)
+                else:
+                    target_coords.add(b.coord)
             if btype is TURRET:
                 weapon_buildings.append((b, "TURRET"))
             elif btype is CAMP:
@@ -275,30 +283,35 @@ class CombatManager:
             else:
                 bucket.append(e)
 
-        # 4) Multi-source BFS distance field: for every walkable
-        # non-blocker hex, the minimum hex-step distance to *any*
-        # blocker via walkable tiles.  Used as the A* heuristic for
-        # enemy retargeting; gives O(1) lookup instead of the previous
-        # O(blockers) ``min`` over every blocker per A* node, which was
-        # the dominant cost of ``w.combat`` in long games (perf log
-        # showed it growing to >800ms/frame after 2h with many built
-        # structures).  Cost here is O(|walkable_coords|) per tick,
-        # which is bounded by the map size.
-        blocker_dist: dict[HexCoord, int] = {}
-        if blocker_coords:
+        # 4) Multi-source BFS distance field used as the A* heuristic.
+        # Source set = real (non-wall) targets.  Walls are treated as
+        # passable at unit cost in this BFS, which keeps the heuristic
+        # admissible (real A* assigns wall hexes a *higher* per-step
+        # cost equal to the wall's break-time-in-hex-steps; the BFS
+        # underestimates that cost so h \u2264 true cost holds).  Tiles
+        # not in this map are unreachable through the relaxed graph
+        # and fall back to raw hex distance in ``heuristic``.
+        target_dist: dict[HexCoord, int] = {}
+        if target_coords:
             queue: deque[HexCoord] = deque()
-            for bc in blocker_coords:
-                blocker_dist[bc] = 0
-                queue.append(bc)
+            for tc in target_coords:
+                target_dist[tc] = 0
+                queue.append(tc)
             while queue:
                 cur = queue.popleft()
-                d = blocker_dist[cur] + 1
+                d = target_dist[cur] + 1
                 for nb in cur.neighbors():
-                    if nb in blocker_dist:
+                    if nb in target_dist:
                         continue
                     if nb not in valid_coords:
                         continue
-                    blocker_dist[nb] = d
+                    # Real (non-wall) blocker tiles other than the
+                    # source set act as solid obstacles for the
+                    # heuristic flood (you can't path *through* a
+                    # turret to reach the camp behind it).
+                    if nb in target_coords:
+                        continue
+                    target_dist[nb] = d
                     queue.append(nb)
 
         return {
@@ -306,10 +319,12 @@ class CombatManager:
             "blocker_coords": blocker_coords,
             "blocker_by_coord": blocker_by_coord,
             "blocker_targets": blocker_targets,
+            "wall_coords": wall_coords,
+            "target_coords": target_coords,
             "weapon_buildings": weapon_buildings,
             "enemy_index": enemy_index,
             "enemy_by_id": enemy_by_id,
-            "blocker_dist": blocker_dist,
+            "target_dist": target_dist,
         }
 
     def _range_offsets_for(self, range_hex: int) -> list[tuple[int, int]]:
@@ -415,8 +430,15 @@ class CombatManager:
         blocker_targets: list[Building] = ctx["blocker_targets"]
         blocker_coords: set[HexCoord] = ctx["blocker_coords"]
         blocker_by_coord: dict[HexCoord, Building] = ctx["blocker_by_coord"]
-        blocker_dist: dict[HexCoord, int] = ctx["blocker_dist"]
+        wall_coords: set[HexCoord] = ctx["wall_coords"]
+        target_coords: set[HexCoord] = ctx["target_coords"]
+        target_dist: dict[HexCoord, int] = ctx["target_dist"]
         valid_coords: set[HexCoord] = ctx["valid_coords"]
+        wall_hp = float(
+            params.BUILDING_MAX_HEALTH.get(
+                "WALL", params.BUILDING_DEFAULT_MAX_HEALTH,
+            )
+        )
         # Per-tick budget of expensive retargets (A* + scan).  The rest
         # are deferred to the next tick by leaving their timer at <= 0
         # so they get picked up next frame.
@@ -445,10 +467,24 @@ class CombatManager:
             enemy.retarget_timer -= dt
             if enemy.retarget_timer <= 0.0 and retarget_budget > 0:
                 retarget_budget -= 1
+                # Per-enemy cost (in hex-step equivalents) of breaking
+                # through one wall hex.  ``time_to_break = wall_hp /
+                # dps``; converted to "how many ordinary movement
+                # steps would take the same amount of real time".
+                # Min 2 so the planner never prefers a wall over a
+                # detour of equal length.
+                attack_cd = float(data["attack_cd"])
+                damage = float(data["damage"]) or 1.0
+                dps = damage / max(attack_cd, 0.05)
+                time_to_break = wall_hp / max(dps, 0.01)
+                wall_step_cost = max(
+                    2, int(math.ceil(time_to_break / max(period, 0.05)))
+                )
                 self._update_enemy_target(
                     world, enemy, blocker_targets,
-                    valid_coords, blocker_coords,
-                    blocker_by_coord, blocker_dist,
+                    valid_coords, blocker_coords, wall_coords,
+                    target_coords, blocker_by_coord, target_dist,
+                    wall_step_cost,
                 )
                 if enemy.path or enemy.target_building_id != 0:
                     enemy.retarget_timer = retarget_ok
@@ -469,24 +505,30 @@ class CombatManager:
                              blocker_targets: list[Building],
                              valid_coords: set[HexCoord],
                              blocker_coords: set[HexCoord],
+                             wall_coords: set[HexCoord],
+                             target_coords: set[HexCoord],
                              blocker_by_coord: dict[HexCoord, Building],
-                             blocker_dist: dict[HexCoord, int]) -> None:
+                             target_dist: dict[HexCoord, int],
+                             wall_step_cost: int) -> None:
         """A* from the enemy toward the nearest *reachable* SURVIVOR
-        blocker.
+        target building.
 
-        The heuristic is the minimum hex distance to any blocker, and
-        the goal test is "current tile is adjacent to a blocker".  This
-        gives us correct behaviour in two important cases:
+        The graph is the walkable grid plus walls; walls cost
+        ``wall_step_cost`` hex-steps to traverse (the time it takes
+        the enemy to break one wall, expressed in hex-step
+        equivalents).  Real targets (camps, habitats, factories,
+        turrets) remain solid \u2014 the goal test is "current tile is
+        adjacent to a real target" so the enemy stops one hex away
+        and attacks.  Net effect: enemies route around walls when the
+        detour is cheap, and break through them only when the detour
+        cost exceeds the wall-break cost \u2014 exactly the player's
+        intuition.
 
-        * if the closest blocker by raw distance is walled off, A*
-          naturally falls through to the next-nearest reachable one
-          rather than getting stuck (the old multi-target BFS handled
-          this too);
-        * because A* is heuristic-guided, it scales to the full ~80-
-          radius map.  A pure flood BFS bounded at ~1500 nodes only
-          covers ~22 hexes, which is why enemies spawned at edge
-          ancient towers used to just sit there — the player's base
-          was outside the BFS horizon.
+        The heuristic is a pre-computed multi-source BFS distance to
+        the nearest real target with walls treated as cost-1 (built
+        once per tick by ``_build_tick_context``).  Because the BFS
+        underestimates the true wall-traversal cost, the heuristic
+        stays admissible and A* still produces optimal paths.
         """
         if not blocker_targets:
             enemy.target_building_id = 0
@@ -497,14 +539,20 @@ class CombatManager:
         priority_idx = params.ENEMY_TARGET_PRIORITY_INDEX
         fallback = len(priority_idx)
 
-        # Edge case: enemy is already on / adjacent to a blocker.
+        # Edge case: enemy is already adjacent to (or standing on) a
+        # *real* target.  Walls are skipped here because we'd rather
+        # ignore them and let the A* below decide whether to break
+        # through to something better.
         start = enemy.coord
         adj_target: Building | None = None
         adj_key: tuple[int, int] | None = None
-        if start in blocker_by_coord:
-            adj_target = blocker_by_coord[start]
-            adj_key = (0, priority_idx.get(adj_target.type.name, fallback))
+        on_b = blocker_by_coord.get(start)
+        if on_b is not None and start not in wall_coords:
+            adj_target = on_b
+            adj_key = (0, priority_idx.get(on_b.type.name, fallback))
         for nb in start.neighbors():
+            if nb in wall_coords:
+                continue
             b = blocker_by_coord.get(nb)
             if b is None:
                 continue
@@ -520,23 +568,15 @@ class CombatManager:
             )
             return
 
-        # Multi-target A*.  Heuristic = pre-computed multi-source BFS
-        # distance from each tile to the nearest reachable blocker
-        # (built once per tick in ``_build_tick_context``).  This used
-        # to be ``min over blocker_list of c.distance(bc)`` per node,
-        # which scaled O(blockers) per A* expansion and dominated
-        # ``w.combat`` once the player had built ~hundreds of
-        # structures (perf logs showed >800ms/frame on long sessions).
-        # An unreachable tile (or one outside the BFS) defaults to
-        # raw hex distance to the start, which is still admissible.
         BIG = 1_000_000
 
         def heuristic(c: HexCoord) -> int:
-            d = blocker_dist.get(c)
+            d = target_dist.get(c)
             if d is None:
                 return BIG
-            # ``blocker_dist[c]`` is steps from c to a blocker tile;
-            # the goal is "adjacent to a blocker", so subtract one.
+            # ``target_dist[c]`` is steps from c to a target tile via
+            # the walls-passable BFS; goal is "adjacent to a target",
+            # so subtract one.
             return d - 1 if d > 0 else 0
 
         max_depth = int(params.ENEMY_PATHFIND_MAX_DEPTH)
@@ -550,10 +590,14 @@ class CombatManager:
         expanded = 0
         while open_heap:
             _, _, cur = heapq.heappop(open_heap)
-            # Goal test: adjacent to any blocker.
+            cur_g = g_score[cur]
+            # Goal test: adjacent to any *real* target (walls don't
+            # count \u2014 they aren't worth attacking on their own).
             best_adj: Building | None = None
             best_adj_key: tuple[int, int] | None = None
             for nb in cur.neighbors():
+                if nb not in target_coords:
+                    continue
                 b = blocker_by_coord.get(nb)
                 if b is None:
                     continue
@@ -567,15 +611,17 @@ class CombatManager:
             expanded += 1
             if expanded > max_depth:
                 break
-            cur_g = g_score[cur]
             for nb in cur.neighbors():
                 if nb not in valid_coords:
                     continue
-                if nb in blocker_coords:
-                    # Other blockers act as walls (they'll be picked
-                    # up by the goal test above when we're adjacent).
+                if nb in target_coords:
+                    # Real targets are solid \u2014 picked up by the
+                    # goal test above when we're adjacent.
                     continue
-                tentative = cur_g + 1
+                # Walls are passable but expensive (== break time in
+                # hex-step equivalents).  Other tiles cost 1.
+                step_cost = wall_step_cost if nb in wall_coords else 1
+                tentative = cur_g + step_cost
                 old = g_score.get(nb)
                 if old is not None and tentative >= old:
                     continue
@@ -703,16 +749,45 @@ class CombatManager:
         """If a player building / colonist is on or adjacent to the
         enemy, attack it.  Returns True if an attack occurred this
         frame (so the caller skips the move step).
+
+        Preference order: a real target (camp, habitat, factory,
+        turret \u2026) on or adjacent to the enemy is always chosen
+        over a wall.  Walls are only attacked when there is nothing
+        else to hit \u2014 which means the A*-planned path runs
+        through that wall and there are no nearby targets to pursue
+        opportunistically.
         """
-        # Look for adjacent player buildings via the per-tick blocker
-        # dict — avoids 7 grid.get + attribute lookups per enemy.
-        target_b: Building | None = blocker_by_coord.get(enemy.coord)
+        wall_set = params.ENEMY_PATHABLE_WALL_TYPES
+        target_b: Building | None = None
+        wall_b: Building | None = None
+        on_b = blocker_by_coord.get(enemy.coord)
+        if on_b is not None:
+            if on_b.type.name in wall_set:
+                wall_b = on_b
+            else:
+                target_b = on_b
         if target_b is None:
             for c in enemy.coord.neighbors():
                 b = blocker_by_coord.get(c)
-                if b is not None:
-                    target_b = b
-                    break
+                if b is None:
+                    continue
+                if b.type.name in wall_set:
+                    if wall_b is None:
+                        wall_b = b
+                    continue
+                target_b = b
+                break
+        if target_b is None:
+            # Prefer the wall on the planned path (if any) so the
+            # enemy makes progress toward its real target instead of
+            # randomly chewing on a side wall.
+            if enemy.path:
+                next_coord = enemy.path[0]
+                planned = blocker_by_coord.get(next_coord)
+                if planned is not None and planned.type.name in wall_set:
+                    target_b = planned
+            if target_b is None:
+                target_b = wall_b
         if target_b is None:
             return False
 
