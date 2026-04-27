@@ -217,6 +217,16 @@ class UIManager:
 
 _pending_tooltip: str | None = None
 _pending_tooltip_title: str | None = None
+# Master switch for hover tooltips.  Disabled at world creation when
+# the player unchecks "Enable Tutorial" on the menu so the run is
+# played completely free of pop-up help.
+_tooltips_enabled: bool = True
+
+
+def set_tooltips_enabled(enabled: bool) -> None:
+    """Toggle the global tooltip system on or off."""
+    global _tooltips_enabled
+    _tooltips_enabled = bool(enabled)
 
 
 def set_tooltip(text: str, title: str | None = None) -> None:
@@ -227,6 +237,8 @@ def set_tooltip(text: str, title: str | None = None) -> None:
     it is rendered on the first line in accent colour above the body
     so callers can show ``"Build Cost"`` / etc. headers.
     """
+    if not _tooltips_enabled:
+        return
     global _pending_tooltip, _pending_tooltip_title
     _pending_tooltip = text
     _pending_tooltip_title = title

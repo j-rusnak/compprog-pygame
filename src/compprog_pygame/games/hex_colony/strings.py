@@ -206,6 +206,7 @@ MENU_DIFFICULTY_DESOLATION = "Desolation"
 MENU_DIFFICULTY_EASY_DESC = "Rebuild humanity's old home"
 MENU_DIFFICULTY_HARD_DESC = "There's something out there..."
 MENU_DIFFICULTY_DESOLATION_DESC = "You will not escape."
+MENU_TUTORIAL_LABEL  = "Enable Tutorial"
 MENU_PLAY_BUTTON     = "Play"
 MENU_HINT            = "Enter seed  \u2022  ENTER or click Play  \u2022  ESC to go back"
 

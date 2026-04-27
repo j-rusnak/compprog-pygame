@@ -37,6 +37,7 @@ def _launch(screen: pygame.Surface, clock: pygame.time.Clock) -> None:
             HexColonySettings(),
             world_radius=result.world_radius,
             difficulty=result.difficulty,
+            tutorial_enabled=result.tutorial_enabled,
         )
 
         # Generate the world on a background thread while the intro

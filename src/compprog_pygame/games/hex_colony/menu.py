@@ -29,6 +29,7 @@ from compprog_pygame.games.hex_colony.strings import (
     MENU_DIFFICULTY_EASY_DESC,
     MENU_DIFFICULTY_HARD_DESC,
     MENU_DIFFICULTY_DESOLATION_DESC,
+    MENU_TUTORIAL_LABEL,
     MENU_PLAY_BUTTON,
     MENU_HINT,
 )
@@ -100,6 +101,7 @@ class MenuResult:
     seed: str
     world_radius: int
     difficulty: Difficulty
+    tutorial_enabled: bool
 
 
 class HexColonyMenu:
@@ -115,6 +117,7 @@ class HexColonyMenu:
         self.input_active = True
         self.world_radius = _DEFAULTS.world_radius
         self.difficulty = _DEFAULTS.difficulty
+        self.tutorial_enabled = _DEFAULTS.tutorial_enabled
         self._dragging_slider = False
         self.result: MenuResult | None = None
         self.quit = False
@@ -175,7 +178,7 @@ class HexColonyMenu:
 
     def _card_rect(self) -> pygame.Rect:
         w = min(680, self.width - 80)
-        h = 460
+        h = 510
         x = (self.width - w) // 2
         # No logo above the card any more — center vertically with a
         # small upward bias so the Play button below isn't crammed
@@ -228,9 +231,26 @@ class HexColonyMenu:
     def _play_rect(self) -> pygame.Rect:
         w, h = 220, 56
         x = (self.width - w) // 2
+        # Sit just below the tutorial checkbox so the button visually
+        # anchors the form.
+        y = self._tutorial_checkbox_rect().bottom + 28
+        return pygame.Rect(x, y, w, h)
+
+    def _tutorial_checkbox_rect(self) -> pygame.Rect:
+        """Bounding rect of the "Enable Tutorial" checkbox row.
+
+        Includes both the box and the clickable label — a click
+        anywhere inside this rect toggles the flag.
+        """
+        c = self._card_rect()
         easy_rect, _, _ = self._difficulty_rects()
-        # Sit just below the card so the button visually anchors the form.
-        y = easy_rect.bottom + 40
+        # Sit below the difficulty description (which renders
+        # ``easy_rect.bottom + 12``).  Use a row roughly the width of
+        # one of the difficulty buttons, centered on the card.
+        h = 32
+        w = c.w - 80
+        x = c.x + 40
+        y = easy_rect.bottom + 44
         return pygame.Rect(x, y, w, h)
 
     # ── Main loop ────────────────────────────────────────────────
@@ -341,6 +361,10 @@ class HexColonyMenu:
             self.difficulty = Difficulty.DESOLATION
             return
 
+        if self._tutorial_checkbox_rect().collidepoint(pos):
+            self.tutorial_enabled = not self.tutorial_enabled
+            return
+
         if self._play_rect().collidepoint(pos):
             self._start_game()
 
@@ -358,6 +382,7 @@ class HexColonyMenu:
             seed=self.seed_text.strip(),
             world_radius=self.world_radius,
             difficulty=self.difficulty,
+            tutorial_enabled=self.tutorial_enabled,
         )
 
     # ── Drawing ──────────────────────────────────────────────────
@@ -684,6 +709,55 @@ class HexColonyMenu:
         surface.blit(
             desc_surf,
             (card.x + (card.w - desc_surf.get_width()) // 2, easy_rect.bottom + 12),
+        )
+
+        # ── Tutorial enable checkbox ─────────────────────────────
+        cb_row = self._tutorial_checkbox_rect()
+        cb_hover = cb_row.collidepoint(mouse)
+        # Box on the left, label to its right, all centered as a unit.
+        box_size = 22
+        label_surf = self.input_font.render(
+            MENU_TUTORIAL_LABEL, True, BUTTON_TEXT,
+        )
+        gap = 12
+        total_w = box_size + gap + label_surf.get_width()
+        unit_x = cb_row.x + (cb_row.w - total_w) // 2
+        box_rect = pygame.Rect(
+            unit_x, cb_row.y + (cb_row.h - box_size) // 2,
+            box_size, box_size,
+        )
+        # Box background + border
+        if self.tutorial_enabled:
+            box_bg = BUTTON_ACTIVE
+            box_border = ACCENT_BRIGHT
+        elif cb_hover:
+            box_bg = BUTTON_HOVER
+            box_border = CARD_BORDER_HI
+        else:
+            box_bg = INPUT_BG
+            box_border = INPUT_BORDER
+        pygame.draw.rect(surface, box_bg, box_rect, border_radius=5)
+        pygame.draw.rect(surface, box_border, box_rect, width=2, border_radius=5)
+        # Check mark when enabled
+        if self.tutorial_enabled:
+            cx = box_rect.x
+            cy = box_rect.y
+            pygame.draw.lines(
+                surface,
+                ACCENT_BRIGHT,
+                False,
+                [
+                    (cx + 4, cy + 11),
+                    (cx + 9, cy + 16),
+                    (cx + 18, cy + 5),
+                ],
+                3,
+            )
+        # Label
+        surface.blit(
+            label_surf,
+            (box_rect.right + gap,
+             cb_row.y + (cb_row.h - label_surf.get_height()) // 2),
         )
 
         # ── Play button ──────────────────────────────────────────

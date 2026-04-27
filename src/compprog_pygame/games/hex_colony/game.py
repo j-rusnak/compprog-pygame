@@ -222,6 +222,14 @@ class Game:
         self._tier_popup = TierPopup()
         self._tutorial = TutorialPanel()
         self._tutorial.set_bottom_bar(self._bottom_bar)
+        # Honour the menu's "Enable Tutorial" checkbox.  When the
+        # player opted out of tutorials at world creation, both the
+        # tutorial pop-up cards and the global hover-tooltip system
+        # stay silent for the entire run.
+        tut_on = bool(getattr(world.settings, "tutorial_enabled", True))
+        self._tutorial.active = tut_on
+        from compprog_pygame.games.hex_colony.ui import set_tooltips_enabled
+        set_tooltips_enabled(tut_on)
         self.ui.add_panel(self._resource_bar)
         self.ui.add_panel(self._bottom_bar)
         self.ui.add_panel(self._building_info)

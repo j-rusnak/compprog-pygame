@@ -38,6 +38,12 @@ class HexColonySettings:
     # enemy systems are implemented.
     difficulty: Difficulty = Difficulty.EASY
 
+    # When False, the in-game tutorial system is disabled at world
+    # creation: no pop-up tutorial cards, no in-world ghost arrows,
+    # and hover tooltips on UI elements are suppressed.  Toggled by
+    # the "Enable Tutorial" checkbox on the menu screen.
+    tutorial_enabled: bool = True
+
     # People movement
     person_speed: float = params.PERSON_SPEED
 
