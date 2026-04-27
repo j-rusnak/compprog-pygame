@@ -234,6 +234,19 @@ class AncientThreat:
             # we want the tower itself to "occupy" that tile).
             existing = tile.building
             if existing is not None:
+                # Trigger the same emergency-refund safety net the
+                # combat manager uses when an enemy melees the
+                # player's last basic producer to death.  Without
+                # this hook, a wasteland tower expanding over the
+                # last Woodcutter / Quarry / Gatherer would soft-lock
+                # the player on Evolution mode even though combat
+                # destruction would have granted a free copy.
+                combat = getattr(world, "combat", None)
+                if combat is not None:
+                    try:
+                        combat._maybe_grant_emergency_refund(world, existing)
+                    except Exception:
+                        pass
                 world.demolish(existing)
                 world.mark_housing_dirty()
 

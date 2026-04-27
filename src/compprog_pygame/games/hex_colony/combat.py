@@ -112,6 +112,30 @@ class CombatManager:
         # tick and reused forever.  ``invalidate_terrain_cache()``
         # forces a rebuild (e.g. world regen).
         self._terrain_walkable_cache: set[HexCoord] | None = None
+        # Cached neighbour-coord table indexed by walkable HexCoord.
+        # Built lazily alongside ``_terrain_walkable_cache`` and used
+        # by the per-tick BFS to avoid allocating 6 fresh HexCoords
+        # for every node \u2014 which used to dominate frame time once
+        # enemies were spawned (~470ms / tick at 150 enemies).
+        self._walkable_neighbors: dict[HexCoord, tuple[HexCoord, ...]] | None = None
+        # Same graph as ``_walkable_neighbors`` but keyed by raw
+        # ``(q, r)`` tuples \u2014 used by the multi-source BFS to skip
+        # the slow custom ``HexCoord.__hash__`` (~3x BFS speedup).
+        self._walkable_neighbors_t: dict[tuple[int, int], tuple[tuple[int, int], ...]] | None = None
+        # Cached SURVIVOR-blocker / target / wall scan + multi-source
+        # BFS distance field.  Building topology only changes when a
+        # building is placed or destroyed, which bumps
+        # ``world._topology_version`` \u2014 we just compare that on
+        # each tick instead of needing manual invalidation hooks.
+        self._cached_topology_version: int = -1
+        self._cached_blocker_targets: list[Building] = []
+        self._cached_blocker_coords: set[HexCoord] = set()
+        self._cached_blocker_by_coord: dict[HexCoord, Building] = {}
+        self._cached_wall_coords: set[HexCoord] = set()
+        self._cached_target_coords: set[HexCoord] = set()
+        self._cached_weapon_buildings: list[tuple[Building, str]] = []
+        self._cached_target_dist: dict[tuple[int, int], int] = {}
+        self._cached_target_t: set[tuple[int, int]] = set()
         # Pre-built table of axial offsets per ring distance, keyed
         # by max distance.  Used by ``_closest_enemy_in_range`` to
         # iterate only the hexes inside a turret's range.
@@ -120,6 +144,9 @@ class CombatManager:
     def invalidate_terrain_cache(self) -> None:
         """Drop the static walkable-terrain cache (call after world regen)."""
         self._terrain_walkable_cache = None
+        self._walkable_neighbors = None
+        self._walkable_neighbors_t = None
+        self._cached_topology_version = -1
 
     def _enemy_count_mult(self, world: "World") -> int:
         """Per-difficulty enemy spawn-count multiplier."""
@@ -240,43 +267,172 @@ class CombatManager:
           - ``enemy_index``      dict[HexCoord, list[Enemy]] (live only).
           - ``enemy_by_id``      dict[int, Enemy].
         """
-        # 1) Static terrain walkability — cache forever.
+        # 1) Static terrain walkability + neighbour table \u2014 cached
+        # forever (terrain doesn't change).  ``_walkable_neighbors``
+        # maps each walkable HexCoord to a tuple of its walkable
+        # HexCoord neighbours, so the per-tick BFS doesn't allocate
+        # any HexCoords or call ``HexCoord.__hash__`` on offset
+        # tuples.  We *also* keep a parallel raw-tuple variant of
+        # the same graph keyed by ``(q, r)`` ints \u2014 native tuples
+        # hash 2-3x faster than the HexCoord dataclass, which makes
+        # the multi-source BFS over a 100k-hex map ~3x cheaper.
         if self._terrain_walkable_cache is None:
             terrain_blockers = params.ENEMY_TERRAIN_BLOCKERS
             self._terrain_walkable_cache = {
                 t.coord for t in world.grid.tiles()
                 if t.terrain.name not in terrain_blockers
             }
+            wset = self._terrain_walkable_cache
+            wn: dict[HexCoord, tuple[HexCoord, ...]] = {}
+            wnt: dict[tuple[int, int], tuple[tuple[int, int], ...]] = {}
+            for c in wset:
+                cq, cr = c.q, c.r
+                neighbours = (
+                    HexCoord(cq + 1, cr),
+                    HexCoord(cq + 1, cr - 1),
+                    HexCoord(cq, cr - 1),
+                    HexCoord(cq - 1, cr),
+                    HexCoord(cq - 1, cr + 1),
+                    HexCoord(cq, cr + 1),
+                )
+                walkable_nb = tuple(nb for nb in neighbours if nb in wset)
+                wn[c] = walkable_nb
+                wnt[(cq, cr)] = tuple((nb.q, nb.r) for nb in walkable_nb)
+            self._walkable_neighbors = wn
+            self._walkable_neighbors_t = wnt
         valid_coords = self._terrain_walkable_cache
+        walkable_neighbors = self._walkable_neighbors
+        walkable_neighbors_t = self._walkable_neighbors_t
+        assert walkable_neighbors is not None and walkable_neighbors_t is not None
 
-        # 2) Blockers + weapon-bearing buildings in a single pass.
-        blocker_set = params.ENEMY_BUILDING_BLOCKERS
-        wall_set = params.ENEMY_PATHABLE_WALL_TYPES
-        blocker_targets: list[Building] = []
-        blocker_coords: set[HexCoord] = set()
-        blocker_by_coord: dict[HexCoord, Building] = {}
-        wall_coords: set[HexCoord] = set()
-        target_coords: set[HexCoord] = set()  # blockers minus walls
-        weapon_buildings: list[tuple[Building, str]] = []
-        TURRET = BuildingType.TURRET
-        CAMP = BuildingType.CAMP
-        for b in world.buildings.buildings:
-            if b.faction != "SURVIVOR":
-                continue
-            btype = b.type
-            tname = btype.name
-            if tname in blocker_set:
-                blocker_targets.append(b)
-                blocker_coords.add(b.coord)
-                blocker_by_coord[b.coord] = b
-                if tname in wall_set:
-                    wall_coords.add(b.coord)
-                else:
-                    target_coords.add(b.coord)
-            if btype is TURRET:
-                weapon_buildings.append((b, "TURRET"))
-            elif btype is CAMP:
-                weapon_buildings.append((b, "CAMP"))
+        # 2) Blockers + weapon-bearing buildings \u2014 cached across
+        # ticks and rebuilt only when topology changes.  Building
+        # placements/removals bump ``world._topology_version`` so
+        # comparing it gives us automatic invalidation with no
+        # manual hooks at every demolish/place site.  The big cost
+        # baked in here is the multi-source BFS distance field; at
+        # 150 enemies it cost ~470ms / tick before being cached.
+        topo_v = getattr(world, "_topology_version", 0)
+        if topo_v != self._cached_topology_version:
+            blocker_set = params.ENEMY_BUILDING_BLOCKERS
+            wall_set = params.ENEMY_PATHABLE_WALL_TYPES
+            blocker_targets: list[Building] = []
+            blocker_coords: set[HexCoord] = set()
+            blocker_by_coord: dict[HexCoord, Building] = {}
+            wall_coords: set[HexCoord] = set()
+            target_coords: set[HexCoord] = set()
+            weapon_buildings: list[tuple[Building, str]] = []
+            TURRET = BuildingType.TURRET
+            CAMP = BuildingType.CAMP
+            for b in world.buildings.buildings:
+                if b.faction != "SURVIVOR":
+                    continue
+                btype = b.type
+                tname = btype.name
+                if tname in blocker_set:
+                    blocker_targets.append(b)
+                    # Multi-tile buildings (e.g. Research Center)
+                    # occupy ``b.coord`` plus every coord in
+                    # ``b.footprint``.  Register every occupied tile
+                    # so (a) the multi-source BFS can spread out from
+                    # the entire footprint instead of just the anchor
+                    # \u2014 the anchor of a 7-hex flower is fully
+                    # surrounded by other footprint tiles, so a BFS
+                    # from the anchor alone never escapes \u2014 and
+                    # (b) an enemy adjacent to *any* footprint tile
+                    # can find the building via ``blocker_by_coord``
+                    # and attack it.  Without this, enemies stand on
+                    # the outer ring around a Research Center forever
+                    # without ever recognising it as a target.
+                    is_wall = tname in wall_set
+                    for occ in (b.coord, *b.footprint):
+                        blocker_coords.add(occ)
+                        blocker_by_coord[occ] = b
+                        if is_wall:
+                            wall_coords.add(occ)
+                        else:
+                            target_coords.add(occ)
+                if btype is TURRET:
+                    weapon_buildings.append((b, "TURRET"))
+                elif btype is CAMP:
+                    weapon_buildings.append((b, "CAMP"))
+
+            # Multi-source BFS distance field used as the A*
+            # heuristic for the (common) walls-solid pathfinding
+            # phase.  Walls and other real targets act as obstacles.
+            #
+            # Two perf tricks:
+            #   * Run the BFS in raw ``(q, r)`` tuple space \u2014 native
+            #     tuples hash ~3x faster than the custom HexCoord
+            #     dataclass, and we only convert back at the end.
+            #   * Cap the spread depth at ``BFS_MAX_DEPTH`` (which is
+            #     a multiple of ENEMY_PATHFIND_MAX_DEPTH).  Hexes
+            #     further than the cap aren't reachable by phase-1
+            #     A* anyway \u2014 enemies that far out wander toward
+            #     the camp until they get into BFS range.  On a
+            #     ~120k-hex map this cuts rebuild from ~800ms to
+            #     ~50ms.
+            target_dist: dict[tuple[int, int], int] = {}
+            # Cap how far the BFS spreads.  The heuristic is only
+            # consulted by phase-1 gradient descent, which itself
+            # caps at ``cur_d + 4`` steps from the enemy's start.
+            # Anything beyond ``BFS_MAX_DEPTH`` hexes from a target
+            # is irrelevant to phase-1 pathing \u2014 enemies that far
+            # out simply wander toward the camp until they enter
+            # range.  On a ~120k-hex map this caps rebuild at the
+            # area of the BFS ball (\u224b 3 d\u00b2) rather than the
+            # entire map.
+            BFS_MAX_DEPTH = int(getattr(
+                params, "ENEMY_BFS_MAX_DEPTH", 200,
+            ))
+            if target_coords:
+                wall_t: set[tuple[int, int]] = {
+                    (c.q, c.r) for c in wall_coords
+                }
+                target_t: set[tuple[int, int]] = {
+                    (c.q, c.r) for c in target_coords
+                }
+                queue_t: deque[tuple[int, int]] = deque()
+                for tt in target_t:
+                    target_dist[tt] = 0
+                    queue_t.append(tt)
+                wnt_get = walkable_neighbors_t.get
+                EMPTY_T: tuple[tuple[int, int], ...] = ()
+                while queue_t:
+                    cur_t = queue_t.popleft()
+                    d = target_dist[cur_t] + 1
+                    if d > BFS_MAX_DEPTH:
+                        continue
+                    for nb_t in wnt_get(cur_t, EMPTY_T):
+                        if nb_t in target_dist:
+                            continue
+                        if nb_t in wall_t or nb_t in target_t:
+                            continue
+                        target_dist[nb_t] = d
+                        queue_t.append(nb_t)
+
+            self._cached_blocker_targets = blocker_targets
+            self._cached_blocker_coords = blocker_coords
+            self._cached_blocker_by_coord = blocker_by_coord
+            self._cached_wall_coords = wall_coords
+            self._cached_target_coords = target_coords
+            self._cached_weapon_buildings = weapon_buildings
+            self._cached_target_dist = target_dist
+            # Cache the tuple-keyed target set too so phase-1
+            # gradient descent doesn't have to rebuild it on every
+            # retarget.
+            self._cached_target_t = (
+                target_t if target_coords else set()
+            )
+            self._cached_topology_version = topo_v
+
+        blocker_targets = self._cached_blocker_targets
+        blocker_coords = self._cached_blocker_coords
+        blocker_by_coord = self._cached_blocker_by_coord
+        wall_coords = self._cached_wall_coords
+        target_coords = self._cached_target_coords
+        weapon_buildings = self._cached_weapon_buildings
+        target_dist = self._cached_target_dist
 
         # 3) Spatial enemy index + id lookup for projectiles.
         enemy_index: dict[HexCoord, list[Enemy]] = {}
@@ -291,42 +447,16 @@ class CombatManager:
             else:
                 bucket.append(e)
 
-        # 4) Multi-source BFS distance field used as the A* heuristic
-        # for the (common) walls-solid pathfinding phase.  Source set
-        # = real (non-wall) targets; walls and other real targets act
-        # as obstacles.  This gives an admissible heuristic for
-        # ``_update_enemy_target`` phase 1 (walls solid) and is
-        # ignored by phase 2 (walls passable, which uses a raw hex
-        # distance heuristic instead).  Cost is O(|walkable_coords|)
-        # per tick, bounded by the map size.
-        target_dist: dict[HexCoord, int] = {}
-        if target_coords:
-            queue: deque[HexCoord] = deque()
-            for tc in target_coords:
-                target_dist[tc] = 0
-                queue.append(tc)
-            while queue:
-                cur = queue.popleft()
-                d = target_dist[cur] + 1
-                for nb in cur.neighbors():
-                    if nb in target_dist:
-                        continue
-                    if nb not in valid_coords:
-                        continue
-                    # Walls and other real targets block the heuristic
-                    # flood (matching phase-1 A* semantics).
-                    if nb in wall_coords or nb in target_coords:
-                        continue
-                    target_dist[nb] = d
-                    queue.append(nb)
-
         return {
             "valid_coords": valid_coords,
+            "walkable_neighbors": walkable_neighbors,
+            "walkable_neighbors_t": walkable_neighbors_t,
             "blocker_coords": blocker_coords,
             "blocker_by_coord": blocker_by_coord,
             "blocker_targets": blocker_targets,
             "wall_coords": wall_coords,
             "target_coords": target_coords,
+            "target_t": self._cached_target_t,
             "weapon_buildings": weapon_buildings,
             "enemy_index": enemy_index,
             "enemy_by_id": enemy_by_id,
@@ -438,7 +568,7 @@ class CombatManager:
         blocker_by_coord: dict[HexCoord, Building] = ctx["blocker_by_coord"]
         wall_coords: set[HexCoord] = ctx["wall_coords"]
         target_coords: set[HexCoord] = ctx["target_coords"]
-        target_dist: dict[HexCoord, int] = ctx["target_dist"]
+        target_dist: dict[tuple[int, int], int] = ctx["target_dist"]
         valid_coords: set[HexCoord] = ctx["valid_coords"]
         wall_hp = float(
             params.BUILDING_MAX_HEALTH.get(
@@ -514,7 +644,7 @@ class CombatManager:
                              wall_coords: set[HexCoord],
                              target_coords: set[HexCoord],
                              blocker_by_coord: dict[HexCoord, Building],
-                             target_dist: dict[HexCoord, int],
+                             target_dist: dict[tuple[int, int], int],
                              wall_step_cost: int,
                              ctx: dict) -> None:
         """A* from the enemy toward the nearest *reachable* SURVIVOR
@@ -581,33 +711,75 @@ class CombatManager:
 
         max_depth = int(params.ENEMY_PATHFIND_MAX_DEPTH)
 
-        # Phase 1: walls solid.  Heuristic = pre-computed BFS distance.
         BIG = 1_000_000
 
-        def h_phase1(c: HexCoord) -> int:
-            d = target_dist.get(c)
-            if d is None:
-                return BIG
-            return d - 1 if d > 0 else 0
-
-        # Skip phase 1 entirely if the BFS didn't reach the enemy:
-        # there is *no* wall-free path, so we'd just thrash A* up to
-        # ``max_depth`` for nothing before falling through to phase 2.
-        if start in target_dist:
-            found_target, found_endpoint, prev = self._astar(
-                start=start,
-                valid_coords=valid_coords,
-                target_coords=target_coords,
-                blocker_by_coord=blocker_by_coord,
-                priority_idx=priority_idx,
-                fallback=fallback,
-                heuristic=h_phase1,
-                max_depth=max_depth,
-                wall_coords=wall_coords,
-                wall_step_cost=None,  # walls solid in phase 1
-            )
-        else:
-            found_target, found_endpoint, prev = None, None, {}
+        # Phase 1: walls solid.  We already have a BFS distance field
+        # (``target_dist``) over the same graph A* would search, so
+        # *gradient descent* on that field finds an optimal path in
+        # O(path_length) hex steps \u2014 typically <50 \u2014 instead
+        # of an O(max_depth) A* search.  This is the big-win
+        # replacement for the previous ~1500-node-per-retarget phase-1
+        # A*, which dominated frames once enough enemies were alive.
+        found_target = None
+        found_endpoint = None
+        prev: dict[HexCoord, HexCoord] = {}
+        # Cached neighbour table avoids allocating 6 fresh HexCoords
+        # per gradient-descent step.  In hot retarget paths this used
+        # to dominate (~47ms / tick) once enough enemies were alive.
+        wn = ctx["walkable_neighbors"]
+        wnt = ctx["walkable_neighbors_t"]
+        target_t_set: set[tuple[int, int]] = ctx["target_t"]
+        EMPTY: tuple[HexCoord, ...] = ()
+        EMPTY_T: tuple[tuple[int, int], ...] = ()
+        wn_get = wn.get
+        wnt_get = wnt.get
+        td_get = target_dist.get  # tuple-keyed
+        start_t = (start.q, start.r)
+        if start_t in target_dist:
+            cur = start
+            cur_t = start_t
+            cur_d = target_dist[start_t]
+            for _ in range(cur_d + 4):
+                # Goal test: any neighbour is a *real* target?
+                best_b: Building | None = None
+                best_k: tuple[int, int] | None = None
+                for nb in wn_get(cur, EMPTY):
+                    if nb not in target_coords:
+                        continue
+                    b = blocker_by_coord.get(nb)
+                    if b is None:
+                        continue
+                    k = (0, priority_idx.get(b.type.name, fallback))
+                    if best_k is None or k < best_k:
+                        best_b, best_k = b, k
+                if best_b is not None:
+                    found_target = best_b
+                    found_endpoint = cur
+                    break
+                # Step to the neighbour with the smallest target_dist.
+                next_nb: HexCoord | None = None
+                next_nb_t: tuple[int, int] | None = None
+                next_d = cur_d
+                # Iterate HexCoord and tuple neighbours in lockstep
+                # \u2014 they are the same graph in two key formats.
+                hex_nbs = wn_get(cur, EMPTY)
+                tup_nbs = wnt_get(cur_t, EMPTY_T)
+                for i, nb_t in enumerate(tup_nbs):
+                    if nb_t in target_t_set:
+                        continue
+                    d = td_get(nb_t)
+                    if d is None:
+                        continue
+                    if d < next_d:
+                        next_d = d
+                        next_nb = hex_nbs[i]
+                        next_nb_t = nb_t
+                if next_nb is None or next_nb_t is None:
+                    break
+                prev[next_nb] = cur
+                cur = next_nb
+                cur_t = next_nb_t
+                cur_d = next_d
 
         # Phase 2: walls passable, but only if phase 1 turned up
         # nothing.  Heuristic = pre-computed multi-source BFS distance

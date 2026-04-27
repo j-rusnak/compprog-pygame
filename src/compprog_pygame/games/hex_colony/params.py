@@ -1346,6 +1346,16 @@ ENEMY_RETARGET_BUDGET_PER_TICK: int = 20
 # many enemies are simultaneously walled in.
 ENEMY_PHASE2_BUDGET_PER_TICK: int = 4
 
+# Maximum BFS depth for the enemy A* heuristic distance field.
+# The field is a multi-source flood from real targets that gives
+# A* an admissible heuristic.  Enemies further than this many hexes
+# from any target won't get a phase-1 path \u2014 they wander toward
+# the camp until they enter range.  Capping the BFS keeps the
+# rebuild fast on huge maps (the entire walkable graph can be 100k+
+# hexes; without a cap, every building placement / destruction
+# spikes the frame).
+ENEMY_BFS_MAX_DEPTH: int = 300
+
 # How often (sim seconds) the world refreshes its "starved /
 # unreachable" caches.  Visible in the renderer as the dim/red overlay
 # on isolated buildings — humans don't notice update lag below ~2 s.
