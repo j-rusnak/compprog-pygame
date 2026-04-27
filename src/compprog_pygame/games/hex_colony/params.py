@@ -1144,6 +1144,25 @@ PERSON_MAX_HEALTH: float = 30.0
 PERSON_DEATH_NOTIFY: bool = True
 
 BUILDING_DEFAULT_MAX_HEALTH: float = 100.0
+
+# ─── Auto-repair ────────────────────────────────────────────────
+# Damaged player buildings slowly heal themselves between waves.
+# Walls and other defensive buildings regen faster so a destroyed
+# chokepoint can be rebuilt by simply waiting (subject to material
+# cost below).  Production buildings regen at the slower default
+# rate.  Set the rate to 0.0 to disable.
+BUILDING_REGEN_HP_PER_SEC: float = 1.5
+BUILDING_REGEN_HP_PER_SEC_DEFENSIVE: float = 6.0
+# Buildings that get the faster defensive regen rate.
+BUILDING_REGEN_DEFENSIVE_TYPES: frozenset[str] = frozenset({
+    "WALL", "TURRET", "TRAP", "BRIDGE", "PATH",
+})
+# Repairs cost wood from inventory: ``BUILDING_REGEN_WOOD_PER_HP``
+# wood per 1 HP healed.  When inventory is dry, regen continues at
+# 25% of the normal rate so a wiped player can still recover.
+BUILDING_REGEN_WOOD_PER_HP: float = 0.04
+BUILDING_REGEN_DRYHEAL_FACTOR: float = 0.25
+
 BUILDING_MAX_HEALTH: dict[str, float] = {
     "CAMP":            800.0,
     "HABITAT":         150.0,
@@ -1201,6 +1220,19 @@ ENEMY_TYPE_DATA: dict[str, dict] = {
         "color":       (180, 80, 200),
         "radius_px":   8,
     },
+    "SWARMER": {
+        # Quick, fragile, and bountiful in numbers — swarmers exist
+        # to flood turret killzones and force the player to invest
+        # in AoE walls / chokepoints rather than single-target turrets.
+        "hp":          18.0,
+        "damage":      4.0,
+        "attack_cd":   0.8,
+        "move_period": 0.35,
+        "bounty":      1,
+        "sprite":      "scout",
+        "color":       (240, 130, 60),
+        "radius_px":   6,
+    },
     "BRUTE": {
         "hp":          90.0,
         "damage":      14.0,
@@ -1210,6 +1242,19 @@ ENEMY_TYPE_DATA: dict[str, dict] = {
         "sprite":      "brute",
         "color":       (200, 60, 80),
         "radius_px":   11,
+    },
+    "TANK": {
+        # Slow, expensive HP pool, hits like a brute.  Counter to
+        # turret spam: forces the player to layer DPS or accept
+        # losing front-line buildings while it grinds inward.
+        "hp":          200.0,
+        "damage":      20.0,
+        "attack_cd":   1.4,
+        "move_period": 1.4,
+        "bounty":      8,
+        "sprite":      "brute",
+        "color":       (110, 100, 90),
+        "radius_px":   13,
     },
     "COLOSSUS": {
         "hp":          260.0,
@@ -1236,25 +1281,28 @@ ENEMY_TYPE_DATA: dict[str, dict] = {
 WAVE_COMPOSITION_PER_TOWER: list[list[tuple[str, int]]] = [
     # Wave 0 — gentle introduction; camp laser will mop these up
     [("SCOUT", 3)],
-    # Wave 1 — first time the player needs turrets
-    [("SCOUT", 4), ("BRUTE", 1)],
-    # Wave 2 — last awakening, mixed force
-    [("SCOUT", 4), ("BRUTE", 3), ("COLOSSUS", 1)],
+    # Wave 1 — first time the player needs turrets; swarmers test
+    # whether the player has chokepoint walls yet
+    [("SCOUT", 3), ("SWARMER", 3), ("BRUTE", 1)],
+    # Wave 2 — last awakening, mixed force including the first TANK
+    [("SCOUT", 4), ("SWARMER", 4), ("BRUTE", 3), ("TANK", 1), ("COLOSSUS", 1)],
 ]
 
 # After the final awakening, periodic waves spawn from random map
 # edges.  Composition is rolled per wave and scales with the wave
 # counter (see :data:`POST_AWAKENING_WAVE_SCALING`).
 POST_AWAKENING_WAVE_COMPOSITION: list[tuple[str, int]] = [
-    ("SCOUT", 6), ("BRUTE", 3), ("COLOSSUS", 1),
+    ("SCOUT", 5), ("SWARMER", 6), ("BRUTE", 3), ("TANK", 1), ("COLOSSUS", 1),
 ]
 
 # Each post-awakening wave multiplies per-type counts by
 # (1 + wave_index * POST_AWAKENING_COUNT_GROWTH) and adds
 # (population // POST_AWAKENING_POP_DIVISOR) extra SCOUTs so a big
-# colony attracts proportionally bigger raids.
-POST_AWAKENING_COUNT_GROWTH: float = 0.15
-POST_AWAKENING_POP_DIVISOR: int = 8
+# colony attracts proportionally bigger raids.  Bumped from 0.15 →
+# 0.25 so the late-game pressure curve actually feels late-game; at
+# wave 10 a wave is now 3.5× the base size instead of 2.5×.
+POST_AWAKENING_COUNT_GROWTH: float = 0.25
+POST_AWAKENING_POP_DIVISOR: int = 6
 
 # Seconds between automatic post-awakening waves.  Decreases each
 # wave (clamped) so the late-game pressure keeps ramping.

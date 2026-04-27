@@ -451,6 +451,49 @@ class World:
 
     # ── Generation ───────────────────────────────────────────────
 
+    def __getstate__(self) -> dict:
+        """Pickle hook: drop runtime-only references that can't (or
+        shouldn't) round-trip through a save file.
+
+        ``notifications``, ``perf``, and ``_renderer_ref`` are wired
+        in by Game / Renderer at construction time and will be re-
+        attached when the loaded world is plugged into a fresh Game
+        instance.  Per-tick caches are deliberately discarded — they
+        are cheap to rebuild on the first post-load tick and would
+        otherwise hold stale building references after unpickle.
+        """
+        state = self.__dict__.copy()
+        for key in (
+            "notifications", "perf", "_renderer_ref",
+        ):
+            if key in state:
+                state[key] = None
+        # Per-tick / per-frame caches.  Reset to empty so the post-
+        # load tick rebuilds them from scratch.
+        state["_path_cache"] = {}
+        state["_demand_last_served"] = {}
+        state["_unreachable_notified"] = set()
+        # Combat caches (rebuilt on the first tick).
+        combat = state.get("combat")
+        if combat is not None:
+            try:
+                combat.invalidate_terrain_cache()
+            except Exception:
+                pass
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+        # Force a full housing/network/worker rebuild on the first
+        # post-load tick so caches synchronised under the previous
+        # session can't leak stale ids.
+        self._housing_dirty = True
+        self._networks_dirty = True
+        self._workers_dirty = True
+        self._topology_version = self.__dict__.get(
+            "_topology_version", 0,
+        ) + 1
+
     @classmethod
     def generate(
         cls, settings: HexColonySettings, seed: str = "default",
@@ -646,10 +689,63 @@ class World:
         if not is_peaceful or self.combat.enemies or self.combat.projectiles:
             with _section("w.combat"):
                 self.combat.tick(self, dt)
+
+        # Auto-repair: damaged player buildings slowly regen between
+        # waves.  Costs wood from the player inventory; falls back to
+        # a slow "dry-heal" trickle when wood is exhausted so a wiped
+        # player can still recover.  Cheap O(damaged-buildings) loop.
+        with _section("w.repair"):
+            self._update_auto_repair(dt)
         # Track high-water population for the end-of-game summary.
         pop = self.player_population_count
         if pop > self.peak_population:
             self.peak_population = pop
+
+    def _update_auto_repair(self, dt: float) -> None:
+        """Slowly heal damaged player buildings between waves.
+
+        Walls / turrets / traps regen at the faster defensive rate;
+        all other player buildings regen at the slower default rate.
+        Each healed HP costs ``BUILDING_REGEN_WOOD_PER_HP`` wood from
+        the player's main inventory; when wood runs out, regen drops
+        to ``BUILDING_REGEN_DRYHEAL_FACTOR`` of normal so a wiped
+        colony can still recover (just slowly).
+        """
+        from compprog_pygame.games.hex_colony.resources import Resource\
+            as _R
+        regen_def = float(params.BUILDING_REGEN_HP_PER_SEC_DEFENSIVE)
+        regen_norm = float(params.BUILDING_REGEN_HP_PER_SEC)
+        if regen_def <= 0.0 and regen_norm <= 0.0:
+            return
+        defensive = params.BUILDING_REGEN_DEFENSIVE_TYPES
+        wood_per_hp = float(params.BUILDING_REGEN_WOOD_PER_HP)
+        dry_factor = float(params.BUILDING_REGEN_DRYHEAL_FACTOR)
+        inv = self.player_colony.inventory
+        wood_avail = inv[_R.WOOD]
+        for b in self.buildings.buildings:
+            if getattr(b, "faction", "SURVIVOR") != "SURVIVOR":
+                continue
+            mh = getattr(b, "max_health", 0.0)
+            if mh <= 0.0 or b.health >= mh:
+                continue
+            rate = regen_def if b.type.name in defensive else regen_norm
+            heal = rate * dt
+            if wood_per_hp > 0.0:
+                cost = heal * wood_per_hp
+                if wood_avail >= cost:
+                    wood_avail -= cost
+                else:
+                    paid_heal = wood_avail / wood_per_hp if wood_per_hp > 0 else 0.0
+                    wood_avail = 0.0
+                    free_heal = (heal - paid_heal) * dry_factor
+                    heal = paid_heal + free_heal
+            new_hp = min(mh, b.health + heal)
+            b.health = new_hp
+        # Persist the wood spend.  Drain in one bulk op to avoid the
+        # per-building inventory churn.
+        spent = inv[_R.WOOD] - wood_avail
+        if spent > 1e-6:
+            inv.spend(_R.WOOD, spent)
 
     def mark_housing_dirty(self) -> None:
         """Flag that housing assignments need recalculation.

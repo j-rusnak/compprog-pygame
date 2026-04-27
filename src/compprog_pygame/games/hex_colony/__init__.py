@@ -32,6 +32,30 @@ def _launch(screen: pygame.Surface, clock: pygame.time.Clock) -> None:
         if result is None:
             return  # player pressed Escape → back to game-select
 
+        # ── Load-from-save fast path ─────────────────────────────
+        # When the player picked a save in the Load Game panel the
+        # menu sets ``result.load_path``.  We skip the cutscene and
+        # the world-generation worker entirely and hand the loaded
+        # World straight to ``Game``.
+        load_path = getattr(result, "load_path", None)
+        if load_path is not None:
+            from compprog_pygame.games.hex_colony import save_io
+            try:
+                world = save_io.load_world(load_path)
+            except Exception as exc:
+                # On any unpickle failure, fall back to the menu so
+                # the user can pick a different save instead of being
+                # ejected to the launcher with a stack trace.
+                print(f"[hex_colony] failed to load save: {exc}")
+                continue
+            settings = world.settings
+            seed = world.seed
+            game = Game(settings, seed=seed, world=world)
+            game.run(screen, clock)
+            if game.quit_to_desktop:
+                raise SystemExit
+            continue
+
         from dataclasses import replace
         settings = replace(
             HexColonySettings(),

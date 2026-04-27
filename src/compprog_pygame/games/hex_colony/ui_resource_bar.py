@@ -111,11 +111,17 @@ class ResourceBar(Panel):
         pop = world.player_population_count
         housing = world.connected_housing()
         pop_color = UI_BAD if pop > housing else UI_TEXT
+        # Explicit "Pop:" label so first-time players know what the
+        # smiley + ratio represents.
+        label = font_val.render("Pop:", True, UI_MUTED)
         icon = font_icon.render("\u263a", True, _PERSON_COLOR)
         text = font_val.render(f"{pop}/{housing}", True, pop_color)
-        if x + icon.get_width() + 4 + text.get_width() > max_x:
+        needed = label.get_width() + 4 + icon.get_width() + 4 + text.get_width()
+        if x + needed > max_x:
             return x
         pop_x0 = x
+        surface.blit(label, (x, cy - label.get_height() // 2))
+        x += label.get_width() + 4
         surface.blit(icon, (x, cy - icon.get_height() // 2))
         x += icon.get_width() + 4
         surface.blit(text, (x, cy - text.get_height() // 2))
@@ -194,6 +200,13 @@ class ResourceBar(Panel):
             return x
         surface.blit(arrow, (x, cy - arrow.get_height() // 2))
         x += arrow.get_width() + 6
+
+        # Explicit "Goals:" prefix so the requirement counters read
+        # as targets to hit, not as live colony stats.
+        goals_label = font_small.render("Goals:", True, _TIER_COLOR)
+        if x + goals_label.get_width() + 4 < max_x:
+            surface.blit(goals_label, (x, cy - goals_label.get_height() // 2))
+            x += goals_label.get_width() + 6
 
         for name, (current, required) in progress.items():
             chunk = f"{name}: {int(current)}/{int(required)}"

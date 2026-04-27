@@ -216,7 +216,9 @@ MENU_HINT            = "Enter seed  \u2022  ENTER or click Play  \u2022  ESC to 
 # ═════════════════════════════════════════════════════════════════
 
 PAUSE_TITLE          = "Paused"
-PAUSE_BUTTONS: list[str] = ["Resume", "Options", "Return to Main Menu", "Quit"]
+PAUSE_BUTTONS: list[str] = ["Resume", "Save Game", "Options", "Return to Main Menu", "Quit"]
+PAUSE_SAVE_OK        = "Game saved"
+PAUSE_SAVE_FAIL      = "Save failed"
 
 OPTIONS_TITLE        = "Options"
 OPTIONS_GRAPHICS     = "Graphics Quality"

@@ -102,6 +102,7 @@ class MenuResult:
     world_radius: int
     difficulty: Difficulty
     tutorial_enabled: bool
+    load_path: object | None = None  # Path to a save file when launching from Load
 
 
 class HexColonyMenu:
@@ -121,6 +122,13 @@ class HexColonyMenu:
         self._dragging_slider = False
         self.result: MenuResult | None = None
         self.quit = False
+        # Load-game panel state.  When ``_show_load_panel`` is True a
+        # modal list of saves is drawn over the main card; clicking
+        # an entry returns a ``MenuResult`` with ``load_path`` set.
+        self._show_load_panel: bool = False
+        self._load_button_hover: bool = False
+        self._load_row_rects: list[tuple[pygame.Rect, object]] = []
+        self._load_close_rect: pygame.Rect | None = None
 
         # Animation state
         self._t0 = pygame.time.get_ticks()
@@ -236,6 +244,14 @@ class HexColonyMenu:
         y = self._tutorial_checkbox_rect().bottom + 28
         return pygame.Rect(x, y, w, h)
 
+    def _load_button_rect(self) -> pygame.Rect:
+        """Small "Load Game" pill below the main Play button."""
+        pr = self._play_rect()
+        w, h = 160, 32
+        x = pr.centerx - w // 2
+        y = pr.bottom + 12
+        return pygame.Rect(x, y, w, h)
+
     def _tutorial_checkbox_rect(self) -> pygame.Rect:
         """Bounding rect of the "Enable Tutorial" checkbox row.
 
@@ -326,6 +342,11 @@ class HexColonyMenu:
                 self.seed_text += ch
 
     def _on_click(self, pos: tuple[int, int]) -> None:
+        # Load-game modal: when open, intercept all clicks.
+        if self._show_load_panel:
+            self._on_click_load_panel(pos)
+            return
+
         # Seed input focus
         if self._input_rect().collidepoint(pos):
             self.input_active = True
@@ -367,6 +388,11 @@ class HexColonyMenu:
 
         if self._play_rect().collidepoint(pos):
             self._start_game()
+            return
+
+        if self._load_button_rect().collidepoint(pos):
+            self._show_load_panel = not self._show_load_panel
+            return
 
     def _update_slider(self, mouse_x: int) -> None:
         sr = self._slider_rect()
@@ -384,6 +410,113 @@ class HexColonyMenu:
             difficulty=self.difficulty,
             tutorial_enabled=self.tutorial_enabled,
         )
+
+    # ── Load-game panel ──────────────────────────────────────────
+
+    def _load_panel_rect(self) -> pygame.Rect:
+        w = min(560, self.width - 80)
+        h = min(440, self.height - 80)
+        return pygame.Rect(
+            (self.width - w) // 2, (self.height - h) // 2, w, h,
+        )
+
+    def _draw_load_panel(self, surface: pygame.Surface) -> None:
+        from compprog_pygame.games.hex_colony import save_io
+
+        # Dim the background
+        dim = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 170))
+        surface.blit(dim, (0, 0))
+
+        rect = self._load_panel_rect()
+        pygame.draw.rect(surface, (18, 26, 48), rect, border_radius=14)
+        pygame.draw.rect(surface, ACCENT, rect, width=2, border_radius=14)
+
+        title = self.button_font.render("Load Game", True, ACCENT_BRIGHT)
+        surface.blit(
+            title,
+            (rect.centerx - title.get_width() // 2, rect.y + 18),
+        )
+
+        # Close (X) button — top-right corner
+        cb = pygame.Rect(rect.right - 38, rect.y + 12, 26, 26)
+        self._load_close_rect = cb
+        pygame.draw.rect(surface, (60, 30, 30), cb, border_radius=6)
+        pygame.draw.line(
+            surface, (240, 200, 200),
+            (cb.x + 6, cb.y + 6), (cb.right - 6, cb.bottom - 6), 2,
+        )
+        pygame.draw.line(
+            surface, (240, 200, 200),
+            (cb.right - 6, cb.y + 6), (cb.x + 6, cb.bottom - 6), 2,
+        )
+
+        # Build save list
+        slots = save_io.list_saves()
+        self._load_row_rects = []
+
+        if not slots:
+            empty = self.label_font.render(
+                "No saves yet — pause in-game and pick Save Game.",
+                True, MUTED_TEXT,
+            )
+            surface.blit(
+                empty,
+                (rect.centerx - empty.get_width() // 2,
+                 rect.centery - empty.get_height() // 2),
+            )
+            return
+
+        mouse = pygame.mouse.get_pos()
+        row_x = rect.x + 20
+        row_w = rect.w - 40
+        row_h = 56
+        gap = 8
+        y = rect.y + 64
+        max_rows = (rect.bottom - 24 - y) // (row_h + gap)
+        for slot in slots[:max_rows]:
+            r = pygame.Rect(row_x, y, row_w, row_h)
+            self._load_row_rects.append((r, slot.path))
+            hover = r.collidepoint(mouse)
+            bg = (36, 50, 86) if hover else (24, 32, 58)
+            pygame.draw.rect(surface, bg, r, border_radius=8)
+            pygame.draw.rect(
+                surface, ACCENT_BRIGHT if hover else CARD_BORDER,
+                r, width=1, border_radius=8,
+            )
+            line1 = self.label_font.render(
+                f"{slot.seed}  \u2022  {slot.pretty_time}",
+                True, TEXT_COLOR,
+            )
+            line2 = self.hint_font.render(
+                f"Pop {slot.population}  \u2022  Tier {slot.tier}  \u2022  "
+                f"{slot.elapsed_minutes:.1f} min",
+                True, MUTED_TEXT,
+            )
+            surface.blit(line1, (r.x + 12, r.y + 8))
+            surface.blit(line2, (r.x + 12, r.y + 30))
+            y += row_h + gap
+
+    def _on_click_load_panel(self, pos: tuple[int, int]) -> None:
+        if self._load_close_rect and self._load_close_rect.collidepoint(pos):
+            self._show_load_panel = False
+            return
+        for r, path in self._load_row_rects:
+            if r.collidepoint(pos):
+                # Hand a load-path result back to the launcher; the
+                # other fields are placeholders (the world will be
+                # restored from the file, not regenerated).
+                self.result = MenuResult(
+                    seed="",
+                    world_radius=self.world_radius,
+                    difficulty=self.difficulty,
+                    tutorial_enabled=self.tutorial_enabled,
+                    load_path=path,
+                )
+                return
+        # Click outside a row but inside the panel: keep open.
+        if not self._load_panel_rect().collidepoint(pos):
+            self._show_load_panel = False
 
     # ── Drawing ──────────────────────────────────────────────────
 
@@ -819,6 +952,27 @@ class HexColonyMenu:
         # Hint
         hint = self.hint_font.render(MENU_HINT, True, MUTED_TEXT)
         surface.blit(hint, ((self.width - hint.get_width()) // 2, self.height - 32))
+
+        # ── Load Game button (small pill below Play) ─────────────
+        lr = self._load_button_rect()
+        l_hover = lr.collidepoint(mouse)
+        self._load_button_hover = l_hover
+        bg = BUTTON_HOVER if l_hover else (22, 30, 56)
+        pygame.draw.rect(surface, bg, lr, border_radius=10)
+        pygame.draw.rect(
+            surface, ACCENT_BRIGHT if l_hover else CARD_BORDER,
+            lr, width=2, border_radius=10,
+        )
+        ltxt = self.hint_font.render("Load Game", True, BUTTON_TEXT)
+        surface.blit(
+            ltxt,
+            (lr.centerx - ltxt.get_width() // 2,
+             lr.centery - ltxt.get_height() // 2),
+        )
+
+        # ── Load panel (modal save list) ─────────────────────────
+        if self._show_load_panel:
+            self._draw_load_panel(surface)
 
     def _draw_vignette(self, surface: pygame.Surface) -> None:
         """Soft dark vignette around the screen edges."""

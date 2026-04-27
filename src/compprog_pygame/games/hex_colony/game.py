@@ -308,6 +308,7 @@ class Game:
         self._pause_overlay.on_return_to_menu = self._on_pause_return_to_menu
         self._pause_overlay.on_quit = self._on_pause_quit
         self._pause_overlay.on_graphics_changed = self._on_graphics_changed
+        self._pause_overlay.on_save = self._on_pause_save
 
         # Wire sandbox population buttons
         self._resource_bar.set_on_pop_change(self._on_pop_change)
@@ -629,6 +630,21 @@ class Game:
                 self._sim_speed = 9.0
             elif event.key == pygame.K_5:
                 self._sim_speed = 30.0
+            elif event.key == pygame.K_F11:
+                # Toggle fullscreen.  ``pygame.display.toggle_fullscreen``
+                # works reliably on Windows / X11 / macOS for windowed
+                # ↔ borderless-fullscreen swaps without re-creating the
+                # surface, and the existing VIDEORESIZE handler picks
+                # up the new dimensions.
+                try:
+                    pygame.display.toggle_fullscreen()
+                    screen = pygame.display.get_surface()
+                    if screen is not None:
+                        w, h = screen.get_width(), screen.get_height()
+                        self.camera.resize(w, h)
+                        self.ui.layout(w, h)
+                except pygame.error:
+                    pass
             elif event.key == pygame.K_F1:
                 # Toggle god mode at runtime
                 self.god_mode = not self.god_mode
@@ -1442,6 +1458,20 @@ class Game:
 
     def _on_pause_resume(self) -> None:
         """Callback from pause overlay Resume button."""
+
+    def _on_pause_save(self) -> None:
+        """Callback from pause overlay Save Game button."""
+        from compprog_pygame.games.hex_colony import save_io
+        from compprog_pygame.games.hex_colony.strings import (
+            PAUSE_SAVE_OK, PAUSE_SAVE_FAIL,
+        )
+        try:
+            save_io.save_world(self.world, self.world.seed)
+            msg = PAUSE_SAVE_OK
+        except Exception:
+            msg = PAUSE_SAVE_FAIL
+        if self.world.notifications is not None:
+            self.world.notifications.push(msg)
 
     def _on_open_tech_tree(self) -> None:
         """Open the tech tree overlay and pause the game."""

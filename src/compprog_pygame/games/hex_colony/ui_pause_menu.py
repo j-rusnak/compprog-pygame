@@ -70,6 +70,7 @@ class PauseOverlay(Panel):
         self.on_return_to_menu: Callable[[], None] | None = None
         self.on_quit: Callable[[], None] | None = None
         self.on_graphics_changed: Callable[[str], None] | None = None
+        self.on_save: Callable[[], None] | None = None
 
     def show(self) -> None:
         self.state = "pause"
@@ -216,12 +217,15 @@ class PauseOverlay(Panel):
             if self.on_resume:
                 self.on_resume()
         elif action == "pause:1":
+            if self.on_save:
+                self.on_save()
+        elif action == "pause:2":
             self.state = "options"
             self._hovered = -1
-        elif action == "pause:2":
+        elif action == "pause:3":
             if self.on_return_to_menu:
                 self.on_return_to_menu()
-        elif action == "pause:3":
+        elif action == "pause:4":
             if self.on_quit:
                 self.on_quit()
         elif action == "options:quality":
