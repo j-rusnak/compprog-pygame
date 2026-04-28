@@ -77,6 +77,37 @@ MAX_RADIUS = 120
 
 _SQRT3 = math.sqrt(3.0)
 
+
+def _read_app_version() -> str:
+    """Best-effort read of the package version from ``pyproject.toml``.
+
+    We avoid importing ``importlib.metadata`` because the game can be
+    launched as a frozen PyInstaller bundle where the package isn't
+    installed; reading the bundled ``pyproject.toml`` keeps the version
+    label honest in both modes.
+    """
+    try:
+        from importlib.metadata import version
+        return version("compprog_pygame")
+    except Exception:
+        pass
+    try:
+        import tomllib
+        from pathlib import Path
+        # src/compprog_pygame/games/hex_colony/menu.py -> repo root is 5 up.
+        root = Path(__file__).resolve().parents[4]
+        pyproj = root / "pyproject.toml"
+        if pyproj.is_file():
+            with pyproj.open("rb") as f:
+                data = tomllib.load(f)
+            return str(data.get("project", {}).get("version", "?"))
+    except Exception:
+        pass
+    return "?"
+
+
+_APP_VERSION = _read_app_version()
+
 # Path to the swappable menu logo. Drop a new PNG with the same name to
 # replace it (any size works — it's scaled down to fit).
 LOGO_PATH = ASSET_DIR / "sprites" / "ui" / "menu_logo.png"
@@ -129,6 +160,15 @@ class HexColonyMenu:
         self._load_button_hover: bool = False
         self._load_row_rects: list[tuple[pygame.Rect, object]] = []
         self._load_close_rect: pygame.Rect | None = None
+        # Credits modal state.
+        self._show_credits: bool = False
+        self._credits_close_rect: pygame.Rect | None = None
+        self._credits_button_rect: pygame.Rect | None = None
+        # Cached “most recent save” path for the Continue button so
+        # we don’t hit the filesystem every frame; refreshed on each
+        # menu run() entry and after a Save panel close.
+        self._latest_save_path: object | None = None
+        self._continue_rect: pygame.Rect | None = None
 
         # Animation state
         self._t0 = pygame.time.get_ticks()
@@ -252,6 +292,16 @@ class HexColonyMenu:
         y = pr.bottom + 12
         return pygame.Rect(x, y, w, h)
 
+    def _continue_button_rect(self) -> pygame.Rect:
+        """Pill to the right of the Load button (only drawn if a save exists)."""
+        lr = self._load_button_rect()
+        return pygame.Rect(lr.right + 10, lr.y, 130, lr.h)
+
+    def _credits_button_rect_compute(self) -> pygame.Rect:
+        """Bottom-left "Credits" button (returned each frame so it
+        tracks the current window size on resize)."""
+        return pygame.Rect(14, self.height - 38, 100, 26)
+
     def _tutorial_checkbox_rect(self) -> pygame.Rect:
         """Bounding rect of the "Enable Tutorial" checkbox row.
 
@@ -274,9 +324,14 @@ class HexColonyMenu:
     def run(self, screen: pygame.Surface, clock: pygame.time.Clock) -> MenuResult | None:
         """Block until the player clicks Play or presses Escape."""
         from compprog_pygame.audio import music
+        from compprog_pygame.games.hex_colony import save_io
         # Re-assert the menu track in case the player just returned
         # from a game; idempotent if already playing.
         music.play("menu")
+        # Refresh the most-recent-save lookup so the Continue button
+        # shows up exactly when there is something to continue from.
+        slots = save_io.list_saves()
+        self._latest_save_path = slots[0].path if slots else None
         while self.result is None and not self.quit:
             dt_ms = clock.tick(60)
             dt = dt_ms / 1000.0
@@ -323,6 +378,13 @@ class HexColonyMenu:
 
     def _on_key(self, event: pygame.event.Event) -> None:
         if event.key == pygame.K_ESCAPE:
+            # Esc closes a modal first, only quits if nothing is open.
+            if self._show_credits:
+                self._show_credits = False
+                return
+            if self._show_load_panel:
+                self._show_load_panel = False
+                return
             self.quit = True
             return
         if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
@@ -342,9 +404,38 @@ class HexColonyMenu:
                 self.seed_text += ch
 
     def _on_click(self, pos: tuple[int, int]) -> None:
+        # Credits modal: when open, intercept all clicks.
+        if self._show_credits:
+            if (self._credits_close_rect
+                    and self._credits_close_rect.collidepoint(pos)):
+                self._show_credits = False
+                return
+            if not self._credits_panel_rect().collidepoint(pos):
+                self._show_credits = False
+            return
+
         # Load-game modal: when open, intercept all clicks.
         if self._show_load_panel:
             self._on_click_load_panel(pos)
+            return
+
+        # Credits button (always visible)
+        if (self._credits_button_rect
+                and self._credits_button_rect.collidepoint(pos)):
+            self._show_credits = True
+            return
+
+        # Continue button (only present when a save exists)
+        if (self._continue_rect
+                and self._continue_rect.collidepoint(pos)
+                and self._latest_save_path is not None):
+            self.result = MenuResult(
+                seed="",
+                world_radius=self.world_radius,
+                difficulty=self.difficulty,
+                tutorial_enabled=self.tutorial_enabled,
+                load_path=self._latest_save_path,
+            )
             return
 
         # Seed input focus
@@ -517,6 +608,74 @@ class HexColonyMenu:
         # Click outside a row but inside the panel: keep open.
         if not self._load_panel_rect().collidepoint(pos):
             self._show_load_panel = False
+
+    # ── Credits modal ────────────────────────────────────────────
+
+    _CREDITS_LINES: tuple[tuple[str, str], ...] = (
+        ("RePioneer", "header"),
+        ("A hex-grid colony / logistics game", "sub"),
+        ("", ""),
+        ("Design & Code", "header"),
+        ("Joey Rusnak", "body"),
+        ("", ""),
+        ("Engine", "header"),
+        ("pygame-ce", "body"),
+        ("", ""),
+        ("Thanks", "header"),
+        ("Everyone who playtested and reported bugs.", "body"),
+    )
+
+    def _credits_panel_rect(self) -> pygame.Rect:
+        w = min(480, self.width - 80)
+        h = min(420, self.height - 80)
+        return pygame.Rect(
+            (self.width - w) // 2, (self.height - h) // 2, w, h,
+        )
+
+    def _draw_credits(self, surface: pygame.Surface) -> None:
+        dim = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        dim.fill((0, 0, 0, 180))
+        surface.blit(dim, (0, 0))
+        rect = self._credits_panel_rect()
+        pygame.draw.rect(surface, (16, 22, 42), rect, border_radius=14)
+        pygame.draw.rect(surface, ACCENT, rect, width=2, border_radius=14)
+
+        # Close (X)
+        cb = pygame.Rect(rect.right - 38, rect.y + 12, 26, 26)
+        self._credits_close_rect = cb
+        pygame.draw.rect(surface, (60, 30, 30), cb, border_radius=6)
+        pygame.draw.line(
+            surface, (240, 200, 200),
+            (cb.x + 6, cb.y + 6), (cb.right - 6, cb.bottom - 6), 2,
+        )
+        pygame.draw.line(
+            surface, (240, 200, 200),
+            (cb.right - 6, cb.y + 6), (cb.x + 6, cb.bottom - 6), 2,
+        )
+
+        y = rect.y + 28
+        for text, kind in self._CREDITS_LINES:
+            if not text:
+                y += 10
+                continue
+            if kind == "header":
+                surf = self.button_font.render(text, True, ACCENT_BRIGHT)
+            elif kind == "sub":
+                surf = self.label_font.render(text, True, MUTED_TEXT)
+            else:
+                surf = self.label_font.render(text, True, TEXT_COLOR)
+            surface.blit(
+                surf, (rect.centerx - surf.get_width() // 2, y),
+            )
+            y += surf.get_height() + 4
+
+        ver = self.hint_font.render(
+            f"Version {_APP_VERSION}", True, MUTED_TEXT,
+        )
+        surface.blit(
+            ver,
+            (rect.centerx - ver.get_width() // 2, rect.bottom - 28),
+        )
 
     # ── Drawing ──────────────────────────────────────────────────
 
@@ -970,9 +1129,57 @@ class HexColonyMenu:
              lr.centery - ltxt.get_height() // 2),
         )
 
+        # ── Continue button (only when a save exists) ────────────
+        if self._latest_save_path is not None:
+            cr = self._continue_button_rect()
+            self._continue_rect = cr
+            c_hover = cr.collidepoint(mouse)
+            cbg = (40, 80, 60) if c_hover else (24, 50, 40)
+            pygame.draw.rect(surface, cbg, cr, border_radius=10)
+            pygame.draw.rect(
+                surface, (140, 220, 170) if c_hover else (80, 130, 100),
+                cr, width=2, border_radius=10,
+            )
+            ctxt = self.hint_font.render("Continue", True, (220, 245, 230))
+            surface.blit(
+                ctxt,
+                (cr.centerx - ctxt.get_width() // 2,
+                 cr.centery - ctxt.get_height() // 2),
+            )
+        else:
+            self._continue_rect = None
+
+        # ── Credits button (bottom-left corner) ──────────────────
+        crb = self._credits_button_rect_compute()
+        self._credits_button_rect = crb
+        cr_hover = crb.collidepoint(mouse)
+        bg2 = (28, 36, 60) if cr_hover else (18, 24, 44)
+        pygame.draw.rect(surface, bg2, crb, border_radius=8)
+        pygame.draw.rect(
+            surface, ACCENT if cr_hover else CARD_BORDER,
+            crb, width=1, border_radius=8,
+        )
+        crtxt = self.hint_font.render("Credits", True, MUTED_TEXT if not cr_hover else TEXT_COLOR)
+        surface.blit(
+            crtxt,
+            (crb.centerx - crtxt.get_width() // 2,
+             crb.centery - crtxt.get_height() // 2),
+        )
+
+        # ── Version label (bottom-right corner) ──────────────────
+        vtxt = self.hint_font.render(f"v{_APP_VERSION}", True, MUTED_TEXT)
+        surface.blit(
+            vtxt,
+            (self.width - vtxt.get_width() - 14, self.height - 22),
+        )
+
         # ── Load panel (modal save list) ─────────────────────────
         if self._show_load_panel:
             self._draw_load_panel(surface)
+
+        # ── Credits modal ────────────────────────────────────────
+        if self._show_credits:
+            self._draw_credits(surface)
 
     def _draw_vignette(self, surface: pygame.Surface) -> None:
         """Soft dark vignette around the screen edges."""

@@ -99,6 +99,9 @@ BUILDABLE = [
     BuildingType.PIPE,
     BuildingType.FLUID_TANK,
     BuildingType.TURRET,
+    BuildingType.CANNON_TURRET,
+    BuildingType.MORTAR_TURRET,
+    BuildingType.FROST_TURRET,
     BuildingType.TRAP,
 ]
 

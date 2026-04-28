@@ -38,6 +38,9 @@ BUILDING_LABELS: dict[str, str] = {
     "PIPE":             "Pipe",
     "FLUID_TANK":       "Fluid Tank",
     "TURRET":           "Turret",
+    "CANNON_TURRET":    "Cannon Turret",
+    "MORTAR_TURRET":    "Mortar Turret",
+    "FROST_TURRET":     "Frost Turret",
     "TRAP":             "Spike Trap",
 }
 
@@ -54,6 +57,9 @@ BUILDING_SHORT_LABELS: dict[str, str] = {
     "PIPE":            "Pipe",
     "FLUID_TANK":      "Tank",
     "TURRET":          "Turret",
+    "CANNON_TURRET":   "Cannon",
+    "MORTAR_TURRET":   "Mortar",
+    "FROST_TURRET":    "Frost",
     "TRAP":            "Trap",
 }
 
@@ -88,6 +94,9 @@ BUILDING_DESCRIPTIONS: dict[str, str] = {
     "PIPE":             "Carries fluids (Oil, Petroleum, Rocket Fuel) between buildings. Workers can't carry fluids — only pipes can. Pipes route around Paths and never connect to them.",
     "FLUID_TANK":       "Buffers one fluid type. Connect to producers and consumers via Pipes; click to select which fluid.",
     "TURRET":           "Auto-cannon. Targets the nearest ancient invader within range and fires until destroyed. Costs Stone, Iron Bars and Planks.",
+    "CANNON_TURRET":    "Heavy single-target cannon. Long range and big damage but very slow reload. Best against tougher invaders.",
+    "MORTAR_TURRET":    "Long-range artillery that splashes damage to enemies adjacent to the impact. Slow reload — best paired with chokepoints.",
+    "FROST_TURRET":     "Short-range emitter. Low damage but every shot slows the target's movement, perfect for buying time at walls.",
     "TRAP":             "One-shot spike trap. Detonates when an enemy steps on it for heavy damage to all enemies in 1 hex. Cheap and disposable.",
 }
 

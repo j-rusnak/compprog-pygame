@@ -90,6 +90,9 @@ BUILDING_COLORS: dict[BuildingType, tuple[int, int, int]] = {
     BuildingType.FLUID_TANK: (110, 130, 150),
     BuildingType.TURRET: (180, 80, 60),
     BuildingType.TRAP: (140, 100, 50),
+    BuildingType.CANNON_TURRET: (110, 60, 50),    # darker red — heavy cannon
+    BuildingType.MORTAR_TURRET: (90, 90, 70),     # olive — artillery
+    BuildingType.FROST_TURRET: (100, 170, 220),   # cyan — frost
 }
 
 _PATH_BASE = (185, 165, 120)

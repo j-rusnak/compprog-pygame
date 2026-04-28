@@ -45,6 +45,10 @@ class BuildingType(Enum):
     # ── Defensive structures (unlocked after the first awakening wave) ──
     TURRET = auto()          # auto-targets nearest enemy in range and fires
     TRAP = auto()            # one-shot trap detonates when an enemy steps on it
+    # ── Tier 2 turret variants (gated behind ADVANCED_DEFENSES) ──
+    CANNON_TURRET = auto()   # heavy single-target, slow reload, long range
+    MORTAR_TURRET = auto()   # AoE splash on impact, very slow reload
+    FROST_TURRET = auto()    # short range, fast reload, applies a movement slow
 
 @dataclass(slots=True)
 class BuildingCost:
@@ -88,6 +92,9 @@ BUILDING_COSTS: dict[BuildingType, BuildingCost] = {
     BuildingType.FLUID_TANK: BuildingCost(_costs_from_dict(params.BUILDING_COST_FLUID_TANK)),
     BuildingType.TURRET: BuildingCost(_costs_from_dict(params.BUILDING_COST_TURRET)),
     BuildingType.TRAP: BuildingCost(_costs_from_dict(params.BUILDING_COST_TRAP)),
+    BuildingType.CANNON_TURRET: BuildingCost(_costs_from_dict(params.BUILDING_COST_CANNON_TURRET)),
+    BuildingType.MORTAR_TURRET: BuildingCost(_costs_from_dict(params.BUILDING_COST_MORTAR_TURRET)),
+    BuildingType.FROST_TURRET: BuildingCost(_costs_from_dict(params.BUILDING_COST_FROST_TURRET)),
 }
 
 # Max workers each building supports
@@ -121,6 +128,9 @@ BUILDING_MAX_WORKERS: dict[BuildingType, int] = {
     BuildingType.FLUID_TANK: params.BUILDING_MAX_WORKERS_FLUID_TANK,
     BuildingType.TURRET: params.BUILDING_MAX_WORKERS_TURRET,
     BuildingType.TRAP: params.BUILDING_MAX_WORKERS_TRAP,
+    BuildingType.CANNON_TURRET: params.BUILDING_MAX_WORKERS_CANNON_TURRET,
+    BuildingType.MORTAR_TURRET: params.BUILDING_MAX_WORKERS_MORTAR_TURRET,
+    BuildingType.FROST_TURRET: params.BUILDING_MAX_WORKERS_FROST_TURRET,
 }
 
 # Housing capacity per building type (0 = not a dwelling)
@@ -154,6 +164,9 @@ BUILDING_HOUSING: dict[BuildingType, int] = {
     BuildingType.FLUID_TANK: params.BUILDING_HOUSING_FLUID_TANK,
     BuildingType.TURRET: params.BUILDING_HOUSING_TURRET,
     BuildingType.TRAP: params.BUILDING_HOUSING_TRAP,
+    BuildingType.CANNON_TURRET: params.BUILDING_HOUSING_CANNON_TURRET,
+    BuildingType.MORTAR_TURRET: params.BUILDING_HOUSING_MORTAR_TURRET,
+    BuildingType.FROST_TURRET: params.BUILDING_HOUSING_FROST_TURRET,
 }
 
 # Storage capacity per building type.
@@ -190,6 +203,9 @@ BUILDING_STORAGE_CAPACITY: dict[BuildingType, int] = {
     BuildingType.FLUID_TANK: params.BUILDING_STORAGE_FLUID_TANK,
     BuildingType.TURRET: params.BUILDING_STORAGE_TURRET,
     BuildingType.TRAP: params.BUILDING_STORAGE_TRAP,
+    BuildingType.CANNON_TURRET: params.BUILDING_STORAGE_CANNON_TURRET,
+    BuildingType.MORTAR_TURRET: params.BUILDING_STORAGE_MORTAR_TURRET,
+    BuildingType.FROST_TURRET: params.BUILDING_STORAGE_FROST_TURRET,
 }
 
 

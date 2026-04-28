@@ -322,6 +322,9 @@ BUILDING_RECIPE_STATION: dict[str, str] = {
     # Defense buildings — crafted at the Workshop once
     # ``defense_basics`` research unlocks them.
     "TURRET":           "WORKSHOP",
+    "CANNON_TURRET":    "WORKSHOP",
+    "MORTAR_TURRET":    "WORKSHOP",
+    "FROST_TURRET":     "WORKSHOP",
     "TRAP":             "WORKSHOP",
 }
 
@@ -745,6 +748,15 @@ TECH_TREE_DATA: dict[str, dict] = {
         "unlocks": ["TURRET", "TRAP"],
         "position": (4, 2),
     },
+    "advanced_defenses": {
+        "name": "Advanced Defenses",
+        "description": "Cannon, Mortar and Frost towers — second-tier defensive turrets",
+        "cost": {"IRON_BAR": 20, "COPPER_BAR": 10, "GEARS": 6, "GLASS": 4},
+        "time": 90.0,
+        "prerequisites": ["defense_basics", "advanced_smelting"],
+        "unlocks": ["CANNON_TURRET", "MORTAR_TURRET", "FROST_TURRET"],
+        "position": (4, 3),
+    },
     "advanced_smelting": {
         "name": "Advanced Smelting",
         "description": "Forge Steel Bars and melt Glass",
@@ -1103,14 +1115,28 @@ AWAKENING_SKIP_HINT: str = "Space / click to skip"
 BUILDING_COST_TURRET: dict[str, int] = {"STONE": 12, "IRON_BAR": 4, "PLANKS": 4}
 BUILDING_COST_TRAP: dict[str, int] = {"WOOD": 4, "IRON_BAR": 1}
 
+# Tier 2 turret variants (gated behind ADVANCED_DEFENSES research).
+BUILDING_COST_CANNON_TURRET: dict[str, int] = {"STONE": 18, "IRON_BAR": 8, "PLANKS": 6}
+BUILDING_COST_MORTAR_TURRET: dict[str, int] = {"STONE": 16, "IRON_BAR": 6, "PLANKS": 6, "GEARS": 2}
+BUILDING_COST_FROST_TURRET: dict[str, int] = {"STONE": 14, "COPPER_BAR": 6, "PLANKS": 4, "GLASS": 2}
+
 BUILDING_MAX_WORKERS_TURRET: int = 0
 BUILDING_MAX_WORKERS_TRAP: int = 0
+BUILDING_MAX_WORKERS_CANNON_TURRET: int = 0
+BUILDING_MAX_WORKERS_MORTAR_TURRET: int = 0
+BUILDING_MAX_WORKERS_FROST_TURRET: int = 0
 
 BUILDING_HOUSING_TURRET: int = 0
 BUILDING_HOUSING_TRAP: int = 0
+BUILDING_HOUSING_CANNON_TURRET: int = 0
+BUILDING_HOUSING_MORTAR_TURRET: int = 0
+BUILDING_HOUSING_FROST_TURRET: int = 0
 
 BUILDING_STORAGE_TURRET: int = 0
 BUILDING_STORAGE_TRAP: int = 0
+BUILDING_STORAGE_CANNON_TURRET: int = 0
+BUILDING_STORAGE_MORTAR_TURRET: int = 0
+BUILDING_STORAGE_FROST_TURRET: int = 0
 
 # Turret combat behaviour.
 TURRET_RANGE_HEXES: int = 4
@@ -1121,6 +1147,38 @@ TURRET_WALL_RANGE_BONUS: int = 1
 TURRET_DAMAGE: float = 12.0
 TURRET_RELOAD_SECONDS: float = 0.9
 TURRET_PROJECTILE_SPEED: float = 320.0  # px/sec
+
+# ─── Tier 2 turret variants ─────────────────────────────────────
+# Each variant trades fire rate, range or damage for a special
+# effect (heavy single-target / area-of-effect / move-speed slow).
+# All three are unlocked by the ADVANCED_DEFENSES tech.
+
+# Cannon: long range, heavy single-target damage, slow reload.
+CANNON_TURRET_RANGE_HEXES: int = 6
+CANNON_TURRET_DAMAGE: float = 38.0
+CANNON_TURRET_RELOAD_SECONDS: float = 1.8
+CANNON_TURRET_PROJECTILE_SPEED: float = 420.0
+
+# Mortar: long range, slow reload, splashes damage to nearby
+# enemies on impact.  ``SPLASH_RADIUS_HEXES`` is the falloff
+# radius; enemies in the inner hex take full damage, enemies in
+# outer rings take ``damage * SPLASH_FALLOFF`` per ring.
+MORTAR_TURRET_RANGE_HEXES: int = 7
+MORTAR_TURRET_DAMAGE: float = 18.0
+MORTAR_TURRET_RELOAD_SECONDS: float = 2.4
+MORTAR_TURRET_PROJECTILE_SPEED: float = 220.0
+MORTAR_TURRET_SPLASH_RADIUS_HEXES: int = 1
+MORTAR_TURRET_SPLASH_FALLOFF: float = 0.5
+
+# Frost: short range, fast fire, low damage, applies a movement
+# slow on hit (``SLOW_FACTOR`` is the proportion of normal speed
+# subtracted, e.g. 0.5 means enemies move at 50%).
+FROST_TURRET_RANGE_HEXES: int = 3
+FROST_TURRET_DAMAGE: float = 4.0
+FROST_TURRET_RELOAD_SECONDS: float = 0.55
+FROST_TURRET_PROJECTILE_SPEED: float = 360.0
+FROST_TURRET_SLOW_FACTOR: float = 0.5
+FROST_TURRET_SLOW_DURATION: float = 1.6
 
 # One-shot trap that arms when placed and detonates the first time
 # an enemy steps on it.  Heavy damage but consumed on use.
@@ -1156,6 +1214,7 @@ BUILDING_REGEN_HP_PER_SEC_DEFENSIVE: float = 6.0
 # Buildings that get the faster defensive regen rate.
 BUILDING_REGEN_DEFENSIVE_TYPES: frozenset[str] = frozenset({
     "WALL", "TURRET", "TRAP", "BRIDGE", "PATH",
+    "CANNON_TURRET", "MORTAR_TURRET", "FROST_TURRET",
 })
 # Repairs cost wood from inventory: ``BUILDING_REGEN_WOOD_PER_HP``
 # wood per 1 HP healed.  When inventory is dry, regen continues at
@@ -1192,6 +1251,9 @@ BUILDING_MAX_HEALTH: dict[str, float] = {
     "PIPE":            20.0,
     "FLUID_TANK":      120.0,
     "TURRET":          90.0,
+    "CANNON_TURRET":   140.0,
+    "MORTAR_TURRET":   110.0,
+    "FROST_TURRET":    80.0,
     "TRAP":            10.0,
 }
 
@@ -1351,6 +1413,7 @@ ENEMY_BUILDING_BLOCKERS: frozenset[str] = frozenset({
     "ASSEMBLER", "RESEARCH_CENTER", "REFINERY", "FARM", "WELL",
     "WOODCUTTER", "QUARRY", "GATHERER", "MINING_MACHINE",
     "TURRET", "CHEMICAL_PLANT", "SOLAR_ARRAY", "ROCKET_SILO",
+    "CANNON_TURRET", "MORTAR_TURRET", "FROST_TURRET",
     "OIL_DRILL", "OIL_REFINERY", "FLUID_TANK",
 })
 

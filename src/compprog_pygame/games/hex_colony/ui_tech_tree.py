@@ -129,7 +129,7 @@ class TechTreeOverlay(Panel):
         if difficulty == Difficulty.EASY:
             nodes = [
                 n for n in TECH_NODES.values()
-                if n.key != "defense_basics"
+                if n.key not in ("defense_basics", "advanced_defenses")
             ]
         else:
             nodes = list(TECH_NODES.values())

@@ -1601,6 +1601,102 @@ def draw_turret(surface: pygame.Surface, sx: float, sy: float, r: int, z: float)
                        max(1, int(r * 0.1)))
 
 
+def draw_cannon_turret(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Heavy cannon turret. Bigger base, fat barrel, darker red plating."""
+    if _try_sprite(surface, "buildings/cannon_turret", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    base_col = (110, 100, 95)
+    metal = (70, 70, 80)
+    barrel = (45, 45, 55)
+    accent = (200, 60, 40)
+    # Larger stone base
+    base_r = max(5, int(r * 0.65))
+    pygame.draw.circle(surface, base_col, (isx, isy), base_r)
+    pygame.draw.circle(surface, _darken(base_col, 0.55), (isx, isy), base_r, max(1, iz))
+    # Bulky body
+    body_r = max(4, int(r * 0.4))
+    pygame.draw.circle(surface, metal, (isx, isy - max(2, int(r * 0.12))), body_r)
+    pygame.draw.circle(surface, _darken(metal, 0.6), (isx, isy - max(2, int(r * 0.12))), body_r, max(1, iz))
+    # Long, thick barrel
+    barrel_len = max(5, int(r * 0.85))
+    barrel_w = max(3, int(r * 0.24))
+    pygame.draw.rect(surface, barrel,
+                     pygame.Rect(isx, isy - max(2, int(r * 0.12)) - barrel_w // 2,
+                                 barrel_len, barrel_w))
+    pygame.draw.rect(surface, _darken(barrel, 0.6),
+                     pygame.Rect(isx, isy - max(2, int(r * 0.12)) - barrel_w // 2,
+                                 barrel_len, barrel_w), max(1, iz))
+    # Muzzle accent
+    pygame.draw.circle(surface, accent,
+                       (isx + barrel_len, isy - max(2, int(r * 0.12))),
+                       max(2, int(r * 0.14)))
+
+
+def draw_mortar_turret(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Mortar / artillery turret. Wide squat base with an upward-angled tube."""
+    if _try_sprite(surface, "buildings/mortar_turret", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    base_col = (115, 110, 90)
+    metal = (75, 80, 60)
+    tube = (40, 45, 40)
+    accent = (220, 200, 80)
+    # Wide flat base
+    base_r = max(5, int(r * 0.7))
+    pygame.draw.circle(surface, base_col, (isx, isy), base_r)
+    pygame.draw.circle(surface, _darken(base_col, 0.55), (isx, isy), base_r, max(1, iz))
+    # Squat body
+    body_r = max(3, int(r * 0.35))
+    pygame.draw.circle(surface, metal, (isx, isy), body_r)
+    pygame.draw.circle(surface, _darken(metal, 0.6), (isx, isy), body_r, max(1, iz))
+    # Upward angled tube (45 degrees up-right)
+    import math as _m
+    tube_len = max(5, int(r * 0.7))
+    tube_w = max(3, int(r * 0.22))
+    ang = -_m.pi / 4
+    tx = isx + int(_m.cos(ang) * tube_len)
+    ty = isy + int(_m.sin(ang) * tube_len)
+    pygame.draw.line(surface, tube, (isx, isy), (tx, ty), tube_w)
+    pygame.draw.line(surface, _darken(tube, 0.5), (isx, isy), (tx, ty), max(1, iz))
+    # Muzzle ring
+    pygame.draw.circle(surface, accent, (tx, ty), max(2, int(r * 0.13)))
+
+
+def draw_frost_turret(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
+    """Frost turret. Pale cyan base, crystalline emitter on top."""
+    if _try_sprite(surface, "buildings/frost_turret", sx, sy, r, z):
+        return
+    isx, isy = int(sx), int(sy)
+    iz = max(1, int(z))
+    base_col = (140, 170, 190)
+    metal = (110, 150, 180)
+    crystal = (180, 230, 250)
+    accent = (90, 200, 240)
+    # Pale base ring
+    base_r = max(4, int(r * 0.55))
+    pygame.draw.circle(surface, base_col, (isx, isy), base_r)
+    pygame.draw.circle(surface, _darken(base_col, 0.6), (isx, isy), base_r, max(1, iz))
+    # Body
+    body_r = max(3, int(r * 0.32))
+    pygame.draw.circle(surface, metal, (isx, isy), body_r)
+    pygame.draw.circle(surface, _darken(metal, 0.6), (isx, isy), body_r, max(1, iz))
+    # Crystalline emitter — a small diamond shape
+    cy_off = max(2, int(r * 0.2))
+    crystal_h = max(3, int(r * 0.4))
+    crystal_w = max(2, int(r * 0.22))
+    pts = [
+        (isx, isy - cy_off - crystal_h),
+        (isx + crystal_w, isy - cy_off),
+        (isx, isy - cy_off + crystal_h // 2),
+        (isx - crystal_w, isy - cy_off),
+    ]
+    pygame.draw.polygon(surface, crystal, pts)
+    pygame.draw.polygon(surface, accent, pts, max(1, iz))
+
+
 def draw_trap(surface: pygame.Surface, sx: float, sy: float, r: int, z: float) -> None:
     """Spike trap � wooden plate with iron spikes; one-shot."""
     if _try_sprite(surface, "buildings/trap", sx, sy, r, z):

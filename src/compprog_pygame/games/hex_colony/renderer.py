@@ -97,6 +97,9 @@ from compprog_pygame.games.hex_colony.render_buildings import (
     draw_oil_refinery,
     draw_ancient_tower,
     draw_turret,
+    draw_cannon_turret,
+    draw_mortar_turret,
+    draw_frost_turret,
     draw_trap,
     draw_enemy,
 )
@@ -113,7 +116,7 @@ sprites.load_all()
 # Building types that collect resources (show range ring).  The
 # default ring radius is 2 hexes; turrets use ``params.TURRET_RANGE_HEXES``
 # (with a ``+TURRET_WALL_RANGE_BONUS`` boost when wall-mounted).
-_COLLECTION_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER, BuildingType.MINING_MACHINE, BuildingType.OIL_DRILL, BuildingType.TURRET}
+_COLLECTION_BUILDINGS = {BuildingType.WOODCUTTER, BuildingType.QUARRY, BuildingType.GATHERER, BuildingType.MINING_MACHINE, BuildingType.OIL_DRILL, BuildingType.TURRET, BuildingType.CANNON_TURRET, BuildingType.MORTAR_TURRET, BuildingType.FROST_TURRET}
 
 # Sentinel used by per-frame caches to distinguish "not yet looked up"
 # from "looked up and found None".
@@ -148,6 +151,9 @@ _BUILDING_DRAW: dict[BuildingType, callable] = {
     BuildingType.OIL_REFINERY: draw_oil_refinery,
     BuildingType.FLUID_TANK: draw_fluid_tank,
     BuildingType.TURRET: draw_turret,
+    BuildingType.CANNON_TURRET: draw_cannon_turret,
+    BuildingType.MORTAR_TURRET: draw_mortar_turret,
+    BuildingType.FROST_TURRET: draw_frost_turret,
     BuildingType.TRAP: draw_trap,
 }
 
@@ -1930,6 +1936,12 @@ class Renderer:
                 draw_fluid_tank(bld_surf, cx_local, cy_local, r, zoom)
             elif btype == BuildingType.TURRET:
                 draw_turret(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.CANNON_TURRET:
+                draw_cannon_turret(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.MORTAR_TURRET:
+                draw_mortar_turret(bld_surf, cx_local, cy_local, r, zoom)
+            elif btype == BuildingType.FROST_TURRET:
+                draw_frost_turret(bld_surf, cx_local, cy_local, r, zoom)
             elif btype == BuildingType.TRAP:
                 draw_trap(bld_surf, cx_local, cy_local, r, zoom)
 
@@ -2098,6 +2110,12 @@ class Renderer:
             if wall_mount:
                 radius += _params.TURRET_WALL_RANGE_BONUS
             return radius
+        if btype == BuildingType.CANNON_TURRET:
+            return _params.CANNON_TURRET_RANGE_HEXES
+        if btype == BuildingType.MORTAR_TURRET:
+            return _params.MORTAR_TURRET_RANGE_HEXES
+        if btype == BuildingType.FROST_TURRET:
+            return _params.FROST_TURRET_RANGE_HEXES
         return 2
 
     def _draw_range_ring(

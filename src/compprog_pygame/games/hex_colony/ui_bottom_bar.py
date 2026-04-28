@@ -171,7 +171,8 @@ class BuildingsTabContent(TabContent):
         (BUILDING_CATEGORY_NAMES[4], [BuildingType.PATH, BuildingType.BRIDGE,
                         BuildingType.CONVEYOR, BuildingType.PIPE]),
         (BUILDING_CATEGORY_NAMES[5], [BuildingType.WALL, BuildingType.TURRET,
-                        BuildingType.TRAP]),
+                        BuildingType.CANNON_TURRET, BuildingType.MORTAR_TURRET,
+                        BuildingType.FROST_TURRET, BuildingType.TRAP]),
     ]
 
     BUILDABLE: list[BuildingType] = []

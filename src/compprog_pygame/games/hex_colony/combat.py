@@ -66,6 +66,9 @@ class Enemy:
     target_building_id: int = 0          # id() of the building the enemy
                                          # is currently chewing on (0 = none)
     dead: bool = False
+    # ── Status effects (Frost Turret) ──
+    slow_factor: float = 0.0             # 0 = normal, 0.5 = 50% slower
+    slow_remaining: float = 0.0          # seconds of slow remaining
 
 
 @dataclass(slots=True)
@@ -81,6 +84,11 @@ class Projectile:
     damage: float = 10.0
     target_id: int = 0                   # id() of the enemy that was aimed at
     color: tuple[int, int, int] = (255, 200, 100)
+    # ── Optional area-of-effect / status effects ──
+    splash_radius_px: float = 0.0        # 0 = single-target hit
+    splash_falloff: float = 0.5          # damage multiplier for outer ring
+    slow_factor: float = 0.0             # 0 = no slow, applied on hit
+    slow_duration: float = 0.0           # seconds of slow on hit
 
 
 # ── Combat manager ─────────────────────────────────────────────────
@@ -323,6 +331,9 @@ class CombatManager:
             target_coords: set[HexCoord] = set()
             weapon_buildings: list[tuple[Building, str]] = []
             TURRET = BuildingType.TURRET
+            CANNON = BuildingType.CANNON_TURRET
+            MORTAR = BuildingType.MORTAR_TURRET
+            FROST = BuildingType.FROST_TURRET
             CAMP = BuildingType.CAMP
             for b in world.buildings.buildings:
                 if b.faction != "SURVIVOR":
@@ -354,6 +365,12 @@ class CombatManager:
                             target_coords.add(occ)
                 if btype is TURRET:
                     weapon_buildings.append((b, "TURRET"))
+                elif btype is CANNON:
+                    weapon_buildings.append((b, "CANNON"))
+                elif btype is MORTAR:
+                    weapon_buildings.append((b, "MORTAR"))
+                elif btype is FROST:
+                    weapon_buildings.append((b, "FROST"))
                 elif btype is CAMP:
                     weapon_buildings.append((b, "CAMP"))
 
@@ -632,7 +649,16 @@ class CombatManager:
                 continue
 
             # Otherwise progress along the path.
-            enemy.move_timer -= dt
+            # Frost slow: scale dt down while a slow effect is active.
+            move_dt = dt
+            if enemy.slow_remaining > 0.0 and enemy.slow_factor > 0.0:
+                enemy.slow_remaining -= dt
+                if enemy.slow_remaining <= 0.0:
+                    enemy.slow_remaining = 0.0
+                    enemy.slow_factor = 0.0
+                else:
+                    move_dt = dt * max(0.0, 1.0 - enemy.slow_factor)
+            enemy.move_timer -= move_dt
             if enemy.move_timer <= 0.0:
                 self._advance_one_hex(world, enemy)
                 enemy.move_timer = period
@@ -1261,6 +1287,39 @@ class CombatManager:
                     speed=params.TURRET_PROJECTILE_SPEED,
                     color=(255, 220, 120),
                 )
+            elif kind == "CANNON":
+                self._fire_weapon(
+                    world, b, size, dt, enemy_index,
+                    range_hex=params.CANNON_TURRET_RANGE_HEXES,
+                    damage=params.CANNON_TURRET_DAMAGE,
+                    reload=params.CANNON_TURRET_RELOAD_SECONDS,
+                    speed=params.CANNON_TURRET_PROJECTILE_SPEED,
+                    color=(255, 140, 80),
+                )
+            elif kind == "MORTAR":
+                self._fire_weapon(
+                    world, b, size, dt, enemy_index,
+                    range_hex=params.MORTAR_TURRET_RANGE_HEXES,
+                    damage=params.MORTAR_TURRET_DAMAGE,
+                    reload=params.MORTAR_TURRET_RELOAD_SECONDS,
+                    speed=params.MORTAR_TURRET_PROJECTILE_SPEED,
+                    color=(255, 220, 120),
+                    splash_radius_px=float(
+                        params.MORTAR_TURRET_SPLASH_RADIUS_HEXES * size
+                    ),
+                    splash_falloff=params.MORTAR_TURRET_SPLASH_FALLOFF,
+                )
+            elif kind == "FROST":
+                self._fire_weapon(
+                    world, b, size, dt, enemy_index,
+                    range_hex=params.FROST_TURRET_RANGE_HEXES,
+                    damage=params.FROST_TURRET_DAMAGE,
+                    reload=params.FROST_TURRET_RELOAD_SECONDS,
+                    speed=params.FROST_TURRET_PROJECTILE_SPEED,
+                    color=(140, 220, 255),
+                    slow_factor=params.FROST_TURRET_SLOW_FACTOR,
+                    slow_duration=params.FROST_TURRET_SLOW_DURATION,
+                )
             else:  # "CAMP"
                 self._fire_weapon(
                     world, b, size, dt, enemy_index,
@@ -1276,7 +1335,11 @@ class CombatManager:
                      enemy_index: dict[HexCoord, list[Enemy]],
                      *, range_hex: int, damage: float,
                      reload: float, speed: float,
-                     color: tuple[int, int, int]) -> None:
+                     color: tuple[int, int, int],
+                     splash_radius_px: float = 0.0,
+                     splash_falloff: float = 0.5,
+                     slow_factor: float = 0.0,
+                     slow_duration: float = 0.0) -> None:
         b.weapon_cooldown = max(0.0, b.weapon_cooldown - dt)
         if b.weapon_cooldown > 0.0:
             return
@@ -1292,6 +1355,10 @@ class CombatManager:
             src_px=sx, src_py=sy, dst_px=ex, dst_py=ey,
             distance=dist, speed=float(speed), damage=float(damage),
             target_id=id(target), color=color,
+            splash_radius_px=float(splash_radius_px),
+            splash_falloff=float(splash_falloff),
+            slow_factor=float(slow_factor),
+            slow_duration=float(slow_duration),
         )
         self.projectiles.append(proj)
 
@@ -1328,12 +1395,42 @@ class CombatManager:
                 continue
             # Resolve hit — O(1) lookup via the per-tick id index.
             e = enemy_by_id.get(p.target_id)
-            if e is None or e.dead:
-                continue
-            e.health -= p.damage
-            if e.health <= 0.0:
-                e.dead = True
-                self._on_enemy_killed(world, e)
+            primary_alive = e is not None and not e.dead
+            if primary_alive:
+                e.health -= p.damage
+                if p.slow_factor > 0.0 and p.slow_duration > 0.0:
+                    # Apply / refresh the slow effect.  Stronger
+                    # slow overrides a weaker one; same strength
+                    # refreshes the timer.
+                    if p.slow_factor >= e.slow_factor:
+                        e.slow_factor = p.slow_factor
+                        e.slow_remaining = max(e.slow_remaining, p.slow_duration)
+                if e.health <= 0.0:
+                    e.dead = True
+                    self._on_enemy_killed(world, e)
+            # Splash damage: hit every other live enemy whose pixel
+            # position is within ``splash_radius_px`` of the impact
+            # point.  Damage is reduced by ``splash_falloff``.
+            if p.splash_radius_px > 0.0:
+                rsq = p.splash_radius_px * p.splash_radius_px
+                splash_dmg = p.damage * p.splash_falloff
+                if splash_dmg > 0.0:
+                    for other in self.enemies:
+                        if other is e or other.dead:
+                            continue
+                        dxp = other.px - p.dst_px
+                        dyp = other.py - p.dst_py
+                        if dxp * dxp + dyp * dyp <= rsq:
+                            other.health -= splash_dmg
+                            if p.slow_factor > 0.0 and p.slow_duration > 0.0:
+                                if p.slow_factor >= other.slow_factor:
+                                    other.slow_factor = p.slow_factor
+                                    other.slow_remaining = max(
+                                        other.slow_remaining, p.slow_duration,
+                                    )
+                            if other.health <= 0.0:
+                                other.dead = True
+                                self._on_enemy_killed(world, other)
 
     # ── Path-finding helpers ─────────────────────────────────────
 
